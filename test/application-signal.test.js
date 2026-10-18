@@ -88,7 +88,7 @@ def pidfd_open(pid, flags):
 os.pidfd_open = pidfd_open
 os.close = lambda descriptor: calls.append('close:' + str(descriptor))
 def send(descriptor, sig, info, flags):
-    calls.append('signal:' + str(descriptor) + ':' + str(sig))
+    calls.append('signal:' + str(descriptor) + ':' + str(int(sig)))
     if mode == 'npm-send-partial' and descriptor == 1666 or mode == 'npm-send-first-fails' and descriptor == 1444 or mode == 'npm-zero-delivery': raise PermissionError()
     if mode == 'npm-target-exits' and descriptor == 1444: raise ProcessLookupError()
     if mode.startswith('npm-'): calls.append('application-handler:' + str(descriptor - 1000))

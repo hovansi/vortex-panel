@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { NODE_RUNTIME_FILES } from '../server/node-runtime.js';
 
 const installer = await fs.readFile(new URL('../deploy/install-node.sh', import.meta.url), 'utf8');
 const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash';
-async function runFixture(t, failHealth, missingTool = '') {
+async function runFixture(t, failHealth, missingTool = '', foreignOwner = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vortex-node-installer-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const relative of ['project/deploy', 'project/server', 'project/public', 'project/output', 'private/tls', 'unit', 'install/releases/previous', 'data']) await fs.mkdir(path.join(directory, relative), { recursive: true });
@@ -33,6 +34,16 @@ async function runFixture(t, failHealth, missingTool = '') {
   // Model only the two system activation primitives with owned junctions;
   // Linux uses the original ln/mv commands. Never model config/data writes.
   await fs.writeFile(path.join(directory, 'junction.cjs'), `const fs=require('node:fs'),path=require('node:path'); const [action,a,b]=process.argv.slice(2),root=path.join(__dirname,'install'); if(![a,b].every(p=>path.resolve(p).startsWith(root+path.sep)))throw Error('fixture scope'); if(action==='create'){if(fs.existsSync(b))fs.unlinkSync(b);fs.symlinkSync(a,b,'junction')}else{if(!fs.lstatSync(a).isSymbolicLink())throw Error('fixture link');if(fs.existsSync(b)){if(!fs.lstatSync(b).isSymbolicLink())throw Error('fixture target');fs.unlinkSync(b)}fs.renameSync(a,b)}`);
+  // Production runs as root and chown makes created files root-owned. This
+  // fixture intentionally runs without sudo and models chown as a no-op. Map
+  // only that ownership boundary, only inside this private temporary fixture,
+  // and only in the inventory subprocess. Types, links, modes, inode identities,
+  // bytes and the production uid!==0 rejection remain unchanged.
+  const ownerFixture = path.join(directory, 'root-owner-fixture.mjs');
+  await fs.writeFile(ownerFixture, `import fs from 'node:fs'; import path from 'node:path';
+const root=path.resolve(process.env.VORTEX_FIXTURE_ROOT),actual=fs.lstatSync.bind(fs),uid=process.getuid?.()??0;
+fs.lstatSync=(filename,...args)=>{const info=actual(filename,...args),resolved=path.resolve(String(filename)),relative=path.relative(root,resolved);if(relative&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative)&&info.uid===uid){const copy=Object.assign(Object.create(Object.getPrototypeOf(info)),info);copy.uid=process.env.VORTEX_FIXTURE_FOREIGN_OWNER==='true'&&resolved===path.join(root,'private','host-zram.py')?424242:0;return copy;}return info;};
+`);
   const replacements = new Map([
     ['[[ $EUID -eq 0 ]]', '[[ 1 == 1 ]]'],
     ['source /etc/os-release', 'ID=ubuntu; VERSION_ID=24.04'],
@@ -73,7 +84,7 @@ node() {
     if [[ $# -gt 5 ]]; then
       local arguments=("\${@:3}")
       if [[ $VORTEX_TEST_PLATFORM == win32 ]]; then for index in 0 1 2 3 4; do if [[ -n \${arguments[$index]} ]]; then arguments[$index]=$(cygpath -w -- "\${arguments[$index]}"); fi; done; fi
-      "$VORTEX_REAL_NODE" --input-type=module - "\${arguments[@]}"; return
+      "$VORTEX_REAL_NODE" --import "$VORTEX_OWNER_FIXTURE_URL" --input-type=module - "\${arguments[@]}"; return
     fi
     local source=$3 destination=$4
     if [[ $VORTEX_TEST_PLATFORM == win32 ]]; then source=$(cygpath -w -- "$source"); destination=$(cygpath -w -- "$destination"); fi
@@ -89,7 +100,8 @@ node() {
 `;
   const script = path.join(directory, 'project/deploy/install-node.sh');
   await fs.writeFile(script, prefix + '\n' + source);
-  const result = spawnSync(bash, [script, '--endpoint', 'https://fixture.invalid:8443'], { env: { ...process.env, FAIL_HEALTH: failHealth ? 'true' : 'false', VORTEX_TEST_PLATFORM: process.platform, VORTEX_REAL_NODE: process.execPath, VORTEX_MISSING_TOOL: missingTool }, encoding: 'utf8', timeout: 120000, windowsHide: true });
+  const result = spawnSync(bash, [script, '--endpoint', 'https://fixture.invalid:8443'], { env: { ...process.env, FAIL_HEALTH: failHealth ? 'true' : 'false', VORTEX_TEST_PLATFORM: process.platform, VORTEX_REAL_NODE: process.execPath, VORTEX_MISSING_TOOL: missingTool,
+    VORTEX_OWNER_FIXTURE_URL: pathToFileURL(ownerFixture).href, VORTEX_FIXTURE_ROOT: directory, VORTEX_FIXTURE_FOREIGN_OWNER: String(foreignOwner) }, encoding: 'utf8', timeout: 120000, windowsHide: true });
   return { directory, result };
 }
 
@@ -119,6 +131,13 @@ test('missing worker tool fails before replacing the source or restarting a work
     assert.equal(await fs.readFile(path.join(directory, 'unit/vortex-node.service'), 'utf8'), '# original fixture unit\n');
     assert.doesNotMatch(await fs.readFile(path.join(directory, 'systemctl-log'), 'utf8'), /(?:^|\n)(?:stop|restart) /);
   }
+});
+
+test('node installer ownership inventory still rejects a foreign-owned created helper', async t => {
+  const { result } = await runFixture(t, false, '', true);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unsafe created installer file/);
+  assert.match(installer, /if\(info\.uid!==0\|\|/);
 });
 test('failed node candidate readiness restores previous unit/source and restarts the prior node without rewriting config/data', async t => {
   const { directory, result } = await runFixture(t, true); assert.notEqual(result.status, 0, result.stderr);

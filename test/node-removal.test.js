@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import nativeFs from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,17 @@ import { federationFixture } from './nodes080-fixture.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function eventually(callback) { const until = Date.now() + 3000; let error; do { try { return await callback(); } catch (value) { error = value; } await pause(10); } while (Date.now() < until); throw error; }
+function modelIntentOwner(t, filename, changes = () => ({ uid: 0 })) {
+  const original = nativeFs.lstatSync;
+  // The native-agent fixture models a root worker even when CI runs as an
+  // unprivileged user. Preserve the real file's type, links, mode and size;
+  // model only this fixture's owner unless a rejection case changes a field.
+  t.mock.method(nativeFs, 'lstatSync', (target, ...args) => {
+    const info = original(target, ...args);
+    if (typeof target !== 'string' || path.resolve(target) !== path.resolve(filename)) return info;
+    return Object.assign(Object.create(Object.getPrototypeOf(info)), info, changes());
+  });
+}
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vortex-removal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -99,6 +111,7 @@ test('lost prepare response stays unknown until SSH proves an intact prelaunch w
 
 test('Agent admission freeze survives restart, validates generation and rejects servers admitted during preflight', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vortex-removal-agent-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  modelIntentOwner(t, path.join(directory, '.removal-intent.json'));
   const nodeId = randomUUID(), revision = 'f'.repeat(64), requestId = randomUUID(); let locked = false, servers = [], probes = 0;
   const manager = { listServers: () => servers, beginMaintenance(value) { assert.equal(value.action, 'uninstall'); locked = true; return () => { locked = false; }; } };
   const args = { nodeId, dataDir: directory, manager, platform: 'linux', uid: 0, execFile: async (_binary, argv) => { probes++; if (argv[1] === 'abort') { await fs.unlink(path.join(directory, '.removal-intent.json')); return { stdout: '{"ok":true}' }; } return { stdout: JSON.stringify({ agentId: nodeId, revision, status: 'ready', serverCount: 0 }) }; } };
@@ -110,6 +123,41 @@ test('Agent admission freeze survives restart, validates generation and rejects 
   await restored.abort({ nodeId, requestId }); assert.equal(locked, false);
   servers = [{ id: randomUUID() }];
   await assert.rejects(restored.prepare({ nodeId, revision, requestId: randomUUID(), confirmed: true }), /admitted/); assert.equal(locked, false); assert.ok(probes >= 3);
+});
+
+test('Restored agent rejects unsafe or malformed intent before acquiring maintenance', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vortex-removal-intent-'));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith('vortex-removal-intent-'));
+    return fs.rm(directory, { recursive: true, force: true });
+  });
+  const filename = path.join(directory, '.removal-intent.json');
+  let statChanges = { uid: 0 }, maintenanceCalls = 0;
+  modelIntentOwner(t, filename, () => statChanges);
+  const nodeId = randomUUID(), intent = { nodeId, requestId: randomUUID(), revision: 'f'.repeat(64) };
+  const cases = [
+    { name: 'hard-linked intent', stat: { nlink: 2 } },
+    { name: 'oversized intent', stat: { size: 65537 } },
+    { name: 'malformed JSON', bytes: '{' },
+    { name: 'another worker', fields: { nodeId: randomUUID() } },
+    { name: 'invalid operation ID', fields: { requestId: 'invalid' } },
+    { name: 'invalid generation', fields: { revision: 'invalid' } },
+  ];
+  if (process.platform === 'linux') cases.push(
+    { name: 'non-root owner', stat: { uid: 1234 } },
+    { name: 'group-readable intent', stat: { mode: 0o100640 } },
+  );
+  for (const current of cases) {
+    await fs.writeFile(filename, current.bytes ?? JSON.stringify({ ...intent, ...current.fields }), { mode: 0o600 });
+    statChanges = { uid: 0, ...current.stat };
+    const agent = createNodeRemovalAgent({ nodeId, dataDir: directory, platform: 'linux', uid: 0,
+      manager: { listServers: () => [], beginMaintenance() { maintenanceCalls++; throw new Error('Unsafe intent acquired maintenance'); } },
+      execFile: async () => { throw new Error('Unsafe intent invoked native inspection'); },
+    });
+    await assert.rejects(agent.initialize(), error => error.code === 'NODE_REMOVAL' && error.status === 503, current.name);
+    assert.equal(maintenanceCalls, 0, current.name);
+  }
 });
 
 test('late remote mutation or removal cannot pass admission after main maintenance begins during earlier async work', async t => {
