@@ -8,7 +8,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.17.0'
+        default: 'v0.17.1'
         type: string
 
 permissions:
@@ -149,8 +149,22 @@ jobs:
           };
           const api = path => JSON.parse(gh(['api', path]));
           const releasePath = `repos/${repo}/releases/tags/${tag}`;
+          const allReleases = () => {
+            const rows = [];
+            for (let page = 1; page <= 20; page++) {
+              const batch = api(`repos/${repo}/releases?per_page=100&page=${page}`);
+              need(Array.isArray(batch) && batch.length <= 100 && batch.every(row => row && Number.isSafeInteger(row.id)
+                && row.id > 0 && typeof row.tag_name === 'string'), 'Release listing is invalid; refusing publication.');
+              rows.push(...batch);
+              if (batch.length < 100) return rows;
+            }
+            throw new Error('Release listing exceeded its page bound; inspect the repository before publication.');
+          };
           need(api(`repos/${repo}`).private === false, 'Publication requires the approved public repository.');
           need(gh(['api', '--include', '--silent', releasePath], true) === null, 'A release already exists for this tag; it will not be overwritten.');
+          // Tag lookup describes published releases. Authenticated listing also
+          // includes drafts, which must never be mistaken for confirmed absence.
+          need(!allReleases().some(row => row.tag_name === tag), 'A draft or published release already exists for this tag; inspect it instead of replaying creation.');
           const checkTag = () => need(api(`repos/${repo}/commits/${tag}`).sha === head, 'Remote tag changed; refusing publication.');
           if (gh(['api', '--include', '--silent', `repos/${repo}/git/ref/tags/${tag}`], true) === null) {
             need(manual, 'Only a maintainer dispatch can create a missing release tag.');
@@ -161,23 +175,48 @@ jobs:
           checkTag();
           const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
           writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nAutomated source checks and test commands passed with Node.js 22 on Ubuntu 22.04 and 24.04. This CI run does not perform live VPS, gameplay-client, or production deployment QA.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
-          gh(['release', 'create', tag, '--draft', '--verify-tag', '--target', head, '--title', `Vortex Panel ${pkg.version}`, '--notes-file', notes]);
-          const draft = api(releasePath);
-          need(draft.draft === true && draft.tag_name === tag && draft.prerelease === false && Number.isSafeInteger(draft.id) && draft.assets?.length === 0, 'Expected a new empty draft release.');
-          gh(['release', 'upload', tag, ...names.map(name => join(directory, name))]);
+          const creation = join(process.env.RUNNER_TEMP, 'vortex-release-create.json');
+          writeFileSync(creation, JSON.stringify({ tag_name: tag, target_commitish: head, name: `Vortex Panel ${pkg.version}`,
+            body: readFileSync(notes, 'utf8'), draft: true, prerelease: false }), { flag: 'wx' });
+          // Capture the exact numeric release ID from the acknowledged POST.
+          // Never look up an unpublished draft using the published-only tag API.
+          const draft = JSON.parse(gh(['api', '--method', 'POST', `repos/${repo}/releases`,
+            '--header', 'Content-Type: application/json', '--input', creation]));
+          need(draft.draft === true && draft.tag_name === tag && draft.prerelease === false && Number.isSafeInteger(draft.id)
+            && draft.id > 0 && draft.target_commitish === head && draft.assets?.length === 0, 'Expected a new empty draft release.');
+          const releaseIdPath = `repos/${repo}/releases/${draft.id}`;
+          const uploaded = new Map();
           const verify = (row, isDraft) => {
-            need(row.id === draft.id && row.tag_name === tag && row.draft === isDraft && row.prerelease === false && row.assets?.length === names.length, 'Release identity or asset count changed.');
+            need(row.id === draft.id && row.tag_name === tag && row.draft === isDraft && row.prerelease === false
+              && row.assets?.length === uploaded.size, 'Release identity or asset count changed.');
             const seen = new Set();
             for (const asset of row.assets) {
               const local = expected.get(asset.name);
-              need(local && !seen.has(asset.name) && asset.state === 'uploaded' && asset.size === local.size && asset.digest === local.digest, 'Uploaded asset size or SHA256 differs. Draft will not be published.');
+              need(local && !seen.has(asset.name) && uploaded.get(asset.name) === asset.id && asset.state === 'uploaded'
+                && asset.size === local.size && asset.digest === local.digest, 'Uploaded asset identity, size or SHA256 differs. Draft will not be published.');
               seen.add(asset.name);
             }
           };
-          verify(api(releasePath), true);
+          verify(api(releaseIdPath), true);
+          for (const name of names) {
+            const asset = JSON.parse(gh(['api', '--method', 'POST',
+              `https://uploads.github.com/repos/${repo}/releases/${draft.id}/assets?name=${encodeURIComponent(name)}`,
+              '--header', 'Content-Type: application/octet-stream', '--input', join(directory, name)]));
+            const local = expected.get(name);
+            need(Number.isSafeInteger(asset.id) && asset.id > 0 && asset.name === name && asset.state === 'uploaded'
+              && ![...uploaded.values()].includes(asset.id) && asset.size === local.size
+              && asset.digest === local.digest, 'Upload acknowledgement differs; inspect the retained draft.');
+            uploaded.set(name, asset.id);
+            verify(api(releaseIdPath), true);
+          }
           checkTag();
-          gh(['release', 'edit', tag, '--draft=false', '--latest']);
-          const published = api(releasePath);
+          const matching = allReleases().filter(row => row.tag_name === tag);
+          need(matching.length === 1 && matching[0].id === draft.id, 'Another release now claims this tag; inspect retained drafts before publishing.');
+          const publication = join(process.env.RUNNER_TEMP, 'vortex-release-publish.json');
+          writeFileSync(publication, JSON.stringify({ draft: false, make_latest: 'true' }), { flag: 'wx' });
+          verify(JSON.parse(gh(['api', '--method', 'PATCH', releaseIdPath,
+            '--header', 'Content-Type: application/json', '--input', publication])), false);
+          const published = api(releaseIdPath);
           verify(published, false);
           console.log(`Published verified release: ${published.html_url}`);
           NODE

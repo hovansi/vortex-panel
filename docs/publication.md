@@ -4,7 +4,7 @@ Vortex Panel is published from [hovansi/vortex-panel](https://github.com/hovansi
 
 ## Release contract
 
-The first public automation release is **0.17.0**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the tested commit.
+The examples below use **0.17.1**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the tested commit.
 
 The workflow tests on Ubuntu 22.04 and 24.04 before packaging. It creates a draft release, uploads and verifies all four assets, then publishes the draft. An existing draft or published release is an explicit stop condition; the workflow never overwrites assets or automatically replays a failed publication.
 
@@ -28,7 +28,7 @@ The generic source downloader remains `deploy/bootstrap.sh`. The builder substit
 npm ci
 npm run check
 npm test
-node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.17.0
+node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.17.1
 ```
 
 Build from a clean checkout of the intended commit when comparing local source bytes with CI. `.gitattributes` standardizes text files to LF; the source archive records the bytes actually collected by its builder.
@@ -38,20 +38,20 @@ Build from a clean checkout of the intended commit when comparing local source b
 Upload or commit the reviewed public source on `main`, then:
 
 1. Open the repository's **Actions** tab and choose **Release**.
-2. Select **Run workflow**, choose branch **main** and enter **`v0.17.0`** in the tag input.
+2. Select **Run workflow**, choose branch **main** and enter **`v0.17.1`** in the tag input.
 3. Run the workflow and follow both Ubuntu verification jobs and the publication job.
 
 The verification jobs test the selected source commit first. The publisher creates the requested tag only if it is missing and binds it to that same commit. An existing tag must already resolve to the tested commit; a conflicting tag stops publication. A newly created tag is not automatically recreated after an uncertain response.
 
-For later releases, replace `v0.17.0` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
+For later releases, replace `v0.17.1` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
 
 ### Alternative: push a tag
 
 The workflow also retains its tag-push trigger. After committing the reviewed source, create and push a tag pointing to that exact commit:
 
 ```bash
-git tag -a v0.17.0 -m "Vortex Panel 0.17.0"
-git push origin v0.17.0
+git tag -a v0.17.1 -m "Vortex Panel 0.17.1"
+git push origin v0.17.1
 ```
 
 Choose one trigger for a release. Do not dispatch a second run while a tag-triggered release is active. If a prior run stopped after a mutation, inspect its remote tag/release state before deciding how to continue; publication never silently resumes or overwrites an existing draft.
@@ -60,11 +60,19 @@ Protect the default branch and release tags, and enable immutable releases if av
 
 ## Observe the publication
 
-The release job verifies local checksums, public repository visibility and the remote tag's commit. Only an explicit HTTP 404 establishes that a release does not exist; authentication, rate limits, transport failures and other HTTP errors stop the job.
+The release job verifies local checksums, public repository visibility and the remote tag's commit. Its authenticated preflight checks for **draft and published releases** with the requested tag, using a bounded paginated listing. A 404 from the published-release-by-tag endpoint does not prove that no draft exists. Authentication, rate limits, transport failures, invalid/overlong listings and other unexpected responses stop the job.
 
-After creating the draft, it checks its identity and uploads four explicit files. Before publishing, it verifies the uploaded names, count, size, state and SHA-256 digest against local files, then rechecks the remote tag. GitHub's [release asset API](https://docs.github.com/en/rest/releases/assets) exposes those digest/state fields.
+After creating a fresh draft, the workflow records its numeric release ID and reads that exact release **by ID**, including while it is still a draft. It checks its identity and uploads four explicit files, recording each acknowledged asset ID. Before publishing, it verifies the uploaded IDs, names, count, size, state and SHA-256 digest against local files, then rechecks the remote tag and release listing. Final verification follows the same release ID after publication. GitHub's [release asset API](https://docs.github.com/en/rest/releases/assets) exposes those identity/digest/state fields.
 
-A partial draft or uncertain publish result needs inspection. Do not blindly delete evidence or replay mutations. If a published file needs correction, release a new version instead of replacing it. The commands follow the official [`gh release create`](https://cli.github.com/manual/gh_release_create), [`upload`](https://cli.github.com/manual/gh_release_upload) and [`edit`](https://cli.github.com/manual/gh_release_edit) sequence.
+A partial draft or uncertain publish result needs inspection. The workflow deliberately refuses an existing release; it does not treat a rerun as permission to continue one. Publishing uses the authenticated [REST release](https://docs.github.com/en/rest/releases/releases) and [asset](https://docs.github.com/en/rest/releases/assets) endpoints through [`gh api`](https://cli.github.com/manual/gh_api), so draft inspection and publication stay bound to the acknowledged release ID.
+
+### Inspect a partial publication
+
+Record the existing release ID, tag and tested source commit before taking further action. Inspect the release through its authenticated ID endpoint or the repository's Releases interface; a public tag lookup alone is insufficient for drafts.
+
+Manual completion requires a separate, deliberate verification of that same release: the tag must still name the tested commit, and all four audited artifacts must match their expected names, sizes and SHA-256 digests. Only missing assets from that exact audited build may be added; do not replace an existing asset or move the tag to another commit. Publish the inspected draft only after the complete asset set is verified, then verify its published ID and public downloads.
+
+If any identity or byte comparison fails, stop and preserve the evidence. Correct a published release by preparing a new version/tag instead of replacing its files. Do not blindly delete a draft, overwrite assets or replay an uncertain mutation.
 
 Once publication succeeds, verify the public download from outside the authenticated session. The documented command is:
 
