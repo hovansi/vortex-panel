@@ -4,11 +4,11 @@ import { buildWorldVoice, parseWorldVoicePreview } from '../public/world-voice.j
 export const serverMessageLanguage = server => server.messageLanguage === 'vi' ? 'vi' : 'en';
 export const serverWorldVoiceEnabled = server => server.worldVoiceEnabled !== false;
 
-export function dispatchConsoleLine({ write, log, audit, simulated = false }) {
+export function dispatchConsoleLine({ write, log, audit }) {
   // The write callback enqueues a line into the owned runtime's stdin. Its
   // boolean return value is backpressure; a synchronous throw is rejection.
-  if (!simulated) write();
-  const result = { ok: true, acceptedToConsole: !simulated, simulated, auditRecorded: false }, warnings = [];
+  write();
+  const result = { ok: true, acceptedToConsole: true, auditRecorded: false }, warnings = [];
   try { log(); } catch { warnings.push('Lệnh đã được nhận nhưng không thể cập nhật log console.'); }
   try { audit(); result.auditRecorded = true; } catch { warnings.push('Lệnh đã được nhận nhưng không thể ghi nhật ký hoạt động.'); }
   if (warnings.length) result.warnings = warnings;

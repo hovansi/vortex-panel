@@ -11,7 +11,7 @@ import { createServerFirewall } from './server-firewall.js';
 
 export function createRouter(manager, { dataDir, store } = {}) {
   const router = express.Router();
-  const firewall = !manager.demo && dataDir ? createServerFirewall({ scope: path.resolve(dataDir) }) : null;
+  const firewall = dataDir ? createServerFirewall({ scope: path.resolve(dataDir) }) : null;
   router.use((req, res, next) => { req.body ??= {}; next(); });
   router.use((req, res, next) => {
     if (!req.session?.user) return res.status(401).json({ error: 'Vui lòng đăng nhập.' });
@@ -44,7 +44,7 @@ export function createRouter(manager, { dataDir, store } = {}) {
     let release;
     try {
       const fixed = req.params.id && manager.getServer(req.params.id).storagePolicy?.mode === 'fixed';
-      if (!manager.demo && !fixed && manager.reserveDiskWorkspace) release = await manager.reserveDiskWorkspace(parser.limits.fileSize);
+      if (!fixed && manager.reserveDiskWorkspace) release = await manager.reserveDiskWorkspace(parser.limits.fileSize);
       const finish = () => { release?.(); release = null; };
       res.once('close', finish); res.once('finish', finish);
       parser.single('file')(req, res, async error => { if (error && req.file) await fs.rm(req.file.path, { force: true }).catch(() => {}); if (error) finish(); next(error); });

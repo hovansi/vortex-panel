@@ -65,16 +65,12 @@ export function consumeRecoveryCode(code, hashes) {
 
 // The key lives outside JSON metadata and is required alongside it for disaster recovery.
 // Encryption protects a metadata-only export; it does not isolate secrets from root on this host.
-export function createSecretVault(dataDir, { ephemeral = false } = {}) {
-  let key;
-  if (ephemeral) key = randomBytes(32);
-  else {
-    const filename = path.join(dataDir, '.mfa-key');
-    try { fs.writeFileSync(filename, randomBytes(32), { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
-    const info = fs.lstatSync(filename);
-    if (!info.isFile() || info.isSymbolicLink() || info.size !== 32) throw new Error('MFA vault key is invalid. Restore the original .mfa-key with panel data.');
-    fs.chmodSync(filename, 0o600); key = fs.readFileSync(filename);
-  }
+export function createSecretVault(dataDir) {
+  const filename = path.join(dataDir, '.mfa-key');
+  try { fs.writeFileSync(filename, randomBytes(32), { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const info = fs.lstatSync(filename);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== 32) throw new Error('MFA vault key is invalid. Restore the original .mfa-key with panel data.');
+  fs.chmodSync(filename, 0o600); const key = fs.readFileSync(filename);
   return {
     seal(secret, context) {
       decodeBase32(secret);

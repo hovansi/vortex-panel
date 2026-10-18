@@ -1,4 +1,4 @@
-# Automatic port allocation — 0.15.5
+# Automatic port allocation
 
 New Minecraft Bedrock, Node.js and Python servers use automatic ports by default. Bedrock clones receive a separate allocation on their source VPS. The selected VPS makes the decision when the request is accepted; the browser does not reserve a suggestion. The returned server and connection address show the assigned ports. Existing servers retain their current ports.
 
@@ -9,7 +9,5 @@ Selection and registration run through the node's admission lock. An owned pendi
 Advanced custom ports remain available. Explicit legacy API ports retain their existing protocol-aware validation; TCP and UDP are separate network namespaces. Automatic requests omit numeric port fields and use `portAllocation:"auto"`; a request mixing automatic allocation with explicit ports is invalid. Older agents without the capability must be updated before automatic allocation can be used; custom allocation remains the compatible option.
 
 Socket-table reads and bind checks establish availability at the time of admission. They cannot permanently prevent an unrelated operating-system service from claiming a port later. Startup therefore retains native bind checks and reports a conflict; it does not silently change an established connection address. An accepted allocation is a panel reservation, not a firewall rule or proof of public reachability. Existing network-access controls still apply.
-
-Release evidence records the focused parser/allocator, concurrency, persistence-failure, UI-payload and federation checks, the full suite results, the deployed source identity and the real owned-server acceptance checks. Simulated tests and actual host operations are reported separately.
 
 Implementation references: [Linux ephemeral and reserved port policy](https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html) and [Node.js cryptographic random integers](https://nodejs.org/download/release/v22.18.0/docs/api/crypto.html#cryptorandomintmin-max-callback). The panel reads the host policy and does not change those sysctls.

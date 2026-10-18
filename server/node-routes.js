@@ -33,13 +33,12 @@ export function remoteServerRouteAllowed(method, suffix) {
   return serverRoutes.some(([methods, expression]) => methods.split(',').includes(method === 'HEAD' ? 'GET' : method) && expression.test(suffix));
 }
 
-export function createNodeRouter(nodes, { projectDir, provisioner, removal, store, powerController, zramController, reauthenticateAdmin, hostnameController = createHostnameController({ demo: nodes.manager.demo }) }) {
+export function createNodeRouter(nodes, { projectDir, provisioner, removal, store, powerController, zramController, reauthenticateAdmin, hostnameController = createHostnameController() }) {
   const router = express.Router();
   router.use(requireAdmin);
   router.get('/', async (_req, res) => res.json({ nodes: await nodes.publicNodes(), limits: nodes.limits }));
-  const requireNativePanel = (_req, _res, next) => { if (nodes.manager.demo) fail('Remote nodes are unavailable in demo mode.', 409); next(); };
-  router.post('/ssh/check', requireNativePanel, async (req, res) => res.json(await (req.body?.hostFingerprint ? provisioner.check(req.body) : provisioner.discover({ host: req.body?.host, port: req.body?.port }))));
-  router.post('/provision', requireNativePanel, (req, res) => res.status(202).json({ job: provisioner.start(req.body, req.session.user) }));
+  router.post('/ssh/check', async (req, res) => res.json(await (req.body?.hostFingerprint ? provisioner.check(req.body) : provisioner.discover({ host: req.body?.host, port: req.body?.port }))));
+  router.post('/provision', (req, res) => res.status(202).json({ job: provisioner.start(req.body, req.session.user) }));
   router.get('/provision/jobs', (_req, res) => res.json({ jobs: provisioner.jobs() }));
   router.get('/provision/jobs/:id', (req, res) => res.json({ job: provisioner.getJob(req.params.id) }));
   router.get('/uninstall/jobs', (_req, res) => res.json({ jobs: removal.jobs() }));

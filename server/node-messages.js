@@ -8,7 +8,6 @@ const messages = [
   ['Wait for active node operations before changing connection credentials.', 'Hãy đợi thao tác đang chạy trên node hoàn tất trước khi đổi thông tin kết nối.'],
   ['Wait for active node operations before unlinking this node.', 'Hãy đợi thao tác đang chạy trên node hoàn tất trước khi bỏ liên kết.'],
   ['Node returned an invalid server inventory or network reservation.', 'Node trả về danh sách server hoặc thông tin cổng không hợp lệ.'],
-  ['Remote nodes are unavailable in demo mode.', 'Chế độ demo không kết nối hoặc điều khiển VPS từ xa.'],
   ['The node limit has been reached.', 'Đã đạt giới hạn số node.'],
   ['This node agent or endpoint is already linked.', 'Agent hoặc địa chỉ này đã được liên kết.'],
   ['This endpoint is already linked.', 'Địa chỉ này đã được liên kết.'],

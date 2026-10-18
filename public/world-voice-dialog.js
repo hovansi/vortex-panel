@@ -72,8 +72,8 @@ export async function openWorldVoiceDialog(serverId,{api,findServer,canManage,op
     if((fresh.server.messageLanguage==='vi'?'vi':'en')!==language){await refreshLanguage(form);throw new Error(voiceText('The server message language changed. Review the updated preview before sending again.','Ngôn ngữ thông báo server đã đổi. Kiểm tra lại xem trước rồi gửi lại.'));}
     try{
       const result=await api(`${path}/announcement`,{method:'POST',body:{templateId:message.templateId,values:message.normalizedValues,method:message.method,expectedLanguage:message.language}});
-      if(!result.acceptedToConsole&&!result.simulated)throw new Error(voiceText('The console did not accept this announcement.','Console chưa chấp nhận thông báo này.'));
-      toast(result.simulated?voiceText('Demo announcement simulated.','Thông báo demo được mô phỏng.'):voiceText('Announcement sent to the server console.','Đã gửi thông báo vào console máy chủ.'));
+      if(result.acceptedToConsole!==true)throw new Error(voiceText('The console did not accept this announcement.','Console chưa chấp nhận thông báo này.'));
+      toast(voiceText('Announcement sent to the server console.','Đã gửi thông báo vào console máy chủ.'));
       if(result.warnings?.length)toast(result.warnings.map((warning,index)=>wireText(warning,result.warningsI18n?.[index])).join(' · '),true);
       // Log refresh is optional after a successful write: never turn a successful send into a retry.
       if(findServer()?.id===serverId)try{await refreshLogs();}catch{toast(voiceText('The announcement was accepted; the log could not be refreshed.','Thông báo đã được chấp nhận; chưa làm mới được log.'),true);}

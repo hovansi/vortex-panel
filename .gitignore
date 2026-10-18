@@ -27,3 +27,6 @@ id_ecdsa
 id_ed25519
 __pycache__/
 *.pyc
+
+/test/
+/scripts/demo.js

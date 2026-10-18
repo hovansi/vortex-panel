@@ -46,12 +46,12 @@ function pendingHistoryRecovery(dataDir) {
   };
 }
 
-export function createStore(dataDir, { ephemeral = false, maxLoadBytes = STORE_MAX_LOAD_BYTES } = {}) {
+export function createStore(dataDir, { maxLoadBytes = STORE_MAX_LOAD_BYTES } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const filename = path.join(dataDir, 'panel.json');
   const defaults = { schemaVersion: 1, users: [], servers: [], nodes: [], nodeProvisionJobs: [], versions: [], jobs: [], schedules: [], activity: [], settings: {} };
   let loaded = defaults;
-  if (!ephemeral && fs.existsSync(filename)) {
+  if (fs.existsSync(filename)) {
     const stat = fs.lstatSync(filename);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error('Panel store must be a regular unlinked file.');
     if (stat.size > maxLoadBytes) throw new Error(`Panel store exceeds the ${maxLoadBytes}-byte safe loading limit; preserve the original and review its history offline.`);
@@ -77,7 +77,7 @@ export function createStore(dataDir, { ephemeral = false, maxLoadBytes = STORE_M
       const candidate = retainStoreHistory(data, undefined, historyOptions());
       // Pruning participates in the same atomic commit. Do not replace history
       // arrays until rename succeeds; caller rollback keeps its prior references.
-      if (!ephemeral) {
+      {
         const temp = path.join(dataDir, `.vortex-store-${randomUUID()}.tmp`);
         let descriptor, created = false;
         try {
@@ -129,6 +129,6 @@ export function createStore(dataDir, { ephemeral = false, maxLoadBytes = STORE_M
     },
     exportHistory() { return { exportedAt: new Date().toISOString(), policy: store.historyPolicy(), activity: [...data.activity], jobs: [...data.jobs] }; },
   };
-  if (!ephemeral && data.users.length) store.save();
+  if (data.users.length) store.save();
   return store;
 }

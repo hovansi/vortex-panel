@@ -1,8 +1,8 @@
-# Cài node từ panel qua SSH · Vortex MC 0.8.0
+# Cài node từ panel qua SSH · Vortex Panel
 
 Quản trị viên nhập host/IP, cổng SSH, username và password hoặc private key để panel cài agent trên VPS. Quyền SSH cần là root thực; bản này không dùng sudo tương tác. Host phải là Ubuntu 22.04 trở lên, x86_64, có systemd, ít nhất 2 GiB đĩa trống và 1 GiB RAM. Các mức tài nguyên là policy preflight của panel, không phải bảo đảm đủ cho mọi server Minecraft.
 
-Từ 0.14.1, installer kiểm tra mô-đun cần cho hỗ trợ bộ nhớ bằng lệnh chỉ kiểm tra, không nạp mô-đun. Nếu còn thiếu, installer chỉ xét gói `linux-modules-extra-<kernel đang chạy>` có Candidate hợp lệ và mô phỏng kế hoạch APT trước khi cài đúng phiên bản đó. Có thể cài mới thêm `wireless-regdb` với phiên bản được ghim khi metadata của gói mô-đun yêu cầu trực tiếp và gói phụ thuộc chưa có. Installer từ chối giao dịch gói đang dang dở, nâng cấp/xóa gói đã có và mọi thay đổi gói khác. Không có kế hoạch phù hợp thì bỏ qua bước này; panel/agent vẫn cài bình thường. Không đổi kernel, không reboot, không tự bật hoặc thử lại tính năng hỗ trợ bộ nhớ. VPS dùng kernel riêng hoặc bị nhà cung cấp giới hạn có thể tiếp tục báo tính năng chưa khả dụng. Cơ chế ghim phiên bản và mô phỏng dùng các tùy chọn được mô tả trong [tài liệu APT của Ubuntu](https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html).
+Installer kiểm tra mô-đun cần cho hỗ trợ bộ nhớ bằng lệnh chỉ kiểm tra, không nạp mô-đun. Nếu còn thiếu, installer chỉ xét gói `linux-modules-extra-<kernel đang chạy>` có Candidate hợp lệ và mô phỏng kế hoạch APT trước khi cài đúng phiên bản đó. Có thể cài mới thêm `wireless-regdb` với phiên bản được ghim khi metadata của gói mô-đun yêu cầu trực tiếp và gói phụ thuộc chưa có. Installer từ chối giao dịch gói đang dang dở, nâng cấp/xóa gói đã có và mọi thay đổi gói khác. Không có kế hoạch phù hợp thì bỏ qua bước này; panel/agent vẫn cài bình thường. Không đổi kernel, không reboot, không tự bật hoặc thử lại tính năng hỗ trợ bộ nhớ. VPS dùng kernel riêng hoặc bị nhà cung cấp giới hạn có thể tiếp tục báo tính năng chưa khả dụng. Cơ chế ghim phiên bản và mô phỏng dùng các tùy chọn được mô tả trong [tài liệu APT của Ubuntu](https://manpages.ubuntu.com/manpages/noble/man8/apt-get.8.html).
 
 ## Hai bước xác nhận host
 
@@ -48,7 +48,5 @@ Staging đã thành công được dọn theo đúng UUID, realpath và inode/de
 - `start({...SSH fields,hostFingerprint,name,location?,publicAddress?,agentPort?},user)`: đồng bộ validate/commit job rồi chạy nền, trả public job. Không tự retry mutation khi mất kết nối.
 - `jobs()/getJob(id)`: chỉ record whitelist công khai. Router trung tâm phải yêu cầu Admin và áp Origin/CSRF như các mutation khác.
 - `close()`: dừng luồng điều khiển, đánh dấu kết quả gián đoạn và giải phóng kết nối, không gửi lệnh kill installer trên VPS.
-
-Tests dùng SSH2 server thật cho password/private-key auth, fingerprint trước auth, exec/SFTP bytes và abort. Hiệu ứng Ubuntu/APT/systemd được mô hình hóa trong tests source; không ghi các tests đó thành bằng chứng cài VPS thật. Xem riêng báo cáo nghiệm thu thực tế khi deployment tương ứng đã được thực hiện.
 
 Nguồn kỹ thuật: [ssh2 Client/hostVerifier](https://github.com/mscdex/ssh2#client-methods), [Node stream pipeline](https://nodejs.org/docs/latest-v22.x/api/stream.html#streampipelinesource-transforms-destination-callback).

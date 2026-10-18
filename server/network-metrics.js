@@ -169,7 +169,7 @@ export function createNetworkMetrics({ dataDir, platform = process.platform, run
   async function initialize() {
     if (initializeFlight) return initializeFlight;
     if (initialized) return capabilities(); initialized = true;
-    if (platform !== 'linux' || closed || process.env.NODE_TEST_CONTEXT && run === runNft) return capabilities();
+    if (platform !== 'linux' || closed) return capabilities();
     initializeFlight = (async () => {
       try {
         await ensureIdentity(); const current = await readTable();

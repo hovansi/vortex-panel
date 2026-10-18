@@ -1,4 +1,4 @@
-# Vortex MC 0.8.0 · Node agent
+# Vortex Panel · Node agent
 
 Node là dịch vụ điều khiển Bedrock trên một VPS riêng. Panel trung tâm giữ tài khoản, quyền và danh sách kết nối; mỗi node giữ runtime, world, backup, lịch và tiến trình của chính nó. Mất kết nối hoặc dừng panel trung tâm không gửi lệnh dừng node. Dừng/restart `vortex-node.service` mới thực hiện shutdown sạch các instance tại node, theo cơ chế resume/autostart hiện có.
 
@@ -65,19 +65,17 @@ Panel chuyển actor đã xác thực qua `X-Vortex-Actor`: base64url JSON `{id,
 
 Node giữ raw UUID. Panel trung tâm định danh tài nguyên remote bằng composite `<central-node-UUID>:<raw-agent-UUID>`, tránh trùng UUID giữa các node. Không đổi UUID trong store/world tại node.
 
-## Transport và phạm vi kiểm chứng
+## Transport và giới hạn kết nối
 
 `requestNode` chỉ nhận origin HTTPS, hoặc literal HTTP `127.0.0.1`/`[::1]`; không credentials/path/query/fragment trong endpoint, không theo redirect. HTTPS không pin dùng CA và hostname chuẩn; có pin thì đối chiếu certificate DER SHA-256 cùng khoảng hiệu lực. TLS handshake/pin hoàn tất **trước khi tạo HTTP request có Bearer hoặc đọc stream upload**. Pin explicit là trust cho đúng certificate đó, không cần certificate public-CA hoặc domain. Mỗi request dùng một socket riêng, không dùng lại socket chưa xác minh.
 
 JSON trả parsed body; lỗi HTTP không thành công giữ status/body. `stream:true` trả `{statusCode,status,headers,stream}`, kể cả status lỗi để proxy giữ phản hồi gốc. Caller cần abort/destroy khi browser ngắt và kiểm `X-Vortex-Node-Id` trước pipe. Mặc định JSON 8 MiB, stream 2 GiB +2 MiB và deadline 30 giây; caller có thể đặt cap/deadline phù hợp với upload/SSE, tối đa 4 GiB/15 phút. Timeout không chứng minh mutation chưa chạy: không tự retry thao tác ghi hoặc tạo server/job.
 
-Tests local tạo certificate ngẫu nhiên, HTTPS server thật và raw TLS observer để kiểm pin sai gửi zero application bytes/Bearer, upload chưa đọc, auth/role/scope, stream bytes, redirect, limits, truncation, deadline/abort, SSE và config persistence/rotation. Harness Bash chạy script installer trong cây fixture riêng để kiểm repeat giữ config/data, unit root/delegation và source/unit rollback khi readiness lỗi; dependency/systemd/ownership được mô hình hóa, Windows dùng junction cho activation fixture. Các tests này không chứng minh cài systemd trên nhiều VPS thật, firewall/cgroup kernel trên node mới hoặc client Minecraft. Chỉ ghi nghiệm thu Ubuntu/nhiều node sau khi đã chạy các phép thử tương ứng.
-
 Nguồn kỹ thuật: [Node.js TLS](https://nodejs.org/docs/latest-v22.x/api/tls.html), [HTTP agent/custom connection](https://nodejs.org/docs/latest-v22.x/api/http.html), [systemd resource delegation](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html#Delegate=).
 
 ## Kiểm tra và áp dụng cổng game qua UFW
 
-Admin có thể xem `GET /api/servers/:id/network-access`, rồi áp dụng bằng `POST` cùng đường dẫn với `{revision,confirmed:true}`. Có thể thực hiện khi game đang chạy vì đây là thay đổi UFW, không sửa cấu hình Bedrock. Revision gắn cả cấu hình mạng server lẫn rule UFW quan sát được; cấu hình hoặc rule đổi sau preview thì cần kiểm tra lại. Demo, tiến trình không phải Linux root, UFW không có hoặc không đọc được an toàn không được thay đổi firewall. UFW inactive giữ nguyên inactive; panel không enable/reset/đổi default policy.
+Admin có thể xem `GET /api/servers/:id/network-access`, rồi áp dụng bằng `POST` cùng đường dẫn với `{revision,confirmed:true}`. Có thể thực hiện khi game đang chạy vì đây là thay đổi UFW, không sửa cấu hình Bedrock. Revision gắn cả cấu hình mạng server lẫn rule UFW quan sát được; cấu hình hoặc rule đổi sau preview thì cần kiểm tra lại. Tiến trình không phải Linux root, UFW không có hoặc không đọc được an toàn không được thay đổi firewall. UFW inactive giữ nguyên inactive; panel không enable/reset/đổi default policy.
 
 RakNet dùng UDP cổng chính ở IPv4 và UDP cổng v6 ở IPv6. NetherNet dùng TCP signaling cổng chính và UDP nội bộ từ `server-udp-ports` ở cả hai family; ánh xạ NAT dùng các cổng internal. Cổng `server-portv6` riêng không được mở cho NetherNet; debugger không được mở. Dải liên tiếp được gộp, không mở toàn bộ dải cổng khác hoặc cổng agent.
 
@@ -87,4 +85,4 @@ Rule của Vortex có comment gồm hash thư mục data cùng UUID server. Mộ
 
 Response chỉ gồm cổng mong muốn, managed/obsolete rule của server, trạng thái `managed|covered|missing`, warnings và revision; không xuất toàn bộ rule foreign. `ok:true` nghĩa là trạng thái UFW yêu cầu đã được quan sát, không phải xác minh client game từ Internet. Lỗi sau một lượt ghi trả `partial:true` cùng các thay đổi đã xác nhận; không tuyên bố rollback các thay đổi firewall. Các thao tác Vortex cùng tiến trình được tuần tự hóa; thay đổi đồng thời từ quản trị viên/công cụ khác được kiểm tra lại trước từng lệnh, nhưng không có transaction UFW nhiều lệnh hoặc bảo đảm sau mất điện. Rule deny/limit hoặc cú pháp liên quan chưa phân tích an toàn cần xử lý thủ công. IPv6 bị tắt hoặc rule không xác nhận được sẽ không được ghi thành thành công.
 
-Mỗi lệnh UFW có deadline 10 giây, output tối đa 1 MiB, mỗi lượt reconcile tối đa khoảng hai phút cộng lệnh đang chạy. Tests source dùng fixture theo parser/semantics UFW, không thay thế nghiệm thu kernel/firewall thật. Nguồn: [Ubuntu UFW manual và prepend theo family](https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html), [UFW frontend xử lý vị trí IPv4/IPv6](https://sources.debian.org/src/ufw/0.36.2-9/src/frontend.py/), [UFW backend rule matching/insertion](https://sources.debian.org/src/ufw/0.36.2-9/src/backend_iptables.py/), [UFW exact comment matching](https://sources.debian.org/src/ufw/0.36.2-9/src/common.py/).
+Mỗi lệnh UFW có deadline 10 giây, output tối đa 1 MiB, mỗi lượt reconcile tối đa khoảng hai phút cộng lệnh đang chạy. Nguồn: [Ubuntu UFW manual và prepend theo family](https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html), [UFW frontend xử lý vị trí IPv4/IPv6](https://sources.debian.org/src/ufw/0.36.2-9/src/frontend.py/), [UFW backend rule matching/insertion](https://sources.debian.org/src/ufw/0.36.2-9/src/backend_iptables.py/), [UFW exact comment matching](https://sources.debian.org/src/ufw/0.36.2-9/src/common.py/).

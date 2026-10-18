@@ -19,7 +19,7 @@ const texts = {
   FIREWALL_INPUT: ['Confirm the inspected firewall revision before applying server-port rules.', 'Hãy xác nhận revision firewall vừa kiểm tra trước khi áp dụng rule cổng server.'],
   FIREWALL_STALE: ['Server network settings or firewall rules changed. Inspect again before applying.', 'Cấu hình mạng server hoặc rule firewall đã thay đổi. Hãy kiểm tra lại trước khi áp dụng.'],
   FIREWALL_NETWORK: ['The installed server must have a supported, validated network configuration.', 'Server đã cài cần có cấu hình mạng được hỗ trợ và kiểm tra hợp lệ.'],
-  FIREWALL_CONTEXT: ['Firewall controls require a native server and dedicated data directory.', 'Công cụ firewall cần server thực và thư mục dữ liệu riêng; không hoạt động trong demo.'],
+  FIREWALL_CONTEXT: ['Firewall controls require a native server and dedicated data directory.', 'Công cụ firewall cần server thực và thư mục dữ liệu riêng.'],
 };
 const present = key => ({ message: texts[key][0], messageI18n: { id: `panel.firewall.${key.toLowerCase()}`, en: texts[key][0], vi: texts[key][1], params: [] } });
 export function serverFirewallErrorPayload(error, language = 'en') {

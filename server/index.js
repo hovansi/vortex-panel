@@ -1,5 +1,4 @@
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -29,11 +28,11 @@ import { localeMiddleware, requestLanguage, localizeWebSocketEvent, formatPanelM
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageVersion = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')).version;
-export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), demo = process.env.DEMO_MODE === 'true', setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, hostnameController, powerController, zramController } = {}) {
+export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, hostnameController, powerController, zramController } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const releaseLock = demo ? () => {} : acquireDataLock(dataDir);
+  const releaseLock = acquireDataLock(dataDir);
   let store;
-  try { store = createStore(dataDir, { ephemeral: demo }); } catch (error) { releaseLock(); throw error; }
+  try { store = createStore(dataDir); } catch (error) { releaseLock(); throw error; }
   const app = express();
   let closing = false;
   app.disable('x-powered-by');
@@ -56,10 +55,10 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     return (editor || create ? editorJson : ordinaryJson)(req, res, next);
   });
   let secretVault;
-  try { secretVault = createSecretVault(dataDir, { ephemeral: demo }); } catch (error) { releaseLock(); throw error; }
+  try { secretVault = createSecretVault(dataDir); } catch (error) { releaseLock(); throw error; }
   let manager, nodes, provisioner, removal, systemPower, powerInfo, systemZram;
-  const systemHostname = hostnameController || createHostnameController({ demo });
-  const auth = createAuth({ store, demo, secretVault, ...(setupToken ? { setupToken } : {}), publicUrl: process.env.PUBLIC_URL || '', serverExists: id => (manager?.listServers() || store.data.servers).some(server => server.id === id) });
+  const systemHostname = hostnameController || createHostnameController();
+  const auth = createAuth({ store, secretVault, ...(setupToken ? { setupToken } : {}), publicUrl: process.env.PUBLIC_URL || '', serverExists: id => (manager?.listServers() || store.data.servers).some(server => server.id === id) });
   app.use('/api/auth', auth.router);
   const server = http.createServer(app);
   server.requestTimeout = 5 * 60 * 1000;
@@ -76,8 +75,8 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     }
   };
   try {
-    manager = await createManager({ store, dataDir, demo, emit }); await manager.initialize();
-    nodes = createNodes({ store, localManager: manager, dataDir, demo, emit });
+    manager = await createManager({ store, dataDir, emit }); await manager.initialize();
+    nodes = createNodes({ store, localManager: manager, dataDir, emit });
     provisioner = nodeProvisionerFactory({ nodes, store, projectDir, dataDir, emit });
     nodes.attachProvisioner(provisioner);
     manager = nodes.manager; await nodes.initialize();
@@ -92,9 +91,9 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
       }
       return manager.beginMaintenance(input);
     } };
-    systemPower = powerController || createSystemPowerController({ role: 'panel', nodeId: 'local', dataDir, store, demo, manager: hostManager });
+    systemPower = powerController || createSystemPowerController({ role: 'panel', nodeId: 'local', dataDir, store, manager: hostManager });
     powerInfo = await systemPower.read();
-    systemZram = zramController || createHostZramController({ role: 'panel', nodeId: 'local', dataDir, store, demo, manager: hostManager });
+    systemZram = zramController || createHostZramController({ role: 'panel', nodeId: 'local', dataDir, store, manager: hostManager });
     await systemZram.read();
   }
   catch (error) { await systemZram?.close?.(); await removal?.close?.(); await systemPower?.close?.(); await manager?.close(); releaseLock(); throw error; }
@@ -111,7 +110,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     req.fileAccess = match ? auth.fileAccess(req, decodeURIComponent(match[1])) : null;
     next();
   });
-  app.use('/api/host', auth.requireAdmin, createHostRouter({ store, dataDir, demo, powerController: systemPower, zramController: systemZram, reauthenticateAdmin: auth.reauthenticateAdmin, manager }));
+  app.use('/api/host', auth.requireAdmin, createHostRouter({ store, dataDir, powerController: systemPower, zramController: systemZram, reauthenticateAdmin: auth.reauthenticateAdmin, manager }));
   app.use('/api/nodes', createNodeRouter(nodes, { projectDir, provisioner, removal, store, hostnameController: systemHostname, powerController: systemPower, zramController: systemZram, reauthenticateAdmin: auth.reauthenticateAdmin }));
   app.use('/api', createRemoteServerProxy(nodes));
   app.use('/api', createRouter(manager, { dataDir, store }));
@@ -152,16 +151,15 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
 
 // systemd starts through the current release symlink; ESM resolves its real path.
 if (process.argv[1] && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))) {
-  const demo = process.env.DEMO_MODE === 'true';
-  const dataDir = demo ? path.join(os.tmpdir(), `bedrock-panel-demo-${process.pid}`) : path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data'));
-  const runtime = await createApp({ dataDir, demo });
-  const port = Number(process.env.PORT || (demo ? 3001 : 3000));
+  const dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data'));
+  const runtime = await createApp({ dataDir });
+  const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '127.0.0.1';
   runtime.server.once('error', async error => { console.error(translatePanelMessage(`Không thể chạy panel: ${error.message}`)); await runtime.close(); process.exit(1); });
   runtime.server.listen(port, host, () => {
-    console.log(`Vortex Panel ${demo ? '(DEMO)' : ''}: http://${host}:${port}`);
-    if (!demo && runtime.store.data.users.length === 0) console.log(`SETUP TOKEN: ${runtime.auth.setupToken}`);
+    console.log(`Vortex Panel: http://${host}:${port}`);
+    if (runtime.store.data.users.length === 0) console.log(`SETUP TOKEN: ${runtime.auth.setupToken}`);
   });
   let stopping = false;
-  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { if (stopping) return; stopping = true; const timeout = setTimeout(() => process.exit(1), 210000); timeout.unref(); await runtime.close(); if (demo) await (await import('node:fs/promises')).rm(dataDir, { recursive: true, force: true }); process.exit(0); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { if (stopping) return; stopping = true; const timeout = setTimeout(() => process.exit(1), 210000); timeout.unref(); await runtime.close(); process.exit(0); });
 }

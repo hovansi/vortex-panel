@@ -1,6 +1,6 @@
 # Third-party data attribution
 
-Vortex MC reads historical Bedrock Dedicated Server metadata from [EndstoneMC/bedrock-server-data](https://github.com/EndstoneMC/bedrock-server-data), branch `v2`. The demo includes 23 version identifiers derived from that registry; its packages and server operations remain simulated. Download URLs point to Mojang's CDN, and checksum provenance is explicitly community metadata.
+Vortex Panel reads historical Bedrock Dedicated Server metadata from [EndstoneMC/bedrock-server-data](https://github.com/EndstoneMC/bedrock-server-data), branch `v2`. Download URLs point to Mojang's CDN, and checksum provenance is explicitly community metadata.
 
 The Endstone metadata repository uses the MIT License below. This attribution covers the metadata/identifiers; Minecraft binaries remain subject to Mojang's applicable terms and are not bundled with the panel.
 

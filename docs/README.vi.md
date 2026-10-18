@@ -4,7 +4,7 @@
 
 [English](../README.md) · [Cài đặt](INSTALL.md) · [Node.js/Python](applications.md) · [Kết nối VPS](NODES.md)
 
-Vortex Panel quản lý **Minecraft Bedrock, ứng dụng Node.js và Python** trên Ubuntu qua một workspace chung. Giao diện có sáng/tối, hỗ trợ máy tính/điện thoại và hai ngôn ngữ **EN/VI**, mặc định English. Tác giả: **@CallMeHak**.
+Vortex Panel quản lý **Minecraft Bedrock, ứng dụng Node.js và Python** trên Ubuntu qua một workspace chung. Giao diện có sáng/tối, hỗ trợ máy tính/điện thoại và hai ngôn ngữ **EN/VI**, mặc định English. Tác giả: **@hovansi**.
 
 ## Cài bằng một lệnh
 
@@ -49,17 +49,16 @@ Thao tác tệp và backup của Node.js/Python yêu cầu dừng ứng dụng. 
 - [API](API.md)
 - [Nguồn và giấy phép bên thứ ba](THIRD_PARTY.md)
 
-## Phát triển trên máy cá nhân
+## Chạy từ source đã kiểm tra
 
-Node.js 22+:
+Môi trường vận hành hỗ trợ là Ubuntu 22.04+ x86_64, Node.js 22 trở lên:
 
 ```bash
 npm ci
 npm run check
-npm test
-npm run demo
+npm start
 ```
 
-Mở `http://127.0.0.1:3001`. Demo có nhãn rõ và mô phỏng thao tác server. Windows dùng để phát triển/preview UI; workload và điều khiển host thực cần môi trường Linux được hỗ trợ.
+Dùng setup token riêng được in trong terminal để tạo Admin đầu tiên. Mặc định ứng dụng lắng nghe tại `127.0.0.1:3000`; xem [hướng dẫn cài đặt](INSTALL.md) để có systemd và HTTPS. Source công khai và ZIP phát hành chỉ gồm runtime, installer, script đóng gói và tài liệu vận hành. Công cụ kiểm thử nội bộ, dữ liệu runtime và thông tin riêng không được đóng gói.
 
 Báo lỗi tại [GitHub Issues](https://github.com/hovansi/vortex-panel/issues), kèm phiên bản panel/Ubuntu và log đã che thông tin riêng. Không đăng mật khẩu, token, cookie hoặc tệp bí mật vào issue công khai.

@@ -156,7 +156,7 @@ function versions(record, locale) {
   return localized;
 }
 const authDetails = Object.freeze({
-  'auth.demo': 'Mở phiên trải nghiệm demo', 'auth.setup': 'Tạo tài khoản quản trị',
+  'auth.setup': 'Tạo tài khoản quản trị',
   'auth.login': 'Đăng nhập', 'auth.mfa.login': 'Đăng nhập với xác thực hai bước',
   'auth.password': 'Đổi mật khẩu', 'auth.mfa.enable': 'Bật xác thực hai bước',
   'auth.mfa.disable': 'Tắt xác thực hai bước', 'auth.mfa.recovery': 'Tạo lại mã khôi phục',
@@ -179,7 +179,6 @@ export function localizePanelLog(record, locale) {
 function packs(record, locale) {
   if (!record || typeof record !== 'object') return record;
   let localized = messages(record, 'errors', locale);
-  if (record.simulated === true) localized = field(localized, 'description', locale);
   if (record.generatedName === true) localized = field(localized, 'name', locale);
   return localized;
 }

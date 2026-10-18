@@ -71,8 +71,8 @@ export function mapNodeResponse(node, value, state) {
   return result;
 }
 
-export function createNodes({ store, localManager, dataDir, demo = false, emit = () => {}, request = requestNode }) {
-  const secrets = createNodeSecrets(dataDir, { ephemeral: demo });
+export function createNodes({ store, localManager, dataDir, emit = () => {}, request = requestNode }) {
+  const secrets = createNodeSecrets(dataDir);
   const states = new Map(), inFlight = new Map(), locks = new Set(), actor = new AsyncLocalStorage();
   const streams = new Map(), retryTimers = new Map(), retryCounts = new Map(), networkCache = new Map();
   const eventTimers = new Map(), eventDirty = new Set();
@@ -97,7 +97,6 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
   const naming = createNodeNaming(store);
   const get = id => store.data.nodes.find(row => row.id === id) || fail('Node was not found.', 404);
   const requireOpen = () => { if (closed) fail('The panel is shutting down.', 503); };
-  const requireReal = () => { requireOpen(); if (demo) fail('Remote nodes are unavailable in demo mode.', 409); };
   const assertLocalMutation = () => { if (localManager.maintenanceStatus?.()?.active) fail('A main-panel system operation is pending. Wait for it to finish before changing a linked VPS.', 409); };
   const stateOf = node => states.get(node.id) || { online: false, lastSeen: node.lastSeen, error: null, snapshot: null };
   const credentials = node => {
@@ -231,7 +230,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     return validateSnapshot(node, await call(node, { path: '/api/node/snapshot', timeoutMs: 10000 }));
   }
   async function refresh(id, { force = false } = {}) {
-    const node = get(id); if (closed || demo) return;
+    const node = get(id); if (closed) return;
     const state = stateOf(node);
     if (!force && Date.now() - (Date.parse(state.sampledAt || '') || 0) < 4500) return state;
     if (inFlight.has(id)) return inFlight.get(id);
@@ -245,7 +244,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     inFlight.set(id, run); return run;
   }
   function refreshAll() {
-    if (closed || demo) return Promise.resolve();
+    if (closed) return Promise.resolve();
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       const ids = store.data.nodes.map(row => row.id);
@@ -277,7 +276,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     retry.unref(); retryTimers.set(id, retry);
   }
   async function startEvents(id) {
-    if (closed || demo || streams.has(id)) return;
+    if (closed || streams.has(id)) return;
     const node = get(id), abort = new AbortController(); streams.set(id, abort);
     try {
       const result = await request(credentials(node), { path: '/api/node/events', stream: true, signal: abort.signal, timeoutMs: 330000, maxBytes: 16 * 1024 ** 2 });
@@ -354,7 +353,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     return [{ id: 'local', name: localName(), endpoint: null, publicAddress: localTag({}).nodeAddress || local.host?.publicAddress || '', location: local.host?.location?.label || '', locationSource: local.host?.location?.status === 'known' ? 'ip-geolocation' : 'unknown', maintenance: false, local: true, online: true, status: 'online', stale: false, lastSeen: now(), hostSampledAt: local.host?.sampledAt || now(), latencyMs: 0, error: null, version: panelVersion, agentId: null, fingerprint: null, hasToken: false, controlPlane, host: local.host, capabilities: local.capabilities, portAllocation: supportsAutomaticPorts(local.capabilities?.portAllocation) ? local.capabilities.portAllocation : null, serverCount: local.servers.length, runningServers: local.servers.filter(s => s.status === 'running').length, ...networkSummary(local.servers) }, ...store.data.nodes.map(publicNode)];
   }
   async function locked(id, callback) {
-    if (id === 'local') requireOpen(); else requireReal();
+    requireOpen();
     if (locks.has(id)) fail('A node configuration operation is already pending.', 409);
     locks.add(id); try { return await callback(); } finally { locks.delete(id); }
   }
@@ -392,7 +391,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     });
   }
   function add(input, user) {
-    requireReal();
+    requireOpen();
     const run = addTail.then(() => addImmediate(input, user));
     addTail = run.catch(() => {}); return run;
   }
@@ -465,7 +464,7 @@ export function createNodes({ store, localManager, dataDir, demo = false, emit =
     });
   }
   function requireAvailable(id, { create = false, mutating = false } = {}) {
-    requireReal(); const node = get(id);
+    requireOpen(); const node = get(id);
     if ((create || mutating) && (node.removalOperationId || removal?.isRemoving(id))) fail('This VPS is being uninstalled or requires uninstall verification.', 409);
     if ((create || mutating) && locks.has(id)) fail('A node configuration operation is already pending.', 409);
     if (!stateOf(node).online) fail('Node is offline. Its servers may still be running; no command was queued.', 503);

@@ -79,7 +79,7 @@ function safePlan(value, node) {
 }
 const validProof = (value, job) => value?.schemaVersion === 1 && value.nodeId === job.agentId && value.requestId === job.requestId && value.verified === true && value.inventoryEmpty === true && value.serviceRemoved === true && value.filesVerified === true && value.processesAbsent === true && value.mountsAbsent === true && value.firewallRemoved === true && value.networkCountersRemoved === true && value.zramRemoved === true && Array.isArray(value.remainingOwnedPaths) && value.remainingOwnedPaths.length === 0;
 
-export function createNodeRemovalAgent({ nodeId, dataDir, manager, demo = false, configFile = '/etc/vortex-node.json', execFile = promisify(nativeExecFile), platform = process.platform, uid = process.getuid?.(), helperPath = new URL('./node-removal.py', import.meta.url) } = {}) {
+export function createNodeRemovalAgent({ nodeId, dataDir, manager, configFile = '/etc/vortex-node.json', execFile = promisify(nativeExecFile), platform = process.platform, uid = process.getuid?.(), helperPath = new URL('./node-removal.py', import.meta.url) } = {}) {
   if (!UUID.test(nodeId || '') || !dataDir || !manager) throw new Error('Worker removal requires a fixed node identity and manager.');
   const filename = path.join(dataDir, '.removal-intent.json');
   const helper = helperPath instanceof URL ? fileURLToPath(helperPath) : path.resolve(helperPath);
@@ -95,7 +95,7 @@ export function createNodeRemovalAgent({ nodeId, dataDir, manager, demo = false,
   })();
   async function plan() {
     await initialize();
-    if (demo || platform !== 'linux' || uid !== 0 || configFile !== '/etc/vortex-node.json') return decorate({ schemaVersion: 1, agentId: nodeId, revision: createHash('sha256').update(nodeId).digest('hex'), status: 'unsupported', serverCount: manager.listServers().length, blockers: [{ code: 'REMOVAL_UNSUPPORTED', message: 'Verified uninstall requires the standard managed Linux worker layout.' }], components: [], sshRequired: true, legacyOwnership: true, fullyClean: false });
+    if (platform !== 'linux' || uid !== 0 || configFile !== '/etc/vortex-node.json') return decorate({ schemaVersion: 1, agentId: nodeId, revision: createHash('sha256').update(nodeId).digest('hex'), status: 'unsupported', serverCount: manager.listServers().length, blockers: [{ code: 'REMOVAL_UNSUPPORTED', message: 'Verified uninstall requires the standard managed Linux worker layout.' }], components: [], sshRequired: true, legacyOwnership: true, fullyClean: false });
     const { stdout } = await execFile('/usr/bin/python3', [helper, 'plan', '--node-id', nodeId], { timeout: 30000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, shell: false });
     const value = JSON.parse(stdout);
     if (value.agentId !== nodeId || !SHA.test(value.revision || '')) throw fail('Worker ownership inventory could not be verified.', 502);

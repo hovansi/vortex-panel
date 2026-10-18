@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
   <title id="title">Vortex Panel</title>
-  <desc id="desc">One workspace for Minecraft Bedrock, Node.js and Python. Ubuntu. English and Vietnamese. Created by CallMeHak.</desc>
+  <desc id="desc">One workspace for Minecraft Bedrock, Node.js and Python. Ubuntu. English and Vietnamese. Created by hovansi.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#201a36"/><stop offset="1" stop-color="#111b2c"/></linearGradient>
     <linearGradient id="mark" x2="1" y2="1"><stop stop-color="#a789ff"/><stop offset=".5" stop-color="#7760ef"/><stop offset="1" stop-color="#494ad2"/></linearGradient>
@@ -49,5 +49,5 @@
     <text x="75" y="55" font-size="12" fill="#aaa5bf">Provision · allocate · observe</text>
     <circle cx="378" cy="38" r="4" fill="#9fbef5"/>
   </g>
-  <text x="57" y="339" fill="#89849e" font-family="Segoe UI,Arial,sans-serif" font-size="12">Created by @CallMeHak</text>
+  <text x="57" y="339" fill="#89849e" font-family="Segoe UI,Arial,sans-serif" font-size="12">Created by @hovansi</text>
 </svg>

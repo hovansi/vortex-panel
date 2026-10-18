@@ -1,12 +1,12 @@
 # Maintainer release guide
 
-Vortex Panel is published from [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel). The default README is English, with a [Vietnamese overview](README.vi.md). Author attribution is **@CallMeHak**. Public releases distribute source, installation helpers and documentation; application/server data belongs outside the repository.
+Vortex Panel is published from [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel). The default README is English, with a [Vietnamese overview](README.vi.md). Author attribution is **@hovansi**. Public releases distribute source, installation helpers and documentation; application/server data belongs outside the repository.
 
 ## Release contract
 
-The examples below use **0.17.1**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the tested commit.
+The examples below use **0.18.0**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the validated commit.
 
-The workflow tests on Ubuntu 22.04 and 24.04 before packaging. It creates a draft release, uploads and verifies all four assets, then publishes the draft. An existing draft or published release is an explicit stop condition; the workflow never overwrites assets or automatically replays a failed publication.
+The workflow validates production source on Ubuntu 22.04 and 24.04 before packaging. It creates a draft release, uploads and verifies all four assets, then publishes the draft. An existing draft or published release is an explicit stop condition; the workflow never overwrites assets or automatically replays a failed publication.
 
 | Asset | Purpose |
 | --- | --- |
@@ -20,15 +20,14 @@ The generic source downloader remains `deploy/bootstrap.sh`. The builder substit
 ## Prepare a version
 
 1. Review the final source diff, public documentation, dependency changes and installation behavior. Bump `package.json` and the top-level/root-package versions in `package-lock.json` together.
-2. Run source checks, tests and shell syntax checks. Treat fixture tests, native Linux checks, clean-host installation, upgrades and live production behavior as separate evidence.
+2. Run production source and shell syntax checks, build the archive, and inspect its inventory. Validate installation and upgrade behavior separately on an appropriate Ubuntu host.
 3. Review the public inventory and every staged path. Keep credentials, `.env` variants, private keys, server data, local output, dependencies, backups and private operational receipts out of Git history and release assets.
 4. Build into a new output directory; the builder refuses to overwrite an existing artifact directory.
 
 ```bash
 npm ci
 npm run check
-npm test
-node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.17.1
+node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.18.0
 ```
 
 Build from a clean checkout of the intended commit when comparing local source bytes with CI. `.gitattributes` standardizes text files to LF; the source archive records the bytes actually collected by its builder.
@@ -38,20 +37,20 @@ Build from a clean checkout of the intended commit when comparing local source b
 Upload or commit the reviewed public source on `main`, then:
 
 1. Open the repository's **Actions** tab and choose **Release**.
-2. Select **Run workflow**, choose branch **main** and enter **`v0.17.1`** in the tag input.
+2. Select **Run workflow**, choose branch **main** and enter **`v0.18.0`** in the tag input.
 3. Run the workflow and follow both Ubuntu verification jobs and the publication job.
 
-The verification jobs test the selected source commit first. The publisher creates the requested tag only if it is missing and binds it to that same commit. An existing tag must already resolve to the tested commit; a conflicting tag stops publication. A newly created tag is not automatically recreated after an uncertain response.
+The verification jobs validate the selected production source commit first. The publisher creates the requested tag only if it is missing and binds it to that same commit. An existing tag must already resolve to the validated commit; a conflicting tag stops publication. A newly created tag is not automatically recreated after an uncertain response.
 
-For later releases, replace `v0.17.1` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
+For later releases, replace `v0.18.0` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
 
 ### Alternative: push a tag
 
 The workflow also retains its tag-push trigger. After committing the reviewed source, create and push a tag pointing to that exact commit:
 
 ```bash
-git tag -a v0.17.1 -m "Vortex Panel 0.17.1"
-git push origin v0.17.1
+git tag -a v0.18.0 -m "Vortex Panel 0.18.0"
+git push origin v0.18.0
 ```
 
 Choose one trigger for a release. Do not dispatch a second run while a tag-triggered release is active. If a prior run stopped after a mutation, inspect its remote tag/release state before deciding how to continue; publication never silently resumes or overwrites an existing draft.
@@ -68,9 +67,9 @@ A partial draft or uncertain publish result needs inspection. The workflow delib
 
 ### Inspect a partial publication
 
-Record the existing release ID, tag and tested source commit before taking further action. Inspect the release through its authenticated ID endpoint or the repository's Releases interface; a public tag lookup alone is insufficient for drafts.
+Record the existing release ID, tag and validated source commit before taking further action. Inspect the release through its authenticated ID endpoint or the repository's Releases interface; a public tag lookup alone is insufficient for drafts.
 
-Manual completion requires a separate, deliberate verification of that same release: the tag must still name the tested commit, and all four audited artifacts must match their expected names, sizes and SHA-256 digests. Only missing assets from that exact audited build may be added; do not replace an existing asset or move the tag to another commit. Publish the inspected draft only after the complete asset set is verified, then verify its published ID and public downloads.
+Manual completion requires a separate, deliberate verification of that same release: the tag must still name the validated commit, and all four audited artifacts must match their expected names, sizes and SHA-256 digests. Only missing assets from that exact audited build may be added; do not replace an existing asset or move the tag to another commit. Publish the inspected draft only after the complete asset set is verified, then verify its published ID and public downloads.
 
 If any identity or byte comparison fails, stop and preserve the evidence. Correct a published release by preparing a new version/tag instead of replacing its files. Do not blindly delete a draft, overwrite assets or replay an uncertain mutation.
 
@@ -92,5 +91,3 @@ CI has read-only repository permissions. The release verification jobs are also 
 | `actions/setup-node` | [v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0) | [949feb2413d6458794dcd2491c4babbbce0c15c1](https://github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1) |
 
 The actions use Node.js 24 internally and select Node.js 22 for this project's commands. Update action pins through a reviewed change. See GitHub's [secure workflow guidance](https://docs.github.com/en/actions/reference/security/secure-use).
-
-`test/release-workflows.test.js` runs the actual inline publication code against synthetic filesystem/GitHub CLI boundaries. It tests ordering and refusal paths without publishing. A passing local suite is distinct from a completed real GitHub Actions run or clean-host installation.

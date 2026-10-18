@@ -83,8 +83,3 @@ export function compareVersions(a, b) {
   for (let i = 0; i < 4; i++) if (left[i] !== right[i]) return right[i] - left[i];
   return a.channel.localeCompare(b.channel);
 }
-
-// Real identifiers, simulated packages: the demo never downloads or runs BDS.
-export function demoHistory() {
-  return ['1.26.51.1', '1.26.45.1', '1.26.44.3', '1.26.43.1', '1.26.42.1', '1.26.40.8', '1.26.36.1', '1.26.34.3', '1.26.33.1', '1.26.32.2', '1.26.31.1', '1.26.30.5', '1.26.23.1', '1.26.21.1', '1.26.20.5', '1.26.14.1', '1.26.13.1', '1.26.12.2', '1.26.11.1', '1.26.10.4', '1.26.3.1', '1.26.2.1', '1.26.1.1'].map(version => ({ version, channel: 'stable', url: null, available: true, cached: false, historical: true, source: 'demo', simulated: true, discoveredAt: new Date().toISOString() }));
-}

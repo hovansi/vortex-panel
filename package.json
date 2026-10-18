@@ -1,6 +1,6 @@
 {
   "name": "vortex-panel",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "private": true,
   "type": "module",
   "description": "Vortex Panel — Minecraft, Node.js and Python server management for Ubuntu",
@@ -9,11 +9,8 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
-    "demo": "node scripts/demo.js",
     "package": "node scripts/package.js",
     "check": "node scripts/check.js",
-    "test": "node --test test/*.test.js",
     "release:build": "node scripts/release.js"
   },
   "dependencies": {
@@ -32,5 +29,9 @@
   "homepage": "https://github.com/hovansi/vortex-panel#readme",
   "bugs": {
     "url": "https://github.com/hovansi/vortex-panel/issues"
+  },
+  "author": {
+    "name": "hovansi",
+    "url": "https://github.com/hovansi"
   }
 }

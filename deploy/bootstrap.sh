@@ -116,7 +116,7 @@ MAX_EXPANDED = 64 * MIB
 MAX_MEMBER = 4 * MIB
 MAX_MEMBERS = 4096
 ROOT_FILES = {'package.json', 'package-lock.json', 'README.md', '.gitignore', '.gitattributes', '.env.example', 'LICENSE', 'LICENSE.md', 'NOTICE'}
-ROOT_DIRS = {'server', 'public', 'deploy', 'scripts', 'docs', 'test'}
+ROOT_DIRS = {'server', 'public', 'deploy', 'scripts', 'docs'}
 PRIVATE_PARTS = {'output', 'data', 'node_modules', '.playwright-cli', 'coverage', '.git', '__pycache__',
                  'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', '.ds_store', 'thumbs.db',
                  'vortex-access.json', 'live-client-api.py'}

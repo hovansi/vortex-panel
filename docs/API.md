@@ -1,4 +1,4 @@
-# Vortex Panel 0.15.5 API
+# Vortex Panel API
 
 JSON errors use `{ "error": "message" }`. Downloads return attachments. API responses have `Cache-Control: no-store`. Mutations require same-origin requests and `X-CSRF-Token` from authentication. Sessions use an HttpOnly, SameSite=Strict cookie. Admin alone can access host and privileged administration.
 
@@ -10,20 +10,19 @@ Known panel-owned message fields may include corresponding `*I18n` metadata `{id
 
 | Method / path | Body | Response |
 | --- | --- | --- |
-| GET `/api/auth/status` | — | `{setupRequired,authenticated,user?,csrfToken?,demo}` |
+| GET `/api/auth/status` | — | `{setupRequired,authenticated,user?,csrfToken?}` |
 | POST `/api/auth/setup` | `{token,username,password}` | Auth response; initial account only |
 | POST `/api/auth/login` | `{username,password}` | Auth response or MFA challenge |
-| POST `/api/auth/demo` | — | Explicit fixture login in demo only; live mode returns 404 |
 | POST `/api/auth/mfa/verify` | `{challengeToken,code}` | Auth response after valid TOTP/recovery |
 | POST `/api/auth/logout` | — | `{ok:true}` |
 | POST `/api/auth/password` | `{currentPassword,password}` | `{ok:true}`, revokes other sessions |
-| GET `/api/auth/mfa` | — | `{enabled,recoveryCodesRemaining,demo}` |
+| GET `/api/auth/mfa` | — | `{enabled,recoveryCodesRemaining}` |
 | POST `/api/auth/mfa/setup` | `{password}` | `{secret,otpauthUrl,qrDataUrl,expiresIn:600}` |
 | POST `/api/auth/mfa/enable` | `{code}` | `{enabled:true,recoveryCodes:[...]}` |
 | POST `/api/auth/mfa/disable` | `{password,code}` | `{ok:true}` |
 | POST `/api/auth/mfa/recovery` | `{password,code}` | `{recoveryCodes:[...]}` |
 
-Login challenge: `{authenticated:false,mfaRequired:true,challengeToken,expiresIn:300,demo}`. It grants no authenticated cookie. Maximum five factor attempts per challenge plus IP/account limits. TOTP uses SHA1, six digits, a 30-second counter, one-step clock drift and replay protection. Recovery codes are hashed and consumed once. Setup is bound to the current session/version. Changes commit before sessions/permissions become effective.
+Login challenge: `{authenticated:false,mfaRequired:true,challengeToken,expiresIn:300}`. It grants no authenticated cookie. Maximum five factor attempts per challenge plus IP/account limits. TOTP uses SHA1, six digits, a 30-second counter, one-step clock drift and replay protection. Recovery codes are hashed and consumed once. Setup is bound to the current session/version. Changes commit before sessions/permissions become effective.
 
 Changing your own password requires the current password. Current-password verification is limited to five attempts per account in a 15-minute window, shared across its sessions; further attempts return HTTP 429 with `Retry-After`. A successful change clears this action's counter and preserves the current session while revoking other sessions. This limit does not disable the account or block login.
 
@@ -59,11 +58,11 @@ These paths start with `/api`. Assigned Operator may manage; assigned Viewer may
 | POST `/servers/:id/stop` | — | `{server}` |
 | POST `/servers/:id/restart` | — | `{server}` |
 | POST `/servers/:id/kill` | — | `{server}` |
-| POST `/servers/:id/command` | `{command}` | `{ok:true,acceptedToConsole,simulated,auditRecorded,warnings?}` |
+| POST `/servers/:id/command` | `{command}` | `{ok:true,acceptedToConsole,auditRecorded,warnings?}` |
 | POST `/servers/:id/announcement` | `{templateId,values?,expectedLanguage?,method?:"say"\|"tellraw"}` | Same console acknowledgement plus `{announcement}`, running only |
 | GET `/servers/:id/logs` | — | `{logs:[{time,level,message,runId}],runId}` |
 | GET `/servers/:id/activity` | — | `{activity}`, assigned read, exact server ID filtered before latest-100 limit |
-| GET `/servers/:id/metrics` | — | `{history,sampleIntervalMs:5000,retentionSeconds:600,demo}` |
+| GET `/servers/:id/metrics` | — | `{history,sampleIntervalMs:5000,retentionSeconds:600}` |
 | GET `/servers/:id/properties` | — | `{properties:{key:value}}` |
 | PUT `/servers/:id/properties` | `{properties:{key:value}}` | `{ok:true}` |
 | GET `/servers/:id/configuration` | — | `{server,properties,network}` |
@@ -92,7 +91,7 @@ New creation and Bedrock clone requests accept `portAllocation:"auto"` with no n
 
 Announcements require manage permission on the exact server and a running owned runtime. Top-level keys are strict; the body cannot override the server language or supply a raw command. A stale `expectedLanguage` returns HTTP409 before writing. Templates: `welcome,restart,backup,restore,maintenance,custom`; field definitions/limits follow [server messages](SERVER-MESSAGES.md). Response `announcement:{templateId,language,method,minecraftMessage,preview,plainText,normalizedValues,changedFields}` is opaque to localization.
 
-`acceptedToConsole:true` means the native stdin line was enqueued, not that a player received it. Explicit demo returns `acceptedToConsole:false,simulated:true`. A subsequent log/audit failure returns warnings with the accepted result to avoid inviting duplicate sends. Announcing an operation does not execute it. Automatic welcome waits for a correlated native Player Spawned event; graceful interruptions announce an accurate three seconds when enabled and players are online. Optional notice failure never blocks safe shutdown.
+`acceptedToConsole:true` means the native stdin line was enqueued, not that a player received it. A subsequent log/audit failure returns warnings with the accepted result to avoid inviting duplicate sends. Announcing an operation does not execute it. Automatic welcome waits for a correlated native Player Spawned event; graceful interruptions announce an accurate three seconds when enabled and players are online. Optional notice failure never blocks safe shutdown.
 
 The player add/edit/delete UI sends the revision captured when its form opened. An intervening change to either list rejects the save, keeps the draft open and offers an explicit reload before review and retry. Editing keeps the target XUID immutable. The browser does not silently merge concurrent list changes.
 
@@ -100,16 +99,16 @@ The player add/edit/delete UI sends the revision captured when its form opened. 
 
 | Method / path | Body / query | Response |
 | --- | --- | --- |
-| GET `/servers/:id/files` | `?path=` | `{path,files:[...],demo,limits}` |
-| GET `/servers/:id/file` | `?path=` | `{path,content,revision,editable,protection,demo}` |
-| PUT `/servers/:id/file` | `{path,content,revision}` | `{ok:true,path,revision,demo,content?}`, existing text file only |
-| POST `/servers/:id/files/create` | `{path,content}` | 201 `{ok:true,path,revision,demo}`, new text file only |
+| GET `/servers/:id/files` | `?path=` | `{path,files:[...],limits}` |
+| GET `/servers/:id/file` | `?path=` | `{path,content,revision,editable,protection}` |
+| PUT `/servers/:id/file` | `{path,content,revision}` | `{ok:true,path,revision,content?}`, existing text file only |
+| POST `/servers/:id/files/create` | `{path,content}` | 201 `{ok:true,path,revision}`, new text file only |
 | POST `/servers/:id/files/mkdir` | `{path}` | `{ok:true}` |
 | POST `/servers/:id/files/rename` | `{source,destination}` | `{ok:true,source,destination}`, full new relative path |
-| POST `/servers/:id/files/move` | `{sources:[...],destination}` or legacy `{source,destination}` | Batch `{ok:true,operation,paths,demo}`; single `{ok:true,source,destination}` |
-| POST `/servers/:id/files/copy` | `{sources:[...],destination}` | `{ok:true,operation,paths,demo}` |
-| POST `/servers/:id/files/compress` | `{sources:[...],destination:"new.zip"}` | `{ok:true,operation,paths,demo}` |
-| POST `/servers/:id/files/extract` | `{source:"existing.zip",destination:"new-folder"}` | `{ok:true,operation,paths,demo}` |
+| POST `/servers/:id/files/move` | `{sources:[...],destination}` or legacy `{source,destination}` | Batch `{ok:true,operation,paths}`; single `{ok:true,source,destination}` |
+| POST `/servers/:id/files/copy` | `{sources:[...],destination}` | `{ok:true,operation,paths}` |
+| POST `/servers/:id/files/compress` | `{sources:[...],destination:"new.zip"}` | `{ok:true,operation,paths}` |
+| POST `/servers/:id/files/extract` | `{source:"existing.zip",destination:"new-folder"}` | `{ok:true,operation,paths}` |
 | POST `/servers/:id/files/upload` | Multipart `file`, `?path=` | `{ok:true}` |
 | DELETE `/servers/:id/file` | `?path=` | `{ok:true}` |
 | GET `/servers/:id/files/download` | `?path=` | Attachment |
@@ -119,7 +118,7 @@ The player add/edit/delete UI sends the revision captured when its form opened. 
 | GET `/servers/:id/backups/:backupId/download` | — | Attachment |
 | DELETE `/servers/:id/backups/:backupId` | — | `{ok:true,warnings?,cleanupPending?}` |
 
-All file writes require scoped manage rights and an exclusive instance operation lock. Ordinary user files can be changed while the server is running; active world data and live configuration still require a stopped server. Protected runtime/identity changes require an Admin advanced-file grant with password and risk confirmation; grants are bound to this session/server and expire after ten minutes. Viewer only reads/downloads; response capability hints are masked for the actor, and HTTP still enforces ACLs. These file operations return after the synchronous workflow completes; they do not return a background job ID. Entries expose `protected,protection,simulated,capabilities:{read,edit,download,copy,move,rename,delete,compress,extract}` beside name/path/type/size/mtime. Folder descendant checks may still reject an operation whose top-level row looked eligible.
+All file writes require scoped manage rights and an exclusive instance operation lock. Ordinary user files can be changed while the server is running; active world data and live configuration still require a stopped server. Protected runtime/identity changes require an Admin advanced-file grant with password and risk confirmation; grants are bound to this session/server and expire after ten minutes. Viewer only reads/downloads; response capability hints are masked for the actor, and HTTP still enforces ACLs. These file operations return after the synchronous workflow completes; they do not return a background job ID. Entries expose `protected,protection,capabilities:{read,edit,download,copy,move,rename,delete,compress,extract}` beside name/path/type/size/mtime. Folder descendant checks may still reject an operation whose top-level row looked eligible.
 
 GET files returns the full immediate-directory metadata collection. Pagination is currently client-side: 100 rows per page, search/sort across that collection, selection retained across pages with at most 1,000 selected sources. Select-all applies to the current page. The response has no cursor/offset and should not be interpreted as server-side pagination. Runtime protection compiles exact paths and ancestor prefixes once per operation/list; guarded writes still validate the complete selected tree.
 
@@ -129,7 +128,7 @@ The editor reads well-formed UTF-8 text up to 2 MiB and returns SHA-256 of actua
 
 Compression preserves full instance-relative entries and empty directories. For example, selecting `notes/a.txt` creates `notes/a.txt` inside the ZIP; extracting to `imports` creates `imports/notes/a.txt`. Extraction supports ZIP only, requires a new destination folder and never merges into an existing folder. Input ZIP size and cumulative expanded data are each limited to 2 GiB, with at most 50,000 file/directory paths including implicit parents. CRC32/size checks, file-directory conflicts, symlinks and protected target descendants are verified before live activation. CRC checks integrity, not archive publisher identity. Operations stage on the same filesystem and need temporary space for copied data and ZIP output.
 
-Demo uses metadata snapshots. ZIP generated in demo is explicitly simulated, can be extracted only through the matching simulated workflow and cannot be downloaded as a real ZIP. An uploaded ZIP marker is not a parsed archive. Backup/restore limit remains 2 GiB uncompressed/50,000 entries. `backupRetention` is 1–50, default 10; pruning follows a successful backup. Update backs up before replacing runtime. Clone copies an independent stopped world with distinct ports and NetherNet identity.
+Backup/restore limit remains 2 GiB uncompressed/50,000 entries. `backupRetention` is 1–50, default 10; pruning follows a successful backup. Update backs up before replacing runtime. Clone copies an independent stopped world with distinct ports and NetherNet identity.
 
 Backup creation commits the new catalog array and `backup.create` actor audit after the archive completes. An observed metadata failure restores the old catalog and removes only the uncommitted new archive; cleanup failure reports its unlisted recovery path in the failed job. Server/backup deletion and retention rename owned bytes into same-parent private quarantine, then commit metadata and the actor audit together. A failed commit restores prior arrays, ACLs/schedules and bytes. A missing backup ZIP may have its damaged catalog record removed safely.
 
@@ -143,10 +142,10 @@ All paths below start with `/api/servers/:id`. GET metadata requires assigned re
 
 | Method / suffix | Body | Response |
 | --- | --- | --- |
-| GET `/worlds` | — | `{worlds,current,pending,limits,demo,validationMode,warnings}` |
+| GET `/worlds` | — | `{worlds,current,pending,limits,validationMode,warnings}` |
 | POST `/worlds/import` | Multipart `file` (`.mcworld`/`.zip`), `name` | 202 `{job}`; completed `job.result:{world,selected:false}` |
-| POST `/worlds/select` | `{name}` | `{world,configuration,demo}` |
-| POST `/worlds/create` | `{name,seed?:string}` | 201 `{world,configuration,demo}`; `state:"pending-generation"` |
+| POST `/worlds/select` | `{name}` | `{world,configuration}` |
+| POST `/worlds/create` | `{name,seed?:string}` | 201 `{world,configuration}`; `state:"pending-generation"` |
 | HEAD `/worlds/:name/export` | — | Checks permission/state/format, no archive creation |
 | GET `/worlds/:name/export` | — | `.mcworld` root attachment; temporary artifact cleaned after response/abort |
 | DELETE `/worlds/:name` | `{name}` exact confirmation | `{ok:true,warnings?,cleanupPending?}`, inactive only |
@@ -171,14 +170,14 @@ All routes require assigned read/manage permissions and a stopped server; writes
 
 | Method / path | Body | Response |
 | --- | --- | --- |
-| GET `/api/servers/:id/packs` | — | `{packs,world:{name,exists},warnings,demo,limits}` |
-| POST `/api/servers/:id/packs/import` | Multipart `file` (`.mcpack`/`.mcaddon`) | 201 `{packs,warnings,demo}` |
-| PATCH `/api/servers/:id/packs/:uuid` | `{enabled:boolean}` | `{pack,activated,world,demo}` |
-| DELETE `/api/servers/:id/packs/:uuid` | — | `{ok:true,worldsUpdated,demo}` |
+| GET `/api/servers/:id/packs` | — | `{packs,world:{name,exists},warnings,limits}` |
+| POST `/api/servers/:id/packs/import` | Multipart `file` (`.mcpack`/`.mcaddon`) | 201 `{packs,warnings}` |
+| PATCH `/api/servers/:id/packs/:uuid` | `{enabled:boolean}` | `{pack,activated,world}` |
+| DELETE `/api/servers/:id/packs/:uuid` | — | `{ok:true,worldsUpdated}` |
 
 Pack records expose `uuid,name,description,version,minEngineVersion,packScope,kind,folder,scope,modules,dependencies,errors,protected,enabled`. `scope` is null for instance-level folders, or the owning world name. Activation writes the world's behavior/resource reference lists and includes exact UUID/version dependencies; disabling a required pack is blocked while dependants remain active. A configured existing world is required. Removal updates references across the instance's worlds; Mojang runtime packs are protected. Imported folders and reference lists are rolled back if durable metadata commit fails.
 
-The supported subset is manifest v2, data/resources modules and acyclic UUID dependencies. Script API/module_name, manifest v3, global-only scope, encrypted archives and world bundles are rejected. Limits: 100 MiB compressed, cumulative 512 MiB unpacked/10,000 entries including nested `.mcpack`, 20 manifests. Duplicate UUIDs, unsafe paths and unsupported engine versions are rejected. Demo exposes a marked fixture; archive import in demo returns 409.
+The supported subset is manifest v2, data/resources modules and acyclic UUID dependencies. Script API/module_name, manifest v3, global-only scope, encrypted archives and world bundles are rejected. Limits: 100 MiB compressed, cumulative 512 MiB unpacked/10,000 entries including nested `.mcpack`, 20 manifests. Duplicate UUIDs, unsafe paths and unsupported engine versions are rejected.
 
 ## Versions, schedules and activity
 
@@ -200,20 +199,19 @@ Schedule action is `backup`, `restart` or `command`; interval is 1–525600 minu
 
 Historical versions additionally expose `historical,source,displayVersion,historyKey,catalogKeys,sha256,sha1,checksumSource,metadataStatus,metadataError,availability,availabilityCheckedAt,verificationError`; optional fields depend on source. Cached records remain installable offline. `history` includes per-source URLs/status/errors, indexed/loaded/remaining counts and stable/preview coverage. Ready history means the source registry was synchronized; it does not prove every package URL or runtime. BDS-Versions exact identifiers, including padded build numbers, appear from its bounded registry before optional metadata loads. Candidate URLs follow its declared official CDN root and known IDs; candidates remain unchecked until lazy exact-version Linux metadata and HEAD succeed. Endstone records add SHA-256; legacy BDS metadata can supply SHA-1 or no hash. Present hashes are checked during download before package activation, and absent hashes are not represented as checksum proof.
 
-Community sources never set official `latest`/`preview`, and unavailable auxiliary metadata does not gate an authoritative Mojang URL. Historical uncached installs require a recent HEAD proof (24 hours). When legacy metadata supplies a size, an advertised HEAD length must match and streamed GET bytes must match before activation, including packages without hashes. HEAD/GET redirects must preserve selected version/channel and exact official host/path. Up to four concurrent HEAD checks, one in-flight check per key, 60-second debounce; no arbitrary user URL probe. The client filters/searches and renders ten records per page. Demo can refresh registry metadata but does no executable download or real HEAD proof; version records are explicitly simulated.
+Community sources never set official `latest`/`preview`, and unavailable auxiliary metadata does not gate an authoritative Mojang URL. Historical uncached installs require a recent HEAD proof (24 hours). When legacy metadata supplies a size, an advertised HEAD length must match and streamed GET bytes must match before activation, including packages without hashes. HEAD/GET redirects must preserve selected version/channel and exact official host/path. Up to four concurrent HEAD checks, one in-flight check per key, 60-second debounce; no arbitrary user URL probe. The client filters/searches and renders ten records per page.
 
 ## Host and readiness
 
 Admin-only routes:
 
 - GET `/api/host/info`: `{host,capabilities}`.
-- GET `/api/host/diagnostics`: capability checks, interface addresses/listeners, panel/Bedrock processes, systemd and storage. Cached ten seconds; no argv/environment exposure. Demo results are marked.
+- GET `/api/host/diagnostics`: capability checks, interface addresses/listeners, panel/Bedrock processes, systemd and storage. Cached ten seconds; no argv/environment exposure.
 - POST `/api/host/terminal` with `{command}`: `{stdout,stderr,exitCode,timedOut,truncated}`. Linux opt-in, service-user permission, 15-second deadline, 1 MiB output limit, audited.
 
 Public GET `/healthz`: `{ok,service:"vortex-mc",version,processId,instanceId}`; 503 during shutdown. `processId` is the serving Node PID, used to bind installer readiness to systemd MainPID; it is not a Bedrock PID and exposes no credentials/account metadata. A matching service label alone does not prove the intended release is serving a port.
 
 WebSocket `/ws` needs an authenticated cookie and valid Origin. Events: `{type:"log",serverId,runId,log}`, `{type:"console-reset",serverId,runId}` or `{type:"update"}`. Server metadata contains `consoleRunId`; a new admitted start retires the previous run. Console clients must reject events and late GET responses for retired runs. Explicit stops clear the current console; crash output remains until the next start. Managed disk history is retained separately and is never replayed into a new current console. Delivery revalidates session and server ACL. Revoked/expired sessions close with 1008; clients with over 1 MiB buffered output close with 1013. Frontend reconnects with polling fallback.
-
 
 ## Runtime controls (0.7.0)
 
@@ -271,19 +269,17 @@ DELETE that path with the same confirmed revision removes only this server's Vor
 
 Worker uninstall is available only for a linked VPS with a verified empty server inventory. Move or explicitly remove game servers first; uninstall has no delete-worlds option. The main panel VPS cannot be selected. Administrative re-authentication, typed VPS name and current plan revision bind the final request. Passwords, private keys and passphrases are held only for that SSH operation and are excluded from jobs/audit/commands. A202 or lost Agent connection does not prove removal. The controller retains the VPS and its recovery lock until a private remote receipt and a separate pinned SSH inspection verify the stopped/disabled worker and absence of the planned active components. A controller restart or ambiguous transport failure keeps `unknown`; recovery verifies the existing requestId and never repeats destruction automatically.
 
-Jobs use `type:"node-uninstall",scope:"nodes",adminOnly:true,serverId:null`, `nodeId,requestId,status,phase,verified,outcomeUnknown,retainedComponents`. Only `status:"completed"` with `verified:true` means the verified worker link was removed. `cleanupScope:"active-worker-components"` does not mean the VPS returned to its original OS state. Installer receipts cover only provably created paths. Pre-existing shared packages/Node, untagged firewall rules, unfamiliar source/data files, recovery backups and separate legacy panel stores remain listed; an empty worker inventory never authorizes removing a separate panel's worlds. See [service operations0.14](SERVICE-0140.md).
-
+Jobs use `type:"node-uninstall",scope:"nodes",adminOnly:true,serverId:null`, `nodeId,requestId,status,phase,verified,outcomeUnknown,retainedComponents`. Only `status:"completed"` with `verified:true` means the verified worker link was removed. `cleanupScope:"active-worker-components"` does not mean the VPS returned to its original OS state. Installer receipts cover only provably created paths. Pre-existing shared packages/Node, untagged firewall rules, unfamiliar source/data files, recovery backups and separate legacy panel stores remain listed; an empty worker inventory never authorizes removing a separate panel's worlds. See [worker maintenance](OPERATIONS.md#worker-maintenance).
 
 ## Current session and system administration
 
-Admin GET/POST/DELETE `/api/auth/file-access` reads, enables or disables advanced access for one server. POST requires `{serverId,password,confirmed:true}`; DELETE requires the selected server identity. The server checks the actual password and does not accept a client capability hint as authorization. See [service operations](SERVICE-0110.md).
+Admin GET/POST/DELETE `/api/auth/file-access` reads, enables or disables advanced access for one server. POST requires `{serverId,password,confirmed:true}`; DELETE requires the selected server identity. The server checks the actual password and does not accept a client capability hint as authorization. See [advanced file access](OPERATIONS.md#files-and-advanced-access).
 
-Admin GET/POST `/api/host/power` and `/api/nodes/:id/power` inspect or request restart-service/reboot, bound to a generation revision and idempotent UUID. The local node ID is `local`; remote public IDs are mapped only to their enrolled agent identity. Confirmation and normal Origin/CSRF checks are required. Unknown outcomes are read-only observed, never automatically retried. See [power controls](POWER-0120.md).
+Admin GET/POST `/api/host/power` and `/api/nodes/:id/power` inspect or request restart-service/reboot, bound to a generation revision and idempotent UUID. The local node ID is `local`; remote public IDs are mapped only to their enrolled agent identity. Confirmation and normal Origin/CSRF checks are required. Unknown outcomes are read-only observed, never automatically retried. See [system administration](OPERATIONS.md#system-administration-and-resource-boundaries).
 
-History defaults are 100 recent activity entries and 50 completed jobs, subject also to age/byte budgets. Active jobs and unresolved recovery references are protected. Explicit custom retention remains effective; these counts describe defaults, not permission to remove recovery data. See [audit and sources](AUDIT-0130.md).
+History defaults are 100 recent activity entries and 50 completed jobs, subject also to age/byte budgets. Active jobs and unresolved recovery references are protected. Explicit custom retention remains effective; these counts describe defaults, not permission to remove recovery data. See [history retention](OPERATIONS.md#deletion-retention-and-cleanup-warnings).
 
-
-## System memory assistance (0.14.0)
+## System memory assistance
 
 Admin-only `GET /api/nodes/:id/zram` returns `{nodeId,zram}`; `local` identifies the main VPS. `GET /api/host/zram` is the local alias. Reading never enables, disables or resizes zram. The state reports capability/ownership, physical RAM, configured and effective state, recommended auto profile, revision, busy and last operation.
 

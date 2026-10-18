@@ -1,4 +1,4 @@
-# Vortex MC Nodes
+# Vortex Panel Nodes
 
 Nodes let one Vortex control panel manage Bedrock servers on several Ubuntu VPS machines. The panel's own machine remains **Local**. Existing local server IDs, files, settings and ports are not migrated when Nodes is enabled.
 
@@ -38,7 +38,7 @@ CPU/RAM controls are usage ceilings applied by the selected VPS. They do not res
 
 The automatic installer enrolls a resource worker with an authenticated control API. Its release excludes the panel entry point, account setup and browser interface. It installs and verifies the Bedrock, archive, storage, process and network tools before activating the candidate service. Existing VPS firewall policy is preserved; installation does not enable/reset UFW or change global kernel settings. New enrollment firewall allowances carry an exact worker ownership receipt; pre-existing allowances are not relabeled. New private Node runtimes and release files receive installer ownership records; older shared runtimes are retained.
 
-“Uninstall Vortex from VPS” opens an inspection and confirmation workflow. It requires an empty worker inventory, administrative re-authentication, the exact VPS name and fresh pinned SSH root credentials. Move or remove game servers first; the workflow never silently deletes worlds. The VPS remains linked during cleanup and after uncertain/partial results. It is removed only after independent SSH verification. Shared or unproven legacy files/tools and separate panel installations are explicitly retained; this is verified worker removal, not an OS reinstall. See [service0.14](SERVICE-0140.md).
+“Uninstall Vortex from VPS” opens an inspection and confirmation workflow. It requires an empty worker inventory, administrative re-authentication, the exact VPS name and fresh pinned SSH root credentials. Move or remove game servers first; the workflow never silently deletes worlds. The VPS remains linked during cleanup and after uncertain/partial results. It is removed only after independent SSH verification. Shared or unproven legacy files/tools and separate panel installations are explicitly retained; this is verified worker removal, not an OS reinstall. See [worker maintenance](OPERATIONS.md#worker-maintenance).
 
 ## Connection status and maintenance
 
@@ -63,5 +63,3 @@ Live histories, samples and event connections are bounded; polling does not appe
 - [ssh2](https://github.com/mscdex/ssh2): verify SSH host keys before authentication, use SFTP for source transfer, and keep remote commands separate from credentials.
 - [Node stream backpressure](https://nodejs.org/docs/latest-v22.x/api/stream.html): transfers are streamed and canceled when their destination disconnects.
 - [Linux cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html): delegation and actual process quotas belong to each node's service.
-
-Proof from isolated agents on one host and proof across physical VPS machines must be reported separately. Simulated Bedrock data in browser fixtures is not evidence of a running native server or a player's successful join.

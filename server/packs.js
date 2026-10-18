@@ -178,7 +178,7 @@ export async function inspectPacks(root, options) {
     const required = result.packs.filter(item => item.uuid === dependency.uuid);
     if (dependency.module_name || required.length !== 1 || !sameVersion(required[0].version, dependency.version)) pack.errors.push(`Chưa có dependency hợp lệ ${dependency.uuid || dependency.module_name}.`);
   }
-  return { ...result, world: { name: options.levelName, exists }, demo: false, limits: { compressedMB: 100, unpackedMB: 512, entries: MAX_ENTRIES, manifests: 20 } };
+  return { ...result, world: { name: options.levelName, exists }, limits: { compressedMB: 100, unpackedMB: 512, entries: MAX_ENTRIES, manifests: 20 } };
 }
 
 export async function importPacks(root, archive, options) {
@@ -229,7 +229,7 @@ export async function importPacks(root, archive, options) {
       await fs.rename(pack.source, target); moved.push(target);
     }
     options.onCommit?.();
-    return { packs: candidates.map(({ source, ...pack }) => pack), warnings: ['Pack chưa được bật. Khả năng hoạt động và các experiment cần kiểm tra qua content log sau khi khởi động.'], demo: false };
+    return { packs: candidates.map(({ source, ...pack }) => pack), warnings: ['Pack chưa được bật. Khả năng hoạt động và các experiment cần kiểm tra qua content log sau khi khởi động.'] };
   } catch (error) {
     for (const target of moved.reverse()) await fs.rm(target, { recursive: true, force: true }).catch(rollbackError => { error.message += `; không thể dọn pack: ${rollbackError.message}`; });
     throw error;
@@ -256,7 +256,7 @@ export async function setPackEnabled(root, uuid, enabled, options) {
     changes.set(pack.kind, { ...refs[pack.kind], value: refs[pack.kind].value.filter(entry => String(entry?.pack_id).toLowerCase() !== pack.uuid) });
   }
   await writeRegistrations(root, [...changes.values()], options.onCommit);
-  return { pack: { ...pack, enabled }, activated: enabled ? dependencyClosure(pack, catalog.packs).map(item => item.uuid) : [], world: { name: options.levelName, exists: true }, demo: false };
+  return { pack: { ...pack, enabled }, activated: enabled ? dependencyClosure(pack, catalog.packs).map(item => item.uuid) : [], world: { name: options.levelName, exists: true } };
 }
 
 export async function removePack(root, uuid, options) {
@@ -274,5 +274,5 @@ export async function removePack(root, uuid, options) {
   try { await writeRegistrations(root, changes, options.onCommit); }
   catch (error) { await fs.rename(trash, source).catch(rollbackError => { error.message += `; không thể khôi phục thư mục pack: ${rollbackError.message}`; }); throw error; }
   await fs.rm(trash, { recursive: true, force: true });
-  return { ok: true, worldsUpdated: changes.length, demo: false };
+  return { ok: true, worldsUpdated: changes.length };
 }

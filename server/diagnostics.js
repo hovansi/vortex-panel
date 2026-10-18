@@ -49,23 +49,8 @@ async function processes() {
   return records.sort((a, b) => b.memoryMB - a.memoryMB).slice(0, 32);
 }
 
-export async function collectDiagnostics({ dataDir, demo = false, host }) {
+export async function collectDiagnostics({ dataDir, host }) {
   const generatedAt = new Date().toISOString();
-  if (demo) return {
-    generatedAt, demo: true, host,
-    checks: [
-      { id: 'platform', name: 'Ubuntu x86_64', status: 'ok', message: 'DEMO · Ubuntu 24.04 LTS, kiến trúc x86_64.' },
-      { id: 'node', name: 'Node.js', status: 'ok', message: 'DEMO · Node.js 22 LTS.' },
-      { id: 'storage', name: 'Không gian lưu trữ', status: 'ok', message: 'DEMO · 96 GiB còn trống.' },
-      { id: 'dependencies', name: 'Thư viện Bedrock', status: 'ok', message: 'DEMO · libcurl và libstdc++ sẵn sàng.' },
-      { id: 'access', name: 'Host terminal', status: 'warning', message: 'Không chạy lệnh host trong chế độ demo.' },
-    ],
-    network: { available: true, addresses: [{ name: 'eth0', address: '192.0.2.10', family: 'IPv4' }], listeners: [{ protocol: 'tcp', address: '127.0.0.1', port: 3000 }, { protocol: 'tcp', address: '0.0.0.0', port: 19132 }] },
-    processes: [{ pid: 1200, name: 'node', memoryMB: 64, threads: 11, panel: true }, { pid: 1242, name: 'bedrock_server', memoryMB: 256, threads: 8, panel: false }],
-    panel: { pid: 1200, uptime: 86400, memoryMB: 64, nodeVersion: 'v22.x', user: 'vortex-mc', root: false },
-    service: { name: 'bedrock-panel.service', available: true, activeState: 'active', subState: 'running' },
-    storage: { dataDir: '/var/lib/bedrock-panel', freeBytes: 96 * 1024 ** 3, totalBytes: 120 * 1024 ** 3 },
-  };
   const linux = process.platform === 'linux', checks = [];
   const add = (id, name, status, message) => checks.push({ id, name, status, message });
   let release = {};
@@ -93,7 +78,7 @@ export async function collectDiagnostics({ dataDir, demo = false, host }) {
   const serviceFields = Object.fromEntries(serviceResult.output.trim().split('\n').filter(line => line.includes('=')).map(line => line.split('=')));
   const addresses = Object.entries(os.networkInterfaces()).flatMap(([name, items]) => (items || []).filter(item => !item.internal).map(item => ({ name, address: item.address, family: item.family }))).slice(0, 32);
   return {
-    generatedAt, demo: false, host, checks,
+    generatedAt, host, checks,
     network: { available: sockets.available, addresses, listeners: parseListeners(sockets.output) },
     processes: processList,
     panel: { pid: process.pid, uptime: Math.floor(process.uptime()), memoryMB: Math.round(process.memoryUsage().rss / MiB * 10) / 10, nodeVersion: process.version, user: os.userInfo().username, root: process.getuid?.() === 0 },

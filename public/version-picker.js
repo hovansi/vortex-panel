@@ -3,13 +3,13 @@ import {beginButtonBusy} from './button-busy.js';
 const text=(en,vi)=>wireText(en,{en,vi});
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const key=row=>`${row.channel||'stable'}:${row.version}`;
-export const versionIsReady=row=>Boolean(row&&(row.cached===true||row.simulated===true&&row.available===true||['cached','available'].includes(row.availability)||row.available===true&&row.availability!=='unchecked'));
+export const versionIsReady=row=>Boolean(row&&(row.cached===true||row.available!==false&&['cached','available'].includes(row.availability)));
 export function versionPickerModel(rows=[],{query='',channel='all',page=1}={}){
  const seen=new Set(),catalog=rows.filter(row=>row&&typeof row.version==='string'&&row.version&&!seen.has(key(row))&&seen.add(key(row))),needle=String(query).trim().toLowerCase();
  const filtered=catalog.filter(row=>(channel==='all'||(row.channel||'stable')===channel)&&(!needle||`${row.version} ${row.channel||'stable'}`.toLowerCase().includes(needle))),pages=Math.max(1,Math.ceil(filtered.length/10)),current=Math.max(1,Math.min(pages,Math.floor(Number(page)||1)));
  return{catalog,filtered,rows:filtered.slice((current-1)*10,current*10),page:current,pages,count:filtered.length,total:catalog.length,start:filtered.length?(current-1)*10+1:0,end:Math.min(current*10,filtered.length)};
 }
-function availability(row){if(row?.cached)return text('Cached on this node','Đã lưu trên VPS này');if(row?.simulated&&row.available)return text('Simulation package','Gói mô phỏng');if(versionIsReady(row))return text('Official link ready','Liên kết chính thức sẵn sàng');if(row?.availability==='unavailable')return text('Link unavailable','Liên kết không khả dụng');if(row?.availability==='unsupported')return text('Package unsupported','Gói chưa được hỗ trợ');return text('Not checked yet','Chưa kiểm tra');}
+function availability(row){if(row?.cached)return text('Cached on this node','Đã lưu trên VPS này');if(versionIsReady(row))return text('Official link ready','Liên kết chính thức sẵn sàng');if(row?.availability==='unavailable')return text('Link unavailable','Liên kết không khả dụng');if(row?.availability==='unsupported')return text('Package unsupported','Gói chưa được hỗ trợ');return text('Not checked yet','Chưa kiểm tra');}
 export function versionChannelBadge(row){const channel=row?.channel==='preview'?'preview':'stable';return `<span class="version-picker-channel channel-badge" data-version-channel="${channel}">${channel==='preview'?'Preview':'Stable'}</span>`;}
 let sequence=0;
 export function versionPickerMarkup({id=`version-picker-${++sequence}`,alwaysOpen=false}={}){

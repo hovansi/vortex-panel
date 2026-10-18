@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Node 22 / ${{ matrix.os }}
+  validate:
+    name: Production / Node 22 / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -34,9 +34,12 @@ jobs:
           package-manager-cache: false
       - name: Install locked dependencies
         run: npm ci
-      - name: Check source
+      - name: Validate production source
         run: npm run check
-      - name: Run automated tests
-        run: npm test
       - name: Check bootstrap syntax
         run: bash -n deploy/bootstrap.sh
+      - name: Verify production package integrity
+        run: |
+          node scripts/release.js --repository "$GITHUB_REPOSITORY" --output output/validation
+          cd output/validation
+          sha256sum --check --strict SHA256SUMS

@@ -79,12 +79,12 @@ export async function readHostPortInventory({ readFile = readProcText, platform 
   return { ports: [...ports], ephemeral, reserved: [...reserved] };
 }
 
-export function createPortAllocator({ demo = false, readInventory = readHostPortInventory, random = randomInt, minPort = PORT_ALLOCATION_POLICY.minPort, maxPort = PORT_ALLOCATION_POLICY.maxPort, protectedPorts = [] } = {}) {
+export function createPortAllocator({ readInventory = readHostPortInventory, random = randomInt, minPort = PORT_ALLOCATION_POLICY.minPort, maxPort = PORT_ALLOCATION_POLICY.maxPort, protectedPorts = [] } = {}) {
   if (!Number.isInteger(minPort) || !Number.isInteger(maxPort) || minPort < 1024 || maxPort > 65535 || minPort > maxPort || !Array.isArray(protectedPorts) || protectedPorts.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) throw issue('PORT_ALLOCATION_INPUT', 400);
   return async function allocate({ kind = 'bedrock', transport = 'auto', maxPlayers = 20, servers = [], excludedPorts = [] } = {}) {
     if (!['bedrock', 'nodejs', 'python'].includes(kind) || !['auto', 'raknet', 'nethernet'].includes(transport) || !Array.isArray(servers) && typeof servers !== 'function' || !Array.isArray(excludedPorts) || excludedPorts.some(port => !Number.isInteger(port) || port < 1 || port > 65535) || kind === 'bedrock' && (!Number.isInteger(maxPlayers) || maxPlayers < 1 || maxPlayers > 1000)) throw issue('PORT_ALLOCATION_INPUT', 400);
     let inventory;
-    try { inventory = demo ? { ports: [], ephemeral: [32768, 60999], reserved: [] } : await readInventory(); }
+    try { inventory = await readInventory(); }
     catch { throw issue('PORT_ALLOCATION_INVENTORY'); }
     if (!inventory || !Array.isArray(inventory.ports) || inventory.ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535) || !Array.isArray(inventory.ephemeral) || inventory.ephemeral.length !== 2 || inventory.ephemeral.some(port => !Number.isInteger(port) || port < 1024 || port > 65535) || inventory.ephemeral[0] > inventory.ephemeral[1] || inventory.reserved !== undefined && (!Array.isArray(inventory.reserved) || inventory.reserved.some(port => !Number.isInteger(port) || port < 1 || port > 65535))) throw issue('PORT_ALLOCATION_INVENTORY');
     // Manager callers provide a reader: pending configuration changes may have

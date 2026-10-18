@@ -21,7 +21,6 @@ const messages = {
   HOSTNAME_AUDIT: ['The hostname request could not be recorded. The system command was not run.', 'Không ghi được yêu cầu đổi hostname. Lệnh hệ thống chưa được chạy.'],
   HOSTNAME_AUDIT_WARNING: ['The observed hostname result could not be saved to the audit history.', 'Không lưu được kết quả hostname đã quan sát vào lịch sử kiểm tra.'],
   HOSTNAME_VERIFIED_WARNING: ['The command returned an error, but the requested hostname state was independently verified.', 'Lệnh trả lỗi nhưng trạng thái hostname yêu cầu đã được xác minh độc lập.'],
-  HOSTNAME_DEMO: ['Demo hostname changes are simulated and do not modify this computer.', 'Đổi hostname trong demo là mô phỏng và không sửa máy tính này.'],
 };
 export const HOSTNAME_MESSAGES = Object.freeze(Object.entries(messages).map(([code, [en, vi]]) => ({ id: `panel.hostname.${code.slice(9).toLowerCase()}`, en, vi })));
 const metadata = code => { const [en, vi] = messages[code]; return { id: `panel.hostname.${code.slice(9).toLowerCase()}`, params: [], en, vi }; };
@@ -71,20 +70,19 @@ export function hostnameErrorPayload(error, language = 'en') {
 }
 
 let nativeChangeInProgress = false;
-export function createHostnameController({ demo = false, platform = process.platform, uid = process.getuid?.(),
+export function createHostnameController({ platform = process.platform, uid = process.getuid?.(),
   hostname = () => os.hostname(), execFile = promisify(nodeExecFile), now = Date.now, command = '/usr/bin/hostnamectl' } = {}) {
-  let simulated = { current: 'vortex-demo', static: 'vortex-demo', transient: 'vortex-demo', pretty: '' }, demoChanging = false, closed = false, active;
+  let closed = false, active;
   const options = { timeout: 8000, maxBuffer: 16 * 1024, encoding: 'utf8', windowsHide: true, shell: false,
     env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C', LC_ALL: 'C', SYSTEMD_COLORS: '0', SYSTEMD_PAGER: 'cat' } };
   const snapshot = (values, reasonCode = null) => {
     const reason = reasonCode ? notice(reasonCode) : null;
-    return { ...values, editable: demo || !reasonCode, prettyEditable: demo || !reasonCode, reason: reason?.message || null, reasonI18n: reason?.metadata || null,
+    return { ...values, editable: !reasonCode, prettyEditable: !reasonCode, reason: reason?.message || null, reasonI18n: reason?.metadata || null,
       revision: values.static !== null && values.transient !== null && values.pretty !== null && values.current !== null
         ? createHash('sha256').update(JSON.stringify([values.current, values.static, values.transient, values.pretty])).digest('hex') : null,
-      sampledAt: new Date(now()).toISOString(), simulated: demo };
+      sampledAt: new Date(now()).toISOString() };
   };
   async function read() {
-    if (demo) return snapshot({ ...simulated }, 'HOSTNAME_DEMO');
     let current; try { current = safeText(hostname(), 255); } catch { current = null; }
     const unknown = { current, static: null, transient: null, pretty: null };
     if (platform !== 'linux') return snapshot(unknown, 'HOSTNAME_PLATFORM');
@@ -101,8 +99,8 @@ export function createHostnameController({ demo = false, platform = process.plat
     const target = validateChange(input);
     const prettyRequested = Object.hasOwn(input, 'prettyHostname');
     const normalization = { requestedHostname: input.hostname, canonicalHostname: target, normalized: input.hostname !== target, prettyRequested, ...(prettyRequested ? { requestedPrettyHostname: input.prettyHostname } : {}) };
-    if (demo ? demoChanging : nativeChangeInProgress) throw failure('HOSTNAME_BUSY', 409);
-    if (demo) demoChanging = true; else nativeChangeInProgress = true;
+    if (nativeChangeInProgress) throw failure('HOSTNAME_BUSY', 409);
+    nativeChangeInProgress = true;
     try {
       const before = await read();
       if (!before.editable) throw failure(platform !== 'linux' ? 'HOSTNAME_PLATFORM' : uid !== 0 ? 'HOSTNAME_ROOT' : 'HOSTNAME_UNAVAILABLE', 409, { hostname: before });
@@ -110,10 +108,6 @@ export function createHostnameController({ demo = false, platform = process.plat
       const dnsMatches = value => value.current === target && value.static === target && value.transient === target;
       if (dnsMatches(before) && (!prettyRequested || before.pretty === input.prettyHostname)) return { ok: true, changed: false, prettyPreserved: true, hostname: before, ...normalization };
       await beforeApply?.(before, normalization);
-      if (demo) {
-        simulated = { ...simulated, current: target, static: target, transient: target, ...(prettyRequested ? { pretty: input.prettyHostname } : {}) };
-        return { ok: true, changed: true, previousHostname: before.current, prettyPreserved: simulated.pretty === before.pretty, hostname: await read(), ...normalization };
-      }
       let commandError = false;
       if (!dnsMatches(before)) {
         try { await execFile(command, ['--no-ask-password', '--static', '--transient', 'set-hostname', target], options); }
@@ -132,7 +126,7 @@ export function createHostnameController({ demo = false, platform = process.plat
         { hostname: after, ...(after.revision !== null && after.revision !== before.revision ? { changed: true } : {}), outcomeUnknown: commandError || after.revision === null });
       const result = { ok: true, changed: true, previousHostname: before.current, prettyPreserved: after.pretty === before.pretty, hostname: after, ...normalization };
       return commandError ? appendWarning(result, 'HOSTNAME_VERIFIED_WARNING') : result;
-    } finally { if (demo) demoChanging = false; else nativeChangeInProgress = false; }
+    } finally { nativeChangeInProgress = false; }
   }
   return { read, change(input, hooks) {
     if (closed) return Promise.reject(failure('HOSTNAME_CLOSED', 503));
@@ -149,11 +143,11 @@ export async function changeHostname(controller, input, { store, user, nodeId = 
     const result = await controller.change(input, { beforeApply: (before, normalization) => {
       canonicalTarget = normalization.canonicalHostname;
       prettyTarget = normalization.prettyRequested ? normalization.requestedPrettyHostname : undefined;
-      try { audit('host.hostname.request', { from: before.current, to: canonicalTarget, ...(prettyTarget !== undefined ? { prettyFrom: before.pretty, prettyTo: prettyTarget } : {}), simulated: before.simulated }); requested = true; }
+      try { audit('host.hostname.request', { from: before.current, to: canonicalTarget, ...(prettyTarget !== undefined ? { prettyFrom: before.pretty, prettyTo: prettyTarget } : {}) }); requested = true; }
       catch { throw failure('HOSTNAME_AUDIT', 503); }
     } });
     if (result.changed) {
-      try { audit('host.hostname.changed', { from: result.previousHostname, to: result.hostname.current, ...(prettyTarget !== undefined ? { prettyTo: result.hostname.pretty } : {}), simulated: result.hostname.simulated }); }
+      try { audit('host.hostname.changed', { from: result.previousHostname, to: result.hostname.current, ...(prettyTarget !== undefined ? { prettyTo: result.hostname.pretty } : {}) }); }
       catch { appendWarning(result, 'HOSTNAME_AUDIT_WARNING'); }
     }
     return result;

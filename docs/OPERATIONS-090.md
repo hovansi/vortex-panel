@@ -1,4 +1,4 @@
-# Vortex Panel 0.9.0: telemetry, admission and bounded storage
+# Telemetry, allocation and bounded storage
 
 ## What the measurements mean
 
@@ -17,7 +17,7 @@ The dashboard and node snapshots sample approximately every five seconds. A slow
 
 The first CPU/network rate is `null` until there are two valid observations. Counter resets, interface changes, unavailable tools and permission failures must not become fabricated zero rates. Offline node usage is explicitly unavailable; the last observation time remains visible. Per-server network samples older than ten seconds are marked stale.
 
-The nftables meter owns one UUID-named `inet` table, with a private identity file in the data directory. It uses input/output counter rules and pass-through chain policies; it does not open ports, change UFW, or add accept/drop verdict rules. Port changes reset only the affected server's counters and expose `resetAt`. Cleanup verifies the exact table owner, selectors and counter references before deletion. Missing nftables or kernel permission makes accounting unavailable. Ordinary unit-test workers suppress the default real nft runner; explicit injected fixtures and separately authorized Linux acceptance do not claim that simulated counters are kernel proof.
+The nftables meter owns one UUID-named `inet` table, with a private identity file in the data directory. It uses input/output counter rules and pass-through chain policies; it does not open ports, change UFW, or add accept/drop verdict rules. Port changes reset only the affected server's counters and expose `resetAt`. Cleanup verifies the exact table owner, selectors and counter references before deletion. Missing nftables or kernel permission makes accounting unavailable.
 
 ## Allocation is separate from live consumption
 
@@ -39,7 +39,7 @@ Existing ordinary directories remain legacy unlimited directories. Reading or ch
 
 Growth is stopped-server-only and can only increase size. The desired larger policy is durably queued before in-place allocation/filesystem growth. Because growth cannot be reversed by shrinking, an interrupted job may leave desired and actual sizes different. The API reports actual size and growth state; start remains blocked while actual storage is too small. Retrying the same desired size is supported and reassesses the physical bytes still needed. Failed or uncertain images/records are retained for recovery.
 
-The 0.9.1 growth correction addresses an observed delayed allocation failure: default resize2fs can defer inode-table initialization until after mount, and loop-device zeroing may then unmap backing-image blocks. Growth now forces synchronous table initialization, disables libext2fs zeroout optimization for that child process, explicitly checks without discard, and rechecks physical allocation after resizing. The owned mount disables deferred inode initialization and discard. Explicit same-size repair also unmounts before reserving missing blocks; ordinary reads and starts never silently allocate them. Regression acceptance must inspect allocation again after the background interval, not only when the resize command exits.
+Storage growth protects against delayed allocation loss: default resize2fs can defer inode-table initialization until after mount, and loop-device zeroing may then unmap backing-image blocks. Growth now forces synchronous table initialization, disables libext2fs zeroout optimization for that child process, explicitly checks without discard, and rechecks physical allocation after resizing. The owned mount disables deferred inode initialization and discard. Explicit same-size repair also unmounts before reserving missing blocks; ordinary reads and starts never silently allocate them. A failed allocation check keeps storage recovery explicit rather than declaring growth complete.
 
 Growth and deletion exclude conflicting lifecycle/file operations. Console disk writes are paused and drained during unmount windows; usage reads must not claim a live mounted quota during maintenance. Recursive deletion refuses a directory containing the same or a descendant mount, and checks again before cleaning a quarantined tree. No forced or lazy unmount is used.
 

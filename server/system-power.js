@@ -16,7 +16,6 @@ const messages = {
   POWER_BUSY: ['Another restart or server operation is in progress. Wait for it to finish.', 'Một thao tác khởi động lại hoặc xử lý máy chủ đang chạy. Hãy chờ hoàn tất.'],
   POWER_CLOSED: ['This service is stopping and cannot accept a new restart.', 'Dịch vụ đang dừng và chưa thể nhận yêu cầu khởi động lại mới.'],
   POWER_UNAVAILABLE: ['Restart controls require the managed Linux service with administrator privileges.', 'Tính năng khởi động lại cần dịch vụ Linux được quản lý với quyền quản trị.'],
-  POWER_DEMO: ['Restart controls are unavailable in the demo.', 'Không thể khởi động lại trong bản dùng thử.'],
   POWER_AUDIT: ['The restart request could not be saved. No system action was scheduled.', 'Không lưu được yêu cầu khởi động lại. Chưa lên lịch thao tác hệ thống.'],
   POWER_SCHEDULE_FAILED: ['The system could not schedule this restart. Review the service log before trying again.', 'Hệ thống không lên lịch được lần khởi động lại này. Hãy xem nhật ký dịch vụ trước khi thử lại.'],
   POWER_INTERRUPTED: ['The connection ended before the restart was scheduled. This request will not be sent again automatically.', 'Kết nối đã kết thúc trước khi lên lịch khởi động lại. Yêu cầu này sẽ không tự động gửi lại.'],
@@ -52,7 +51,7 @@ export function systemPowerCommand(role, action, requestId) {
   return { command: '/usr/bin/systemd-run', args: ['--quiet', '--no-ask-password', `--unit=vortex-power-${requestId}`, '--on-active=2s', '--timer-property=AccuracySec=1s', '--property=Type=oneshot', '--property=TimeoutStartSec=180s', '/usr/bin/systemctl', '--no-ask-password', ...(action === 'reboot' ? ['reboot'] : ['restart', units[role]])] };
 }
 
-export function createSystemPowerController({ role = 'panel', nodeId = 'local', dataDir, store, manager, demo = false,
+export function createSystemPowerController({ role = 'panel', nodeId = 'local', dataDir, store, manager,
   platform = process.platform, uid = process.getuid?.(), processId = process.pid, instanceId = randomUUID(),
   bootId: injectedBootId,
   now = Date.now, execFile = promisify(nodeExecFile), probe, dispatch, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
@@ -85,7 +84,6 @@ export function createSystemPowerController({ role = 'panel', nodeId = 'local', 
     if (initialized) return initialized;
     initialized = (async () => {
       if (injectedBootId === undefined) try { bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); } catch { bootId = null; }
-      // Tests can supply identity through the read-only platform boundary.
       try {
         const data = JSON.parse(fs.readFileSync(filename, 'utf8'));
         if (data.schema !== 1 || data.nodeId !== nodeId || data.serviceId !== serviceId || !Array.isArray(data.records) || data.records.length > 8192) throw new Error('Invalid power journal');
@@ -113,7 +111,6 @@ export function createSystemPowerController({ role = 'panel', nodeId = 'local', 
     return initialized;
   }
   async function nativeProbe() {
-    if (demo) return { available: false, reasonCode: 'POWER_DEMO' };
     if (platform !== 'linux' || uid !== 0 || !bootId) return { available: false, reasonCode: 'POWER_UNAVAILABLE' };
     try {
       fs.accessSync('/run/systemd/system'); fs.accessSync('/usr/bin/systemd-run', fs.constants.X_OK);
@@ -151,7 +148,7 @@ export function createSystemPowerController({ role = 'panel', nodeId = 'local', 
     try {
       const before = await read();
       if (before.revision !== input.revision) throw fail('POWER_STALE', 409, { power: before });
-      if (!before.available) throw fail(storageFailure ? 'POWER_AUDIT' : demo ? 'POWER_DEMO' : 'POWER_UNAVAILABLE', 409, { power: before });
+      if (!before.available) throw fail(storageFailure ? 'POWER_AUDIT' : 'POWER_UNAVAILABLE', 409, { power: before });
       if (records.filter(row => row.baseline.instanceId === instanceId).length >= 7936) throw fail('POWER_AUDIT', 503);
       if (typeof manager?.beginMaintenance !== 'function') throw fail('POWER_BUSY', 409);
       try { releaseMaintenance = await manager.beginMaintenance({ action: input.action, requestId: input.requestId }); }

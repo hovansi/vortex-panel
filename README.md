@@ -16,7 +16,7 @@
 
 Vortex Panel is a Node.js control panel for **Minecraft Bedrock, Node.js and Python** on Ubuntu. Manage local servers and linked VPS nodes through one responsive workspace: live console, files, backups, resource limits and everyday administration. The interface combines soft glass surfaces, voxel artwork and purposeful motion, with light/dark themes and **English / Tiếng Việt**. English is the default.
 
-Created by **@CallMeHak** · Maintained at [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel).
+Created by **@hovansi** · Maintained at [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel).
 
 ## Install with one command
 
@@ -71,26 +71,25 @@ Use a fresh VPS for the automatic public setup. An existing web server or occupi
 | [Release process](docs/publication.md) | Public source inventory, checksums and GitHub Actions |
 | [Third-party attribution](docs/THIRD_PARTY.md) | Artwork, dependencies and upstream projects |
 
-## Develop locally
+## Run from reviewed source
 
-Install Node.js 22 or later, then:
+The supported runtime host is Ubuntu 22.04+ x86_64 with Node.js 22 or later. For manual setup from a reviewed checkout:
 
 ```bash
 npm ci
 npm run check
-npm test
-npm run demo
+npm start
 ```
 
-Open `http://127.0.0.1:3001`. Demo mode is explicitly labeled and simulates server operations. Windows is supported for development and UI preview; native server execution and host controls require the supported Linux environment. Run `npm start` for the real backend and first-Admin setup.
+Follow the private setup token printed in the terminal to create the first Admin. The application listens on `127.0.0.1:3000` by default; use the [installation guide](docs/INSTALL.md) for a managed systemd service and HTTPS.
 
-There is no frontend build step. Express serves the browser assets, WebSocket supplies live events, and the backend stores metadata with atomic JSON writes. `npm run package` builds a public source archive; release automation adds the repository-bound `install.sh`, inventory and checksums.
+There is no frontend build step. Express serves the browser assets, WebSocket supplies live events, and metadata is stored with atomic JSON writes. `npm run package` builds the production source archive. Public source and release ZIPs contain the runtime, installation helpers, build scripts and operating documentation; local test tools and private runtime data are excluded.
 
-Maintainers can publish a version from **Actions → Release → Run workflow** on `main`, supplying its matching `vX.Y.Z` tag. The workflow tests the selected commit before creating a missing tag and publishing verified assets. See the [maintainer release guide](docs/publication.md).
+Maintainers can publish through **Actions → Release → Run workflow** on `main`, supplying its matching `vX.Y.Z` tag. The workflow validates production source before creating a missing tag and publishing verified assets. See the [release guide](docs/publication.md).
 
-## Verification and operating boundaries
+## Operating boundaries
 
-Automated checks cover source validation and focused behavior tests. CI runs on Ubuntu 22.04 and 24.04. Tests using fixtures are distinct from native kernel/runtime checks, live VPS deployments and Minecraft client sessions; historical [verification notes](docs/VERIFICATION.md) and [VPS acceptance notes](docs/VPS-ACCEPTANCE.md) record their individual scope.
+CI validates production source and package integrity on Ubuntu 22.04 and 24.04. These checks do not replace verifying a fresh installation, an upgrade, network reachability and your actual workloads on their target VPS.
 
 Back up panel data and encryption keys off the host. Source updates can restart the service and local workloads; a source rollback does not undo world or application data changes. Application file operations/backups require a stopped application, while Bedrock supports its documented online snapshot workflow. Review each guide's size and format limits before importing large worlds or projects.
 

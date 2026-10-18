@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fail, walkFiles, parseProperties } from './safety.js';
 import { extractZip, validateBedrockPackage } from './archives.js';
-import { HISTORY_ENDPOINT, HISTORY_SOURCE, ARCHIVE_ENDPOINT, ARCHIVE_SOURCE, ARCHIVE_ROOT, boundedJson, historyEntries, historyRecord, archiveEntries, archiveRecord, compareVersions, demoHistory } from './version-catalog.js';
+import { HISTORY_ENDPOINT, HISTORY_SOURCE, ARCHIVE_ENDPOINT, ARCHIVE_SOURCE, ARCHIVE_ROOT, boundedJson, historyEntries, historyRecord, archiveEntries, archiveRecord, compareVersions } from './version-catalog.js';
 
 export const RELEASE_ENDPOINT = 'https://net-secondary.web.minecraft-services.net/api/v1.0/download/links';
 export function validateVersion(input) {
@@ -63,7 +63,7 @@ async function download(url, destination, progress, signal, expectedChecksums, i
   for (const digest of digests) if (digest.hash.digest('hex') !== digest.expected) fail(`${digest.algorithm === 'sha256' ? 'SHA-256' : 'SHA-1'} gói tải không khớp metadata cộng đồng. Gói chưa được cài.`, 502);
 }
 
-export function createVersionService({ store, dataDir, emit, demo, audit = (...args) => store.audit(...args), reserveDisk = async () => () => {} }) {
+export function createVersionService({ store, dataDir, emit, audit = (...args) => store.audit(...args), reserveDisk = async () => () => {} }) {
   const packageRoot = path.join(dataDir, 'packages');
   const pending = new Map();
   const importing = new Set();
@@ -77,9 +77,9 @@ export function createVersionService({ store, dataDir, emit, demo, audit = (...a
   const publicVersion = version => {
     const officialLatest = version.source === 'mojang' && version.version === store.data.settings[version.channel === 'stable' ? 'latestVersion' : 'previewVersion'];
     const freshProof = version.availability === 'available' && Number.isFinite(Date.parse(version.availabilityCheckedAt)) && Date.now() - Date.parse(version.availabilityCheckedAt) < 24 * 60 * 60 * 1000;
-    const available = Boolean(version.cached || (version.available && (!version.historical || demo || officialLatest || freshProof)));
+    const available = Boolean(version.cached || (version.available && (!version.historical || officialLatest || freshProof)));
     const availability = version.cached ? 'cached' : available ? 'available' : version.historical && version.availability === 'available' ? 'unchecked' : version.availability || (version.historical ? 'unchecked' : 'unavailable');
-    return { ...version, ...(demo ? { simulated: true, available: true, availability: 'simulated', source: version.source || 'demo' } : { available, availability }), cached: Boolean(version.cached) };
+    return { ...version, available, availability, cached: Boolean(version.cached) };
   };
   const historyMetadata = () => {
     const rows = store.data.versions.filter(item => item.historical || item.catalogKeys || item.historyKey);
@@ -274,7 +274,7 @@ export function createVersionService({ store, dataDir, emit, demo, audit = (...a
     assertOpen(); const key = keyFor(version, channel);
     const item = store.data.versions.find(value => value.version === version && value.channel === channel);
     if (!item) fail('Phiên bản không có trong chỉ mục.', 404);
-    if (demo || item.cached) return publicVersion(item);
+    if (item.cached) return publicVersion(item);
     if (!item.url) fail('Bản này cần nhập ZIP Linux để sử dụng.', 409);
     if (verifying.has(key)) return verifying.get(key);
     if (verifying.size >= 4) fail('Đang kiểm tra nhiều liên kết. Vui lòng thử lại sau.', 429);
@@ -326,7 +326,6 @@ export function createVersionService({ store, dataDir, emit, demo, audit = (...a
     const target = directory(version, channel);
     const item = store.data.versions.find(value => value.version === version && value.channel === channel);
     if (!item) fail('Phiên bản chưa được khám phá hoặc nhập vào kho. Hãy làm mới Mojang hoặc nhập ZIP.', 404);
-    if (demo) return { directory: target, manifest: ['bedrock_server'], simulated: true };
     if (item.cached) {
       try { progress(70, { phase: 'cache', loadedBytes: 0, totalBytes: null, percent: null }); } catch {}
       await validateBedrockPackage(target);
@@ -373,7 +372,6 @@ export function createVersionService({ store, dataDir, emit, demo, audit = (...a
   async function importPackage(archive, version, channel = 'stable') {
     assertOpen();
     const key = keyFor(version, channel);
-    if (demo) fail('Nhập gói chính thức không hoạt động trong chế độ demo.', 409);
     if (pending.has(key) || importing.has(key)) fail('Phiên bản đang được tải hoặc nhập. Vui lòng đợi hoàn tất.', 409);
     const target = directory(version, channel);
     if (store.data.versions.some(item => item.version === version && item.channel === channel && item.cached)) fail('Gói phiên bản đã được lưu; không thể thay thế gói bất biến.', 409);
@@ -396,5 +394,5 @@ export function createVersionService({ store, dataDir, emit, demo, audit = (...a
       return activated;
     } finally { importing.delete(key); await fs.rm(temporary, { recursive: true, force: true }).catch(() => {}); await releaseDisk?.(); }
   }
-  return { metadata, refresh, refreshHistory, verify, demoHistory, ensure, importPackage, directory, close: () => controller.abort() };
+  return { metadata, refresh, refreshHistory, verify, ensure, importPackage, directory, close: () => controller.abort() };
 }

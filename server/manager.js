@@ -74,11 +74,11 @@ export async function ensureServerIdentity(runRoot) {
   return destination;
 }
 
-export async function createManager({ store, dataDir, demo = false, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, hostReader, portAllocator }) {
+export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, hostReader, portAllocator }) {
   const applicationRuntime = applicationController || createApplicationRuntime({dataDir,resourceController,storageController});
-  const allocatePorts = portAllocator || createPortAllocator({ demo, protectedPorts: [Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
+  const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
   let applicationControl = {supported:false,engine:'bubblewrap',runtimes:[],reason:'Application runtime has not been checked.'};
-  const versionService = createVersionService({ store, dataDir, emit, demo, audit: (...args) => audit(...args), reserveDisk: bytes => reservePackageWorkspace(bytes) });
+  const versionService = createVersionService({ store, dataDir, emit, audit: (...args) => audit(...args), reserveDisk: bytes => reservePackageWorkspace(bytes) });
   const processes = new Map();
   const logBuffers = new Map();
   const consoleRuns = new Map();
@@ -106,7 +106,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   const actorContext = new AsyncLocalStorage();
   const serverMetrics = new Map();
   const storageMetrics = new Map();
-  const networkSamples = new Map();
   const pendingDisk = new Map();
   const runtimeBuilds = new Map();
   const applicationProjects = new Map();
@@ -117,7 +116,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   let lastHost = null, metricsSampledAt = null, storageControl = await storageController.capabilities();
   let collectingMetrics = null;
   const capacityGate = createCapacityGate({ readHost: async () => {
-    if (!demo) await applicationRuntime.assertNoPendingBuilds?.();
+    await applicationRuntime.assertNoPendingBuilds?.();
     const host = await capacityHostInfo();
     const pending = [...pendingDisk.values()].reduce((sum, value) => sum + value, 0);
     return { ...host, diskAvailableBytes: Math.max(0, (host.diskAvailableBytes ?? host.diskAvailable ?? host.disk?.availableBytes ?? host.diskTotal - host.diskUsed) - pending) };
@@ -167,20 +166,20 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   const logPolicy = () => store.historyPolicy?.() || LOG_RETENTION_DEFAULTS;
   const serverPolicy = server => normalizeResourcePolicy(server.resourcePolicy);
   const storagePolicy = server => normalizeStoragePolicy(server.storagePolicy, { legacy: true });
-  const ensureStorage = server => demo || storagePolicy(server).mode === 'unlimited' ? Promise.resolve() : storageController.ensureMounted(server);
+  const ensureStorage = server => storagePolicy(server).mode === 'unlimited' ? Promise.resolve() : storageController.ensureMounted(server);
   const serverResources = server => ({ configured: serverPolicy(server), effective: processes.get(server.id)?.resourceHandle?.effective || null, usage: processes.get(server.id)?.resourceUsage || null, allocation: serverCapacityAllocation(server), capacityCredit: serverCapacityAllocation(server), cleanupPending: server.resourceCleanupPending || null, lastExit: server.lastResourceExit || null });
   const telemetry = server => {
-    const policy = serverPolicy(server), runtime = processes.get(server.id), active = demo ? ['running', 'starting'].includes(server.status) : Boolean(runtime);
+    const policy = serverPolicy(server), runtime = processes.get(server.id), active = Boolean(runtime);
     const pool = resourceControl.managedPool;
     const poolCores = pool?.cpuCores ?? (lastHost?.cpus ? lastHost.cpus * 0.9 : null);
     const poolMemory = pool?.memoryMiB ? pool.memoryMiB * 1024 ** 2 : lastHost?.memoryTotal ? Math.floor(lastHost.memoryTotal * 0.9) : null;
     const cores = policy.mode === 'fixed' ? Math.min(policy.cpuCores, poolCores ?? policy.cpuCores) : poolCores;
     const memory = policy.mode === 'fixed' ? Math.min(policy.memoryMiB * 1024 ** 2, poolMemory ?? policy.memoryMiB * 1024 ** 2) : poolMemory;
     const stale = Boolean(runtime && (!runtime.sampledAt || Date.now() - Date.parse(runtime.sampledAt) > 15000));
-    const network = demo ? networkSamples.get(server.id) : networkMetrics.peek(server.id);
+    const network = networkMetrics.peek(server.id);
     return { sampledAt: runtime?.sampledAt || metricsSampledAt, stale,
-      cpu: { usedCores: stale ? null : active ? runtime ? runtime.cpuUsedCores ?? null : Number.isFinite(server.cpuPercent) ? server.cpuPercent / 100 : null : 0, totalCores: cores, usedPercent: stale ? null : active ? runtime?.cpuUsedCores != null ? runtime.cpuUsedCores * 100 : demo ? server.cpuPercent ?? null : null : 0, scope: runtime?.cpuScope || 'process', limitSource: policy.mode === 'fixed' ? 'fixed' : 'shared-pool' },
-      memory: { usedBytes: stale ? null : active ? runtime ? runtime.resourceUsage?.memoryCurrentBytes ?? runtime.memoryBytes ?? null : Number.isFinite(server.memoryMB) ? server.memoryMB * 1024 ** 2 : null : 0, totalBytes: memory, scope: runtime?.resourceUsage?.memoryCurrentBytes != null ? 'cgroup-memory-current' : 'process-rss', limitSource: policy.mode === 'fixed' ? 'fixed' : 'shared-pool' },
+      cpu: { usedCores: stale ? null : active ? runtime.cpuUsedCores ?? null : 0, totalCores: cores, usedPercent: stale ? null : active ? runtime.cpuUsedCores != null ? runtime.cpuUsedCores * 100 : null : 0, scope: runtime?.cpuScope || 'process', limitSource: policy.mode === 'fixed' ? 'fixed' : 'shared-pool' },
+      memory: { usedBytes: stale ? null : active ? runtime.resourceUsage?.memoryCurrentBytes ?? runtime.memoryBytes ?? null : 0, totalBytes: memory, scope: runtime?.resourceUsage?.memoryCurrentBytes != null ? 'cgroup-memory-current' : 'process-rss', limitSource: policy.mode === 'fixed' ? 'fixed' : 'shared-pool' },
       storage: storagePaused.has(server.id) ? { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: null, hardEnforced: false, sampledAt: now(), reason: 'Storage maintenance is in progress.', maintenance: true } : storageMetrics.get(server.id) || { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: storagePolicy(server).diskGiB === null ? null : storagePolicy(server).diskGiB * GIB, hardEnforced: false, sampledAt: null, reason: 'Storage has not been sampled.' },
       network: network || { available: false, rxBytes: null, txBytes: null, rxBytesPerSecond: null, txBytesPerSecond: null, sampledAt: null, scope: 'server-game-ports', reason: active ? 'Network counters are warming up.' : 'Server is stopped.' } };
   };
@@ -207,7 +206,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     maintenance = record;
     return record.release;
   }
-  const publicServer = server => ({ id: server.id, kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : demo && server.status === 'running' ? Math.floor((Date.now() - Date.parse(server.startedAt || server.createdAt)) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
+  const publicServer = server => ({ id: server.id, kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
   const persist = () => { store.save(); emit({ type: 'update' }); };
   const audit = (action, detail, user, detailI18n, serverId) => store.audit(action, detail, user || actorContext.getStore()?.username || 'system', detailI18n, serverId);
   const commitServerFields = (server, fields, action, detail = server.name) => {
@@ -265,7 +264,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
   async function deleteBackupRecord(server, record, action = 'backup.delete') {
     if (record.locked === true) fail('Bản sao lưu đang được khóa; hãy mở khóa trước khi xóa.', 409);
-    const quarantine = demo ? null : await quarantineDeletion(`servers/${server.id}/backups/${record.id}.zip`, 'backup', { optional: true });
+    const quarantine = await quarantineDeletion(`servers/${server.id}/backups/${record.id}.zip`, 'backup', { optional: true });
     const backups = server.backups, activity = store.data.activity;
     try {
       server.backups = backups.filter(item => item.id !== record.id);
@@ -287,11 +286,11 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     const runId = consoleRun(server);
     const entry = ring(server).append({ id: randomUUID(), runId, time: now(), level, source, message: String(message) });
     emit({ type: 'log', serverId: server.id, runId, log: entry });
-    if (!demo && storagePaused.has(server.id)) {
+    if (storagePaused.has(server.id)) {
       const entries = deferredLogs.get(server.id) || []; entries.push(entry);
       while (entries.length > 256 || entries.reduce((sum, row) => sum + Buffer.byteLength(row.message), 0) > 1024 ** 2) entries.shift();
       deferredLogs.set(server.id, entries);
-    } else if (!demo) writer(server).append(entry);
+    } else writer(server).append(entry);
     return entry;
   };
   const runtimeCurrent = (server, runtime) => processes.get(server.id) === runtime && consoleRun(server) === runtime.consoleRunId;
@@ -313,10 +312,10 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
   async function resumeStorageWrites(server) {
     if (!storagePaused.has(server.id)) return;
-    if (!demo && storagePolicy(server).mode === 'fixed' && !await storageController.isMounted(server)) return;
+    if (storagePolicy(server).mode === 'fixed' && !await storageController.isMounted(server)) return;
     storagePaused.delete(server.id);
     const entries = deferredLogs.get(server.id) || []; deferredLogs.delete(server.id);
-    if (!demo && entries.length) { const output = writer(server); for (const entry of entries) output.append(entry); await output.drain(); }
+    if (entries.length) { const output = writer(server); for (const entry of entries) output.append(entry); await output.drain(); }
   }
   const persistRuntime = server => {
     try { persist(); return null; }
@@ -325,10 +324,10 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   function deliverConsole(server, command, action = 'server.command', { allowStopping = false, gameplay = false, internal = false } = {}) {
     const runtime = processes.get(server.id);
     if (!gameplay && runtime?.gameplay?.busy) fail('Console đang đọc hoặc áp dụng thao tác gameplay. Hãy chờ hoàn tất.', 409);
-    if ((server.status !== 'running' && !(allowStopping && server.status === 'stopping')) || (!demo && (!runtime || runtime.child.stdin.destroyed || runtime.child.stdin.writable === false))) fail('Server phải đang chạy để gửi lệnh.', 409);
-    return dispatchConsoleLine({ simulated: demo, write: () => runtime.child.stdin.write(command.trim() + '\n'), log: () => {
+    if ((server.status !== 'running' && !(allowStopping && server.status === 'stopping')) || !runtime || runtime.child.stdin.destroyed || runtime.child.stdin.writable === false) fail('Server phải đang chạy để gửi lệnh.', 409);
+    return dispatchConsoleLine({ write: () => runtime.child.stdin.write(command.trim() + '\n'), log: () => {
       if (internal) return;
-      log(server, `> ${isApp(server) ? applicationRuntime.redact(server, command) : command}`, 'command'); if (demo) log(server, 'DEMO · Lệnh được ghi nhận; không có tiến trình Bedrock thật.');
+      log(server, `> ${isApp(server) ? applicationRuntime.redact(server, command) : command}`, 'command');
     }, audit: () => { if (!internal) audit(action, `${server.name}: ${isApp(server) ? applicationRuntime.redact(server, command) : command}`, undefined, undefined, server.id); } });
   }
   const optionalVoiceWarning = server => { try { log(server, 'Không thể gửi thông báo thế giới tùy chọn; thao tác quản lý vẫn tiếp tục.', 'warn'); } catch {} };
@@ -339,7 +338,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     if (!['stable', 'preview'].includes(channel)) fail('Kênh phiên bản không hợp lệ.');
     if (!version || version === 'latest') {
       let value = channel === 'stable' ? versionService.metadata().latest : versionService.metadata().preview;
-      if (!value && !demo) { await versionService.refresh(); value = channel === 'stable' ? versionService.metadata().latest : versionService.metadata().preview; }
+      if (!value) { await versionService.refresh(); value = channel === 'stable' ? versionService.metadata().latest : versionService.metadata().preview; }
       if (!value) fail('Chưa xác định được phiên bản mới nhất từ Mojang. Hãy kiểm tra mạng hoặc nhập ZIP chính thức.', 503);
       version = value;
     }
@@ -439,16 +438,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
 
   async function install(server, selection, progress, updating = false) {
-    if (demo) {
-      if (updating) await performBackup(server, value => progress(value / 2, 'DEMO · Sao lưu trước cập nhật'), 'pre-update');
-      await new Promise(resolve => setTimeout(resolve, 500));
-      Object.assign(server, selection, { status: 'stopped', error: null });
-      if (server.transport === 'auto') server.transport = Number(server.version.split('.')[1]) >= 26 ? 'nethernet' : 'raknet';
-      if (server.transport === 'raknet') server.udpPorts = null;
-      server.demoFiles ||= { 'server.properties': serializeProperties(defaultProperties(server)), 'allowlist.json': '[]\n', 'permissions.json': '[]\n', 'worlds/Bedrock level/levelname.txt': 'Bedrock level\n' };
-      log(server, `DEMO · ${updating ? 'Cập nhật' : 'Cài đặt'} Bedrock ${server.version} được mô phỏng.`);
-      return;
-    }
     progress(5, 'Chuẩn bị gói Bedrock chính thức');
     if (!updating && storagePolicy(server).mode === 'fixed') {
       progress(1, 'Đang cấp phát volume lưu trữ máy chủ', { phase: 'storage' });
@@ -559,7 +548,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       assertOpen(); validateNetwork(networkServers(), server.id, server);
       pendingNetworks.set(server.id, { kind: appKind(server), port: server.port, portV6: server.portV6, transport: server.transport, udpPorts: server.udpPorts, debugPort: server.debugPort });
       try {
-        if (!demo && (mode === 'auto' || isApp(server))) await probePorts(server);
+        if (mode === 'auto' || isApp(server)) await probePorts(server);
         assertOpen(); validateNetwork(networkServers(), server.id, server);
         return;
       } catch (error) {
@@ -573,9 +562,9 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
 
   async function start(server, { automatic = false } = {}) {
-    if (!demo) await applicationRuntime.assertNoPendingBuilds?.();
+    await applicationRuntime.assertNoPendingBuilds?.();
     await ensureStorage(server);
-    if (!demo && storagePolicy(server).mode === 'fixed') {
+    if (storagePolicy(server).mode === 'fixed') {
       const actual = await storageController.stats(server); storageMetrics.set(server.id, actual);
       if (!actual.hardEnforced || actual.limitBytes < storagePolicy(server).diskGiB * GIB) fail('Cần hoàn tất tăng dung lượng trước khi khởi động máy chủ này.', 409);
     }
@@ -585,21 +574,11 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     if (processes.has(server.id) || ['running', 'starting', 'stopping'].includes(server.status)) fail('Server đang chạy hoặc đang chuyển trạng thái.', 409);
     if (server.status === 'installing' || !server.version) fail('Server chưa cài đặt xong.', 409);
     validateNetwork(networkServers(), server.id, server);
-    if (demo && serverPolicy(server).mode === 'fixed') fail('Giới hạn tài nguyên cần server native trên hệ thống hỗ trợ.', 409);
     assertMemoryHeadroom({ host: await capacityHostInfo(), servers: capacityServers(), reserveRatio, minimumMemoryMiB: resourceControl.memory?.minMiB ?? 256 });
     if (closed) fail('Panel đang tắt.', 503);
     const restartTimer = restartTimers.get(server.id);
     if (restartTimer) { clearTimeout(restartTimer); restartTimers.delete(server.id); }
     if (!automatic) crashes.delete(server.id);
-    if (demo) {
-      resetConsole(server);
-      const previous = { ...server };
-      server.status = 'running'; server.startedAt = now(); server.error = null;
-      delete server.resumeOnPanelStart;
-      server.memoryMB = 184; server.cpuPercent = 2.4; server.players = 0;
-      log(server, `DEMO · Server started (mô phỏng), IPv4 ${server.port}, IPv6 ${server.portV6}.`);
-      persistStartState(server, previous); return publicServer(server);
-    }
     if (!isApp(server) && (process.platform !== 'linux' || process.arch !== 'x64')) fail('Bedrock Linux yêu cầu Ubuntu 22.04+ x86-64. Hãy triển khai panel trên Ubuntu.', 409);
     const workingDirectory = runDirectory(server);
     let executable, plan, properties = {};
@@ -731,7 +710,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     if (!shutdown && !closed) delete server.resumeOnPanelStart;
     const timer = restartTimers.get(server.id);
     if (timer) { clearTimeout(timer); restartTimers.delete(server.id); }
-    if (demo) { server.status = 'stopped'; server.players = 0; server.memoryMB = 0; server.cpuPercent = 0; log(server, `DEMO · ${force ? 'Buộc dừng' : 'Dừng'} server được mô phỏng.`); persist(); return publicServer(server); }
     const runtime = processes.get(server.id);
     if (!runtime) { server.status = 'stopped'; persist(); return publicServer(server); }
     const wasRunning = server.status === 'running' && runtime.ready;
@@ -771,7 +749,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   async function properties(server) {
     if (isApp(server)) fail('This tool is available for Minecraft Bedrock servers only.', 409);
     await ensureStorage(server);
-    const text = demo ? server.demoFiles?.['server.properties'] || serializeProperties(defaultProperties(server)) : await fs.readFile(await safePath(runDirectory(server), 'server.properties'), 'utf8');
+    const text = await fs.readFile(await safePath(runDirectory(server), 'server.properties'), 'utf8');
     return parseProperties(text);
   }
   function trackRuntimePlayer(server, runtime, line) {
@@ -803,7 +781,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     const runtime = processes.get(server.id);
     let current; try { current = await properties(server); } catch (error) { if (error.code !== 'ENOENT') throw error; current = defaultProperties(server); }
     let world = { name: current['level-name'] || 'Bedrock level', revision: null }, available = false, reason = 'Khởi động server native và đợi sẵn sàng để đọc hoặc đổi gameplay.';
-    if (!demo && runtime?.ready && server.status === 'running' && !runtime.expected) try { world = await gameplayWorld(server, runtime); available = true; reason = null; } catch (error) { reason = error.message; }
+    if (runtime?.ready && server.status === 'running' && !runtime.expected) try { world = await gameplayWorld(server, runtime); available = true; reason = null; } catch (error) { reason = error.message; }
     const cached = available ? runtime.gameRules : new Map();
     return { server: publicServer(server), available, reason, world, cheatsEnabled: available && runtime.startupProperties['allow-cheats'] === 'true', rules: GAME_RULES.map(rule => ({ ...rule, value: null, status: 'not-queried', ...(cached.get(rule.key) || {}) })), valuesSource: cached.size ? 'cached-native' : 'not-queried', rulesQueriedAt: available ? runtime.rulesQueriedAt || null : null, players: available ? gamePlayers(runtime) : [], actions: PLAYER_ACTIONS, itemCatalog: GAME_ITEMS, busy: Boolean(runtime?.gameplay?.busy), queryAvailable: available && !runtime.gameplay.busy && !publicServer(server).busy };
   }
@@ -811,7 +789,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     assertOpen(); assertIdle(server); assertRecovered(server);
     if (lifecycle.has(server.id)) fail('Server đang chuyển trạng thái. Vui lòng đợi.', 409);
     const runtime = processes.get(server.id);
-    if (demo || !runtime?.ready || server.status !== 'running') fail('Cần server native đang chạy và sẵn sàng để dùng gameplay.', 409);
+    if (!runtime?.ready || server.status !== 'running') fail('Cần server native đang chạy và sẵn sàng để dùng gameplay.', 409);
     const run = runtime.gameplay.run(async console => {
       const world = await gameplayWorld(server, runtime);
       if (world.revision !== worldRevision) fail('Phiên thế giới đã thay đổi. Hãy đọc lại gameplay trước khi thao tác.', 409);
@@ -861,10 +839,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       emit({ type: 'update' });
     } };
   }
-  function demoPacks(server) {
-    server.demoPacks ||= [{ uuid: randomUUID(), name: 'Vortex Survival Tools', description: 'Pack minh họa cho giao diện demo; không có nội dung Bedrock thật.', version: [1, 0, 0], minEngineVersion: [1, 21, 0], kind: 'behavior', folder: 'behavior_packs/vortex-demo', scope: null, modules: [{ type: 'data', uuid: randomUUID(), version: [1, 0, 0] }], dependencies: [], errors: [], protected: false, enabled: false, simulated: true }];
-    return server.demoPacks;
-  }
   function allowedTransports(server) {
     const [major, minor, patch] = String(server.version).split('.').map(Number);
     if (server.channel === 'preview' && (major > 1 || (major === 1 && (minor > 26 || (minor === 26 && patch >= 60))))) return ['nethernet'];
@@ -884,7 +858,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   async function applicationCapabilities({ refresh = false } = {}) {
     const native = typeof applicationRuntime.runtimeCatalog === 'function' ? await applicationRuntime.runtimeCatalog({ refresh }) : await applicationRuntime.capabilities();
     applicationControl = { ...native, engine: 'bubblewrap', runtimes: Array.isArray(native.runtimes) ? native.runtimes : Object.entries(native.runtimes || {}).map(([kind, info]) => ({ kind, ...info })) };
-    if (demo) applicationControl = { ...applicationControl, supported: false, reason: 'Application servers require a native Linux node.', reasonI18n: { id: 'panel.application.manager.native', en: 'Application servers require a native Linux node.', vi: 'Server ứng dụng cần node Linux thực.', params: [] } };
     return structuredClone(applicationControl);
   }
   async function requireApplicationRuntime(kind, { managed = false, server } = {}) {
@@ -995,13 +968,11 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     pendingNetworks.set(server.id, fields);
     let destination, temporary, rollback;
     let activated = false, committed = false, restored = false;
-    const beforeText = demo ? server.demoFiles?.['server.properties'] : null;
     try {
       const networkChanged = ['port', 'portV6', 'transport', 'udpPorts', 'debugPort'].some(key => fields[key] !== (server[key] ?? null));
-      if (!demo && networkChanged) await probePorts(fields);
+      if (networkChanged) await probePorts(fields);
       const text = serializeProperties(values);
-      if (demo) { server.demoFiles ||= {}; server.demoFiles['server.properties'] = text; activated = true; }
-      else {
+      {
         destination = await safePath(runDirectory(server), 'server.properties');
         temporary = `${destination}.${randomUUID()}.tmp`; rollback = `${destination}.${randomUUID()}.rollback`;
         await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
@@ -1014,8 +985,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       emit({ type: 'update' }); return configurationResult(server, values);
     } catch (error) {
       if (activated && !committed) {
-        if (demo) { if (beforeText === undefined) delete server.demoFiles['server.properties']; else server.demoFiles['server.properties'] = beforeText; restored = true; }
-        else { try { await fs.rename(rollback, destination); restored = true; } catch (rollbackError) { error.message += `; không thể khôi phục server.properties, bản cũ tại ${path.basename(rollback)}: ${rollbackError.message}`; } }
+        try { await fs.rename(rollback, destination); restored = true; } catch (rollbackError) { error.message += `; không thể khôi phục server.properties, bản cũ tại ${path.basename(rollback)}: ${rollbackError.message}`; }
       }
       throw error;
     } finally {
@@ -1080,12 +1050,12 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
   async function fileTools(server) {
     assertFileReady(server);
-    return createFileOperations({ root: runDirectory(server), server, demo, guard: fileGuard(server, await fileSettings(server)), commit: (fields, action, detail) => { commitServerFields(server, fields, action, detail); emit({ type: 'update' }); } });
+    return createFileOperations({ root: runDirectory(server), server, guard: fileGuard(server, await fileSettings(server)), commit: (fields, action, detail) => { commitServerFields(server, fields, action, detail); emit({ type: 'update' }); } });
   }
   async function moveFile(server, input) { return (await fileTools(server)).transfer(input, true); }
   async function readFile(server, name) {
     if (isApp(server)) assertFileReady(server);
-    const result = await readTextFile(runDirectory(server), server, demo, name);
+    const result = await readTextFile(runDirectory(server), name);
     let protection = null;
     try { fileGuard(server, await fileSettings(server))(result.path, 'edit'); } catch (error) { protection = error.message; }
     const access = fileAccessContext.getStore();
@@ -1110,7 +1080,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
         await savePlayers(server, { ...(await players(server)), [relative === 'allowlist.json' ? 'allowlist' : 'permissions']: value });
       }
       const saved = await readFile(server, relative);
-      return { ok: true, path: relative, content: saved.content, revision: saved.revision, demo };
+      return { ok: true, path: relative, content: saved.content, revision: saved.revision };
     }
     return (await fileTools(server)).create(relative, content, { ...options, existing: true });
   }
@@ -1125,20 +1095,10 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       try { guard(entry.path, 'destructive'); } catch (error) { protection = error.message; }
       try { guard(entry.path, 'edit'); } catch { editable = false; }
       const immutable = Boolean(protection && !['server.properties', 'allowlist.json', 'permissions.json'].includes(entry.path) && !entry.path.startsWith('worlds/'));
-      return { ...entry, protected: Boolean(protection), protection, simulated: Boolean(demo && server.demoArchives?.[entry.path]), capabilities: { read: !entry.directory, edit: stopped && editable, download: !entry.directory && !(demo && server.demoArchives?.[entry.path]), copy: stopped && readable && !immutable, move: stopped && !protection, rename: stopped && !protection, delete: stopped && !protection, compress: stopped && readable, extract: stopped && readable && !entry.directory && entry.name.toLowerCase().endsWith('.zip') } };
+      return { ...entry, protected: Boolean(protection), protection, capabilities: { read: !entry.directory, edit: stopped && editable, download: !entry.directory, copy: stopped && readable && !immutable, move: stopped && !protection, rename: stopped && !protection, delete: stopped && !protection, compress: stopped && readable, extract: stopped && readable && !entry.directory && entry.name.toLowerCase().endsWith('.zip') } };
     };
     const access = fileAccessContext.getStore();
-    const response = entries => ({ path: relative, files: entries.map(describe).sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name)), demo, limits: FILE_LIMITS, fileAccess: actorContext.getStore()?.role === 'admin' && access?.serverId === server.id && access.expires > Date.now() ? { expires: access.expires } : null });
-    if (demo) {
-      const prefix = relative ? relative + '/' : '';
-      const entries = new Map();
-      for (const [file, content] of Object.entries(server.demoFiles || {})) if (file.startsWith(prefix)) {
-        const rest = file.slice(prefix.length); const piece = rest.split('/')[0];
-        if (piece) entries.set(piece, { name: piece, path: prefix + piece, directory: rest.includes('/'), size: rest.includes('/') ? 0 : Buffer.byteLength(content), modified: server.createdAt });
-      }
-      for (const dir of server.demoDirs || []) if (dir.startsWith(prefix)) { const piece = dir.slice(prefix.length).split('/')[0]; if (piece) entries.set(piece, { name: piece, path: prefix + piece, directory: true, size: 0, modified: server.createdAt }); }
-      return response([...entries.values()]);
-    }
+    const response = entries => ({ path: relative, files: entries.map(describe).sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name)), limits: FILE_LIMITS, fileAccess: actorContext.getStore()?.role === 'admin' && access?.serverId === server.id && access.expires > Date.now() ? { expires: access.expires } : null });
     const target = await safePath(runDirectory(server), relative);
     if (!(await fs.stat(target)).isDirectory()) fail('Đường dẫn không phải thư mục.');
     const entries = [];
@@ -1152,7 +1112,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
   async function players(server) {
     const read = async name => {
-      if (demo) { try { return JSON.parse(server.demoFiles?.[name] || '[]'); } catch { return []; } }
       try { return JSON.parse(await fs.readFile(await safePath(runDirectory(server), name), 'utf8')); } catch (error) { if (error.status === 404 || error.code === 'ENOENT') return []; throw error; }
     };
     const runtime = processes.get(server.id);
@@ -1166,24 +1125,21 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     // pair here so a stale sequential submission cannot overwrite a prior save.
     if (input.revision !== undefined) assertPlayerListRevision(input, await players(server));
     const files = playerListFiles(lists);
-    if (demo) commitServerFields(server, { demoFiles: { ...(server.demoFiles || {}), ...files } }, 'server.players');
-    else await commitPlayerListFiles(runDirectory(server), files, () => commitServerFields(server, {}, 'server.players'));
+    await commitPlayerListFiles(runDirectory(server), files, () => commitServerFields(server, {}, 'server.players'));
     emit({ type: 'update' }); return { ok: true, revision: playerListsRevision(lists) };
   }
   async function worldOptions(server) {
-    if (demo) return { serverVersion: server.version, globalPacks: [] };
     const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
     const catalog = await inspectPacks(runRoot, { levelName: (await properties(server))['level-name'] || 'Bedrock level', serverVersion: server.version, runtimeFiles: server.runtimeFiles || [] });
     return { serverVersion: server.version, globalPacks: catalog.packs.filter(pack => pack.scope === null) };
   }
   const worldRow = (name, current, inspected) => ({ name, displayName: inspected.metadata.displayName || inspected.metadata.name || name, active: name === current, exists: true, state: 'ready', valid: true, validationMode: 'structural', size: inspected.size, modified: inspected.modified, metadata: inspected.metadata, warnings: inspected.warnings, error: null });
   async function worlds(server) {
-    const runRoot = demo ? null : await safePath(dataDir, `servers/${server.id}/run`);
+    const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
     const values = await properties(server), current = values['level-name'] || 'Bedrock level';
-    const names = demo ? [...new Set(Object.keys(server.demoFiles || {}).filter(name => name.startsWith('worlds/') && name.split('/').length > 2).map(name => name.split('/')[1]))].sort() : await existingWorldNames(runRoot);
+    const names = await existingWorldNames(runRoot);
     const options = await worldOptions(server), rows = [];
     for (const name of names) {
-      if (demo) { rows.push({ ...worldRow(name, current, { metadata: { displayName: name, validation: 'simulated' }, size: 0, modified: server.createdAt || now(), warnings: ['DEMO · World và metadata được mô phỏng.'] }), simulated: true }); continue; }
       try { rows.push(worldRow(name, current, await inspectSupportedWorld(await worldTarget(runRoot, name), options))); }
       catch (error) {
         const retryable = error.code === 'WORLD_METADATA_CHANGED' || error.message === 'Dữ liệu thế giới đã thay đổi trong lúc kiểm tra; hãy dừng server và thử lại.' || (['running', 'starting', 'stopping'].includes(server.status) && ['ENOENT', 'ENOTDIR'].includes(error.code));
@@ -1191,11 +1147,10 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       }
     }
     const pending = names.includes(current) ? null : { name: current, seed: values['level-seed'] || '', state: 'pending-generation', exists: false, active: true };
-    return { worlds: rows, current, pending, limits: WORLD_LIMITS, demo, validationMode: 'structural', warnings: demo ? ['DEMO · Không tạo hoặc tải world Bedrock thật.'] : ['Kiểm tra metadata và bố cục world không xác minh khả năng chơi; Bedrock sẽ đọc database khi khởi động.'] };
+    return { worlds: rows, current, pending, limits: WORLD_LIMITS, validationMode: 'structural', warnings: ['Kiểm tra metadata và bố cục world không xác minh khả năng chơi; Bedrock sẽ đọc database khi khởi động.'] };
   }
   async function importWorld(server, archive, input) {
     assertStopped(server);
-    if (demo) fail('Nhập world không hoạt động trong demo; cần server với dữ liệu Bedrock thật.', 409);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['name', 'filename'].includes(key))) fail('Yêu cầu nhập world không hợp lệ.');
     const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
     const name = validateWorldName(input.name), current = (await properties(server))['level-name'] || 'Bedrock level';
@@ -1244,23 +1199,19 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     assertStopped(server);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !(create ? ['name', 'seed'] : ['name']).includes(key))) fail('Yêu cầu chọn hoặc tạo world không hợp lệ.');
     const name = validateWorldName(input.name), seed = create ? validateWorldSeed(input.seed ?? '') : null;
-    const runRoot = demo ? null : await safePath(dataDir, `servers/${server.id}/run`);
+    const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
     if (create) {
-      const names = demo ? (await worlds(server)).worlds.map(world => world.name) : await existingWorldNames(runRoot);
+      const names = await existingWorldNames(runRoot);
       if (names.length >= WORLD_LIMITS.maxWorlds) fail('Panel hỗ trợ tối đa 100 world trên một server.', 409);
-      if (demo) { if (names.includes(name)) fail('Tên world đã tồn tại; hãy chọn tên mới, không ghi đè dữ liệu.', 409); }
-      else await worldTarget(runRoot, name, { missing: true });
-    } else if (demo) {
-      if (!(await worlds(server)).worlds.some(world => world.name === name)) fail('Không tìm thấy thư mục world hợp lệ.', 404);
+      await worldTarget(runRoot, name, { missing: true });
     } else await inspectSupportedWorld(await worldTarget(runRoot, name), await worldOptions(server));
     const configuration = await saveConfiguration(server, { properties: { 'level-name': name, ...(create ? { 'level-seed': seed } : {}) } }, create ? 'world.create' : 'world.select', `${server.name}: ${name}`);
     // Never write placeholder level.dat/db files: native BDS creates a fresh
     // world from this configuration at its next successful start.
-    return { world: { name, active: true, exists: !create, state: create ? 'pending-generation' : 'ready', validationMode: create ? null : 'structural' }, configuration, demo };
+    return { world: { name, active: true, exists: !create, state: create ? 'pending-generation' : 'ready', validationMode: create ? null : 'structural' }, configuration };
   }
   async function exportWorldInfo(server, name) {
     assertStopped(server);
-    if (demo) fail('World demo không chứa dữ liệu thật để tải xuống.', 409);
     const target = await worldTarget(await safePath(dataDir, `servers/${server.id}/run`), name);
     await inspectSupportedWorld(target, await worldOptions(server));
     return { target, name: `${name}.mcworld` };
@@ -1277,12 +1228,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     assertStopped(server); validateWorldName(name);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'name') || input.name !== name) fail('Hãy nhập chính xác tên world để xác nhận xóa.');
     if ((await properties(server))['level-name'] === name) fail('Không được xóa world đang chọn; hãy chọn world khác trước.', 409);
-    if (demo) {
-      const files = { ...(server.demoFiles || {}) };
-      if (!Object.keys(files).some(file => file.startsWith(`worlds/${name}/`))) fail('Không tìm thấy thư mục world hợp lệ.', 404);
-      for (const file of Object.keys(files)) if (file.startsWith(`worlds/${name}/`)) delete files[file];
-      commitServerFields(server, { demoFiles: files }, 'world.delete', `${server.name}: ${name}`); return { ok: true, demo };
-    }
     await worldTarget(await safePath(dataDir, `servers/${server.id}/run`), name);
     const relative = `servers/${server.id}/run/worlds/${name}`, quarantine = await quarantineDeletion(relative, 'server');
     const activity = store.data.activity;
@@ -1291,7 +1236,8 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     return finishDeletion(quarantine);
   }
   const publicBackup = (server, record) => {
-    const { demoFiles, ...visible } = record;
+    const fields = ['id', 'name', 'size', 'createdAt', 'version', 'kind', 'reason', 'excludes', 'dependenciesRequireInstall', 'consistency'];
+    const visible = Object.fromEntries(fields.filter(key => Object.hasOwn(record, key)).map(key => [key, record[key]]));
     return { ...visible, locked: record.locked === true, sha256: record.sha256 || null, checksumOrigin: record.checksumOrigin || null, integrity: record.integrity || { status: 'unverified', checkedAt: null }, restoreCompatible: (record.kind || 'bedrock') === appKind(server) && (isApp(server) || !record.version || record.version === server.version) };
   };
   async function inspectBackupArchive(archive, expectedHash, progress = () => {}) {
@@ -1342,8 +1288,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       const id = randomUUID();
       const record = { id, name: `${reason === 'pre-update' ? 'pre-update-' : ''}${server.name}-${now().replace(/[:.]/g, '-')}.zip`, size: 0, createdAt: now(), version: server.version, kind: appKind(server), reason, locked: false, ...(isApp(server) ? { excludes: ['node_modules/', '.venv/', '.home/'], dependenciesRequireInstall: true } : {}) };
       let artifact; const cleanupWarnings = [];
-      if (demo) { record.size = 8405232; record.demoFiles = structuredClone(server.demoFiles || {}); await new Promise(resolve => setTimeout(resolve, 400)); }
-      else {
+      {
         const backupsRoot = await safePath(dataDir, `servers/${server.id}/backups`, { allowMissing: true });
         await fs.mkdir(backupsRoot, { recursive: true, mode: 0o700 });
         const temporary = path.join(backupsRoot, `.${id}.tmp`);
@@ -1419,7 +1364,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     assertIdle(server); assertRecovered(server);
     if (isApp(server)) assertStopped(server);
     const runtime = processes.get(server.id);
-    if (lifecycle.has(server.id) || ['starting', 'stopping'].includes(server.status) || (!demo && server.status === 'running' && (!runtime?.ready || runtime.expected))) fail('Đợi server sẵn sàng rồi tạo bản sao lưu.', 409);
+    if (lifecycle.has(server.id) || ['starting', 'stopping'].includes(server.status) || ((server.status === 'running') && (!runtime?.ready || runtime.expected))) fail('Đợi server sẵn sàng rồi tạo bản sao lưu.', 409);
     return job('backup', server, progress => performBackup(server, progress));
   }
   const backupRecord = (server, id) => (server.backups || []).find(item => item.id === id) || fail('Không tìm thấy bản sao lưu.', 404);
@@ -1429,9 +1374,8 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     const record = backupRecord(server, backupId);
     if ((record.kind || 'bedrock') !== appKind(server)) fail('Backup runtime type does not match this server.', 409);
     if (!isApp(server) && record.version && record.version !== server.version) fail('Bản sao lưu thuộc phiên bản khác. Hãy cài lại phiên bản tương ứng trước khi khôi phục để tránh hỏng thế giới.', 409);
-    if (!demo && !record.sha256) fail('Bản sao lưu cũ chưa có SHA-256; hãy chạy kiểm tra để thiết lập mốc toàn vẹn trước khi khôi phục.', 409);
+    if (!record.sha256) fail('Bản sao lưu cũ chưa có SHA-256; hãy chạy kiểm tra để thiết lập mốc toàn vẹn trước khi khôi phục.', 409);
     return job('restore', server, async progress => {
-      if (demo) { server.demoFiles = structuredClone(record.demoFiles || server.demoFiles || {}); return; }
       const serverRoot = await safePath(dataDir, `servers/${server.id}`);
       const staging = path.join(serverRoot, `.restore-${randomUUID()}`);
       const rollback = path.join(serverRoot, `.rollback-${randomUUID()}`);
@@ -1533,19 +1477,18 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
         }
       } catch (error) { runtime.resourceUsage = null; runtime.resourceStatsError = error.message; runtime.cpuScope = isApp(server) ? 'unavailable' : 'process'; if (isApp(server)) { runtime.cpuUsedCores = null; runtime.memoryBytes = null; runtime.sampledAt = null; } }
     }
-    if (!demo) {
+    {
       await networkMetrics.syncServers([...processes.keys()].map(id => get(id))).catch(() => {});
-      const networks = await networkMetrics.sample().catch(() => ({}));
+      await networkMetrics.sample().catch(() => {});
       await Promise.all(store.data.servers.map(async server => {
         if (storagePaused.has(server.id)) return;
         try { storageMetrics.set(server.id, await storageController.stats(server)); }
         catch (error) { storageMetrics.set(server.id, { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: storagePolicy(server).diskGiB === null ? null : storagePolicy(server).diskGiB * GIB, hardEnforced: false, sampledAt: now(), reason: error.message }); }
-        networkSamples.set(server.id, networks[server.id] || networkMetrics.peek(server.id));
       }));
     }
     for (const server of store.data.servers) {
       const samples = serverMetrics.get(server.id) || [];
-      samples.push({ time: now(), cpu: processes.has(server.id) ? telemetry(server).cpu.usedPercent : demo ? server.cpuPercent || 0 : 0, memoryMB: processes.has(server.id) ? telemetry(server).memory.usedBytes === null ? null : telemetry(server).memory.usedBytes / 1024 ** 2 : demo ? server.memoryMB || 0 : 0, players: server.players || 0, status: server.status, telemetry: telemetry(server) });
+      samples.push({ time: now(), cpu: processes.has(server.id) ? telemetry(server).cpu.usedPercent : 0, memoryMB: processes.has(server.id) ? telemetry(server).memory.usedBytes === null ? null : telemetry(server).memory.usedBytes / 1024 ** 2 : 0, players: server.players || 0, status: server.status, telemetry: telemetry(server) });
       if (samples.length > 120) samples.splice(0, samples.length - 120);
       serverMetrics.set(server.id, samples);
     }
@@ -1563,7 +1506,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
   }
   async function rawHostInfo() {
     if (hostReader) return hostReader(dataDir);
-    if (demo) return { hostname: 'ubuntu-bedrock-demo', platform: 'linux', arch: 'x64', cpus: 8, cpuPercent: 14.2, memoryTotal: 16 * 1024 ** 3, memoryUsed: Math.floor(3.6 * 1024 ** 3), memoryAvailable: Math.floor(12.4 * 1024 ** 3), uptime: 86412, diskTotal: 120 * 1024 ** 3, diskUsed: 24 * 1024 ** 3, diskAvailableBytes: 96 * 1024 ** 3, load: [0.62, 0.48, 0.41], demo: true };
     const { getHostInfo } = await import('./host.js');
     return getHostInfo(dataDir);
   }
@@ -1571,7 +1513,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     const host = { ...await rawHostInfo() };
     // Rate samplers cache their baseline briefly. Admission must observe disk
     // allocations and MemAvailable again after every preceding transaction.
-    if (!demo && !hostReader) {
+    if (!hostReader) {
       const disk = await fs.statfs(dataDir);
       host.diskTotal = Number(disk.blocks) * Number(disk.bsize);
       host.diskAvailableBytes = Number(disk.bavail) * Number(disk.bsize);
@@ -1677,13 +1619,12 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     } finally { scheduleBusy = false; }
   }
   const manager = {
-    demo,
     async initialize() {
       if (initialized) return; initialized = true;
       resourceControl = await resourceController.initialize();
       await applicationRuntime.initialize();
       await applicationCapabilities();
-      if (!demo) {
+      {
         storageControl = await storageController.initialize();
         await networkMetrics.initialize();
         await fs.mkdir(root, { recursive: true, mode: 0o700 });
@@ -1703,23 +1644,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
         persist();
         versionService.refresh().catch(() => {});
         releaseTimer = setInterval(() => versionService.refresh().catch(() => {}), 6 * 60 * 60 * 1000); releaseTimer.unref();
-      } else if (!store.data.servers.length) {
-        const demoVersion = '1.26.52.3';
-        store.data.versions = [{ version: demoVersion, channel: 'stable', url: null, available: true, cached: false, discoveredAt: now(), simulated: true }, { version: '1.26.60.30', channel: 'preview', url: null, available: true, cached: false, discoveredAt: now(), simulated: true }, { version: '1.21.130.3', channel: 'stable', url: null, available: true, cached: false, discoveredAt: now(), simulated: true }, ...versionService.demoHistory()];
-        store.data.settings.latestVersion = demoVersion; store.data.settings.previewVersion = '1.26.60.30'; store.data.settings.versionsCheckedAt = now();
-        for (const [name, port, status] of [['Survival · Friends', 19132, 'running'], ['Creative Lab', 19232, 'stopped']]) {
-          const server = { id: randomUUID(), name, version: demoVersion, channel: 'stable', port, portV6: port + 1, transport: 'nethernet', udpPorts: defaultUdpPorts(port, 20), maxPlayers: 20, players: status === 'running' ? 3 : 0, status, createdAt: new Date(Date.now() - 86400000 * 4).toISOString(), startedAt: new Date(Date.now() - 7200000).toISOString(), autoRestart: true, autoStart: false, memoryMB: status === 'running' ? 256 : 0, cpuPercent: status === 'running' ? 3.8 : 0, runtimeFiles: ['bedrock_server'], backups: [] };
-          server.demoFiles = { 'server.properties': serializeProperties(defaultProperties(server)), 'allowlist.json': '[]\n', 'permissions.json': '[]\n', 'worlds/Bedrock level/levelname.txt': 'Bedrock level\n' };
-          store.data.servers.push(server);
-          log(server, `DEMO · Bedrock Dedicated Server ${demoVersion}.`); log(server, status === 'running' ? 'DEMO · Server started. Mọi số liệu server được mô phỏng.' : 'DEMO · Server đang dừng.');
-        }
-        persist();
-      }
-      if (demo) {
-        // The demo reads the same live catalogs but every server operation and
-        // package remains simulated; keep the small seed when offline.
-        versionService.refreshHistory().catch(() => {});
-        releaseTimer = setInterval(() => versionService.refreshHistory().catch(() => {}), 6 * 60 * 60 * 1000); releaseTimer.unref();
       }
       for (const server of store.data.servers.filter(item => !item.restoreRecoveryRequired && !item.storageMountError && (item.autoStart || item.resumeOnPanelStart) && !['running', 'starting'].includes(item.status))) manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); });
       await collectMetrics();
@@ -1728,7 +1652,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     },
     async dashboard() {
       resourceControl = await resourceController.capabilities();
-      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { linux: demo || process.platform === 'linux', root: !demo && process.getuid?.() === 0, hostTerminal: !demo && process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', demo, portAllocation: demo || process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
+      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
     },
     listServers: () => store.data.servers.map(publicServer),
     getServer: id => publicServer(get(id)),
@@ -1737,10 +1661,10 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     withHostOperation,
     maintenanceStatus: () => maintenance ? { active: true, action: maintenance.action, requestId: maintenance.requestId } : null,
     withFileAccess: (access, callback) => fileAccessContext.run(access, callback),
-    serverHistory: id => ({ history: [...(serverMetrics.get(get(id).id) || [])], sampleIntervalMs: 5000, retentionSeconds: 600, demo }),
+    serverHistory: id => ({ history: [...(serverMetrics.get(get(id).id) || [])], sampleIntervalMs: 5000, retentionSeconds: 600 }),
     async createServer(input) {
       assertOpen();
-      if (!demo) await applicationRuntime.assertNoPendingBuilds?.();
+      await applicationRuntime.assertNoPendingBuilds?.();
       if (input && ['nodejs', 'python'].includes(input.kind)) return createApplicationServer(input);
       if (input?.kind !== undefined && input.kind !== 'bedrock') throw applicationIssue('APPLICATION_INPUT', 400);
       if (!input || input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA và Điều khoản trước khi cài đặt.');
@@ -1749,7 +1673,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       const resourcePolicy = normalizeResourcePolicy(input.resourcePolicy);
       const storage = normalizeStoragePolicy(input.storagePolicy);
       resourceControl = await resourceController.capabilities();
-      if (resourcePolicy.mode === 'fixed' && (!resourceControl.fixedSupported || demo)) fail(resourceControl.reason || 'Giới hạn tài nguyên cần server native trên hệ thống hỗ trợ.', 409);
+      if (resourcePolicy.mode === 'fixed' && !resourceControl.fixedSupported) fail(resourceControl.reason || 'Giới hạn tài nguyên cần server native trên hệ thống hỗ trợ.', 409);
       assertOpen();
       const maxPlayers = Number(input.maxPlayers || 20);
       if (!Number.isInteger(maxPlayers) || maxPlayers < 1 || maxPlayers > 1000) fail('Số người chơi tối đa phải từ 1–1000.');
@@ -1758,8 +1682,8 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       const catalogItem = store.data.versions.find(item => item.version === selection.version && item.channel === selection.channel);
       const ports = portMode === 'auto' ? { port: null, portV6: null, transport: catalogItem.transport || 'auto', udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port, portV6: input.portV6 ?? 19133, transport: catalogItem.transport || 'auto', udpPorts: defaultUdpPorts(port, maxPlayers) });
       const server = { id: randomUUID(), name: input.name.trim(), ...selection, ...ports, maxPlayers, status: 'installing', players: 0, createdAt: now(), autoRestart: true, autoStart: false, backupRetention: 10, messageLanguage: 'en', worldVoiceEnabled: true, resourcePolicy, storagePolicy: storage, admissionReservation: { ...SHARED_ADMISSION_RESERVATION }, eulaAcceptedAt: now(), backups: [] };
-      if (!demo) { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
-      const packageBytes = !demo && !catalogItem.cached ? PACKAGE_WORKSPACE_BYTES : 0;
+      { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
+      const packageBytes = !catalogItem.cached ? PACKAGE_WORKSPACE_BYTES : 0;
       return capacityGate.run({ candidate: server, additionalDiskBytes: storage.diskGiB * GIB + packageBytes }, async assessment => {
         try {
         await prepareCreationNetwork(server, portMode);
@@ -1776,7 +1700,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       assertOpen();
       const server = get(id); assertIdle(server);
       const fields = isApp(server) ? applicationSettings(input) : validateServerSettings(input);
-      if (fields.resourcePolicy && JSON.stringify(fields.resourcePolicy) !== JSON.stringify(serverPolicy(server))) { assertStopped(server); if (fields.resourcePolicy.mode === 'fixed' && (!resourceControl.fixedSupported || demo)) fail(resourceControl.reason || 'Giới hạn tài nguyên cần server native trên hệ thống hỗ trợ.', 409); }
+      if (fields.resourcePolicy && JSON.stringify(fields.resourcePolicy) !== JSON.stringify(serverPolicy(server))) { assertStopped(server); if (fields.resourcePolicy.mode === 'fixed' && !resourceControl.fixedSupported) fail(resourceControl.reason || 'Giới hạn tài nguyên cần server native trên hệ thống hỗ trợ.', 409); }
       const resourceChanged = fields.resourcePolicy && JSON.stringify(fields.resourcePolicy) !== JSON.stringify(serverPolicy(server));
       const commit = () => { assertOpen(); assertIdle(server); if (resourceChanged) assertStopped(server); commitServerFields(server, fields, 'server.settings'); emit({ type: 'update' }); return { server: publicServer(server) }; };
       return resourceChanged ? capacityGate.run({ candidate: { ...server, ...fields }, replaceServerId: id }, commit) : commit();
@@ -1786,11 +1710,11 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(server.id)) fail('ID server không hợp lệ.', 500);
       // Drain pending console writes before moving the stopped instance tree.
       await pauseStorageWrites(server);
-      const fixedStorage = !demo && storagePolicy(server).mode === 'fixed';
+      const fixedStorage = (storagePolicy(server).mode === 'fixed');
       try { if (fixedStorage) await storageController.unmount(server); }
       catch (error) { await resumeStorageWrites(server).catch(() => {}); throw error; }
       let quarantine;
-      try { quarantine = demo ? null : await quarantineDeletion(`servers/${server.id}`, 'server', { optional: true }); }
+      try { quarantine = await quarantineDeletion(`servers/${server.id}`, 'server', { optional: true }); }
       catch (error) { if (fixedStorage) await storageController.ensureMounted(server).catch(problem => { error.message += `; storage remount failed: ${problem.message}`; }); await resumeStorageWrites(server).catch(() => {}); throw error; }
       const before = { servers: store.data.servers, schedules: store.data.schedules, activity: store.data.activity, grants: store.data.users.map(user => ({ user, present: Object.hasOwn(user, 'serverIds'), value: user.serverIds })) };
       try {
@@ -1809,7 +1733,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       }
       const timer = restartTimers.get(id); if (timer) { clearTimeout(timer); restartTimers.delete(id); }
       await logWriters.get(id)?.close();
-      for (const values of [logBuffers, consoleRuns, logWriters, serverMetrics, storageMetrics, networkSamples, crashes, applicationProjects, applicationProjectInstallStates]) values.delete(id);
+      for (const values of [logBuffers, consoleRuns, logWriters, serverMetrics, storageMetrics, crashes, applicationProjects, applicationProjectInstallStates]) values.delete(id);
       storagePaused.delete(id); deferredLogs.delete(id);
       const result = await finishDeletion(quarantine);
       if (fixedStorage) {
@@ -1821,7 +1745,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     },
     async growStorage(id, input) {
       const server = get(id); assertStopped(server);
-      if (demo) fail('Tăng dung lượng cần máy chủ native.', 409);
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'diskGiB')) fail('Yêu cầu tăng dung lượng chỉ chấp nhận diskGiB.', 400);
       const current = storagePolicy(server), proposed = normalizeStoragePolicy({ mode: 'fixed', diskGiB: input.diskGiB });
       if (current.mode !== 'fixed') fail('Máy chủ cũ này chưa có volume lưu trữ giới hạn riêng.', 409);
@@ -1843,7 +1766,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       });
     },
     async cloneServer(id, input) {
-      if (!demo) await applicationRuntime.assertNoPendingBuilds?.();
+      await applicationRuntime.assertNoPendingBuilds?.();
       const source = get(id); assertStopped(source);
       if (isApp(source)) fail('Application cloning is not available. Create a new application and restore its source files.', 409);
       if (input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA trước khi nhân bản.');
@@ -1854,7 +1777,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       const portMode = creationPortMode(input);
       const network = portMode === 'auto' ? { port: null, portV6: null, transport: source.transport || 'raknet', udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port: input.port, portV6: input.portV6, transport: source.transport || 'raknet', udpPorts: source.transport === 'nethernet' ? defaultUdpPorts(input.port, maxPlayers) : null });
       const target = { id: randomUUID(), name: input.name.trim(), version: source.version, channel: source.channel, ...network, maxPlayers, status: 'installing', players: 0, createdAt: now(), autoRestart: source.autoRestart, autoStart: false, backupRetention: source.backupRetention || 10, messageLanguage: serverMessageLanguage(source), worldVoiceEnabled: serverWorldVoiceEnabled(source), resourcePolicy: serverPolicy(source), storagePolicy: normalizeStoragePolicy(input.storagePolicy ?? (source.storagePolicy?.mode === 'fixed' ? source.storagePolicy : undefined)), admissionReservation: { ...SHARED_ADMISSION_RESERVATION }, eulaAcceptedAt: now(), backups: [], clonedFrom: source.id, runtimeFiles: [...(source.runtimeFiles || [])] };
-      if (!demo) { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
+      { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
       return capacityGate.run({ candidate: target }, async assessment => {
       try {
       assertOpen(); assertStopped(source);
@@ -1863,16 +1786,6 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       pendingDisk.set(target.id, assessment.additionalDiskBytes);
       let record;
       try { record = registerServerJob(target, 'clone', async progress => {
-          if (demo) {
-            target.demoFiles = structuredClone(source.demoFiles || {});
-            for (const name of Object.keys(target.demoFiles)) if (name.startsWith('keys/') || name === 'server_identity_key.pem') delete target.demoFiles[name];
-            const properties = parseProperties(target.demoFiles['server.properties'] || '');
-            Object.assign(properties, { 'server-name': target.name, 'server-port': String(target.port), 'server-portv6': String(target.portV6), 'enable-lan-visibility': 'false', transport: target.transport, ...(target.transport === 'nethernet' ? { 'server-udp-ports': target.udpPorts } : {}) });
-            target.demoFiles['server.properties'] = serializeProperties(properties);
-            await new Promise(resolve => setTimeout(resolve, 300)); target.status = 'stopped';
-            log(target, 'DEMO · Nhân bản server được mô phỏng; identity đã được tách riêng.');
-            return;
-          }
           try { await storageController.provision(target); storageMetrics.set(target.id, await storageController.stats(target)); }
           finally { pendingDisk.delete(target.id); }
           const files = (await walkFiles(runDirectory(source))).filter(name => !name.startsWith('keys/') && name !== 'server_identity_key.pem');
@@ -1988,7 +1901,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
         progress(100, 'Dependency installation completed', { phase: 'complete' }); return { message: 'Dependency installation completed', result: { ...result, entrypoint: server.application.entrypoint, startup: startupSummary(server), ...(server.runtime ? { runtime: publicRuntimePin(server.runtime) } : {}) } };
       });
     },
-    configuration: async id => { const server = get(id); await hostInfo(); if (!demo) { try { storageMetrics.set(id, await storageController.stats(server)); } catch {} } return configurationResult(server, isApp(server) ? {} : await properties(server)); },
+    configuration: async id => { const server = get(id); await hostInfo(); { try { storageMetrics.set(id, await storageController.stats(server)); } catch {} } return configurationResult(server, isApp(server) ? {} : await properties(server)); },
     saveConfiguration: (id, input) => saveConfiguration(get(id), input),
     saveProperties: (id, input) => saveProperties(get(id), input),
     files: (id, name) => files(get(id), name),
@@ -2023,29 +1936,22 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
         if (after.size !== before.size || content.length !== before.size || after.mtimeMs !== before.mtimeMs) fail('The application file changed during download.', 409);
         return { content, name: path.basename(target) };
       } finally { await handle.close(); }
-    } if (demo) { if (server.demoArchives?.[name]) fail('ZIP demo được mô phỏng; không chứa archive thật để tải xuống.', 409); return { content: (await readFile(server, name)).content, name: path.basename(name) }; } const target = await safePath(runDirectory(server), name, { allowRoot: false }); if (!(await fs.stat(target)).isFile()) fail('Chỉ tải xuống một tệp.'); return { path: target, name: path.basename(target) }; },
+    }  const target = await safePath(runDirectory(server), name, { allowRoot: false }); if (!(await fs.stat(target)).isFile()) fail('Chỉ tải xuống một tệp.'); return { path: target, name: path.basename(target) }; },
     players: id => players(get(id)),
     async packs(id) {
       const server = get(id); assertStopped(server);
-      if (demo) return { packs: structuredClone(demoPacks(server)), world: { name: (await properties(server))['level-name'] || 'Bedrock level', exists: true }, warnings: ['DEMO · Pack và thao tác addon được mô phỏng.'], demo: true, limits: { compressedMB: 100, unpackedMB: 512, entries: 10000, manifests: 20 } };
       return inspectPacks(runDirectory(server), await packOptions(server));
     },
     async importPacks(id, archive, filename) {
       const server = get(id); assertStopped(server);
-      if (demo) fail('Nhập archive addon không hoạt động trong demo; dùng pack minh họa có sẵn.', 409);
       return importPacks(runDirectory(server), archive, { ...await packOptions(server, 'pack.import'), filename });
     },
     async setPackEnabled(id, uuid, enabled) {
       const server = get(id); assertStopped(server);
-      if (demo) {
-        if (typeof enabled !== 'boolean') fail('enabled phải là boolean.');
-        const pack = demoPacks(server).find(item => item.uuid === uuid) || fail('Không tìm thấy pack.', 404); pack.enabled = enabled; persist(); audit(enabled ? 'pack.activate' : 'pack.deactivate', `${server.name}: ${uuid}`, undefined, undefined, server.id); return { pack: { ...pack }, activated: enabled ? [uuid] : [], demo: true };
-      }
       return setPackEnabled(runDirectory(server), uuid, enabled, await packOptions(server, enabled ? 'pack.activate' : 'pack.deactivate', uuid));
     },
     async removePack(id, uuid) {
       const server = get(id); assertStopped(server);
-      if (demo) { if (!demoPacks(server).some(pack => pack.uuid === uuid)) fail('Không tìm thấy pack.', 404); server.demoPacks = server.demoPacks.filter(pack => pack.uuid !== uuid); persist(); audit('pack.remove', `${server.name}: ${uuid}`, undefined, undefined, server.id); return { ok: true, worldsUpdated: 0, demo: true }; }
       return removePack(runDirectory(server), uuid, await packOptions(server, 'pack.remove', uuid));
     },
     savePlayers: (id, input) => savePlayers(get(id), input),
@@ -2060,10 +1966,9 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
     backupLimits: () => ({ maxLocked: 50, maxRetention: 50, unpackedMB: 2048, entries: 50000 }),
     backup: id => backup(get(id)),
     restore: (id, backupId) => restore(get(id), backupId),
-    async downloadBackup(id, backupId) { const server = get(id); const record = backupRecord(server, backupId); if (demo) fail('Bản sao lưu demo không chứa dữ liệu thật để tải xuống.', 409); const checked = await checkBackup(server, record, undefined, { save: false }); return { path: checked.archive, name: record.name }; },
+    async downloadBackup(id, backupId) { const server = get(id); const record = backupRecord(server, backupId);  const checked = await checkBackup(server, record, undefined, { save: false }); return { path: checked.archive, name: record.name }; },
     async verifyBackup(id, backupId) {
       const server = get(id), record = backupRecord(server, backupId);
-      if (demo) fail('Kiểm tra archive sao lưu không hoạt động trong demo; cần dữ liệu thật.', 409);
       return job('backup-verify', server, async progress => {
         try { const result = await checkBackup(server, record, progress, { clearVerificationFailure: true }); return { result: { backup: result.backup } }; }
         catch (error) { error[backupVerificationSubject] = record.id; throw error; }
@@ -2135,7 +2040,7 @@ export async function createManager({ store, dataDir, demo = false, emit = () =>
       await Promise.allSettled([...jobPromises].filter(([id]) => store.data.jobs.some(job => job.id === id && job.type === 'backup')).map(([, promise]) => promise));
       for (const runtime of processes.values()) runtime.gameplay.close();
       await Promise.allSettled([...gameplayRuns]);
-      const active = store.data.servers.filter(server => processes.has(server.id) || (demo && ['running', 'starting', 'stopping'].includes(server.status)));
+      const active = store.data.servers.filter(server => processes.has(server.id));
       await Promise.allSettled(active.map(server => stop(server, false, true)));
       await applicationRuntime.close();
       await Promise.allSettled([...runningJobs]);

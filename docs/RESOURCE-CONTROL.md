@@ -6,13 +6,13 @@
 { "mode": "shared", "cpuCores": null, "memoryMiB": null }
 ```
 
-Shared mode uses the existing direct process launch and console pipes. It adds no per-server CPU or memory ceiling. Host and ancestor cgroup limits still apply.
+Shared mode keeps native process and console behavior without a separately configured fixed allocation. On a delegated host, shared instances belong to the managed resource pool and share its aggregate ceiling. Host and ancestor limits still apply; shared mode does not promise exclusive hardware capacity.
 
 ```json
 { "mode": "fixed", "cpuCores": 0.75, "memoryMiB": 1024 }
 ```
 
-Fixed mode sets a CPU-time ceiling and a memory ceiling. It does not reserve capacity, pin CPU affinity, or guarantee that the host has that much free memory. No admission or resource reservation is implied. CPU values are measured in logical cores: `1` permits up to one core of CPU time; `0.75` permits up to 75% of one core. The kernel applies a 100,000 microsecond period, so this example writes `75000 100000` to `cpu.max`.
+Fixed mode sets a CPU-time ceiling and a memory ceiling. It does not reserve capacity, pin CPU affinity, or guarantee that the host has that much free memory. Admission is assessed separately against the selected VPS capacity; a configured ceiling is not an exclusive reservation. CPU values are measured in logical cores: `1` permits up to one core of CPU time; `0.75` permits up to 75% of one core. The kernel applies a 100,000 microsecond period, so this example writes `75000 100000` to `cpu.max`.
 
 Memory is expressed in MiB (1,048,576 bytes). The example writes `1073741824` to `memory.max`, sets `memory.swap.max=0`, and enables `memory.oom.group=1`. The memory controller accounts for the group's memory, including applicable filesystem cache; it is not merely the native process RSS. Under memory pressure the kernel can kill the server, and the existing automatic restart policy may restart it. Memory/OOM counters provide evidence; a ceiling is not a stability promise.
 
@@ -31,7 +31,7 @@ Delegate=cpu memory
 
 Controller initialization must run before any native Bedrock or host-terminal child is started. It identifies the owning service through systemd's D-Bus API, verifies MainPID and the delegated subtree, moves only the panel into an unlimited `vortex-panel` leaf, then enables the CPU and memory controllers. Unexpected existing direct processes cause a safe refusal; the module does not migrate foreign processes.
 
-Each fixed launch gets an exclusive UUID-named sibling cgroup inside the service subtree. This preserves the service's `KillMode=mixed` coverage. The panel remains in its manager leaf until it exits; it is not moved back into a parent with enabled controllers.
+Each managed launch gets an owned UUID-named group within the managed pool when available. The pool's effective CPU/RAM ceiling is derived from host/ancestor limits and the selected node's reserve policy. The panel stays in its separate manager leaf. Existing configured server ceilings can exceed a reduced pool ceiling; the API distinguishes configured and effective limits, and admission blocks new over-allocation.
 
 ## Launch and lifecycle contract
 
@@ -46,12 +46,6 @@ Each fixed launch gets an exclusive UUID-named sibling cgroup inside the service
 
 Policy changes must require the server to be stopped; clone must inherit the normalized configured policy. Stop, backup and restore must preserve the policy and server identity. The manager owns persistent validation/audit rollback, lifecycle status, crash limits and HTTP permissions; this module owns kernel setup and process gating.
 
-The module exports 54 exact canonical VI/EN message rows for the common backend locale catalog. Machine fields, UUIDs, quota numbers, cgroup paths and counters remain opaque metadata.
-
-## Verification scope
-
-The cross-platform unit suite verifies normalization, explicit Windows unavailability, delegated initialization ordering, control write/readback failures, acknowledgement failures/timeouts, ownership checks and cleanup behavior using a clearly identified kernel-interface model. An actual shared Node child verifies the direct PID/stdin/stdout contract.
-
-These tests do not claim that mocked filesystem files or Windows enforce fixed limits. A separate authorized Linux staging test must prove actual cgroup membership, quota throttling through `cpu.stat`, memory enforcement through `memory.events`/process exit, unchanged console/PID behavior, and cleanup on an isolated workload. Production resource settings must not be changed for that staging test.
+Resource-control notices support English and Vietnamese. Machine fields, UUIDs, quota numbers, cgroup paths and counters remain unchanged.
 
 Primary references: [Linux cgroup v2 interfaces](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html), [systemd delegation and ownership rules](https://systemd.io/CGROUP_DELEGATION/), [systemd resource-control documentation source](https://github.com/systemd/systemd/blob/main/man/systemd.resource-control.xml).

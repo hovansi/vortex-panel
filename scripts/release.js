@@ -7,7 +7,9 @@ import archiver from 'archiver';
 
 const ROOT_FILES = ['package.json', 'package-lock.json', 'README.md', '.gitignore', '.gitattributes', '.env.example'];
 const OPTIONAL_FILES = ['LICENSE', 'LICENSE.md', 'NOTICE'];
-const SOURCE_DIRECTORIES = ['server', 'public', 'deploy', 'scripts', 'docs', 'test'];
+const SOURCE_DIRECTORIES = ['server', 'public', 'deploy'];
+const BUILD_FILES = ['scripts/check.js', 'scripts/package.js', 'scripts/release.js'];
+const DOCUMENT_FILES = ['API.md', 'ASSETS.md', 'I18N.md', 'INSTALL.md', 'NODE-AGENT.md', 'NODE-PROVISIONING.md', 'NODES.md', 'ONLINE-BACKUPS.md', 'OPERATIONS.md', 'OPERATIONS-090.md', 'PORTS-0155.md', 'README.vi.md', 'RESOURCE-CONTROL.md', 'SERVER-MESSAGES.md', 'THIRD_PARTY.md', 'WORLDS.md', 'applications.md', 'publication.md'];
 const PRIVATE_NAMES = new Set(['output', 'data', 'node_modules', '.playwright-cli', '__pycache__', 'coverage', '.git', '.env', 'vortex-access.json', 'live-client-api.py']);
 const EXCLUDED_NAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.ds_store', 'thumbs.db']);
 const EXCLUDED_SUFFIX = /(?:\.bk[^/]*|\.bak|\.backup|\.orig|~|\.tmp|\.log|\.pem|\.key|\.p12|\.pfx|\.pyc)$/i;
@@ -19,6 +21,20 @@ const LIMITS = { files: 4096, fileBytes: 4 * 1024 ** 2, expandedBytes: 64 * 1024
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const need = (value, code) => { if (!value) throw new Error(code); };
 const same = (left, right) => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(key => left[key] === right[key]);
+
+export function assertProductionFiles(files) {
+  const forbiddenPath = /(?:^|\/)(?:test|tests|fixtures|mocks|__tests__)(?:\/|$)|(?:\.test|\.spec)\.[a-z]+$/i;
+  const retiredMode = /\bdemo\b|\bdemo[A-Z_][A-Za-z0-9_]*\b|\bDEMO_MODE\b|\bsimulated\b|\bNODE_TEST_CONTEXT\b|\bVORTEX_TEST_[A-Z_]+\b/;
+  for (const file of files) {
+    need(!forbiddenPath.test(file.name), 'DEVELOPMENT_FILES_REFUSED');
+    if (/^(?:server|public)\/.*\.(?:js|html|css|py)$/.test(file.name)) {
+      const text = file.content.toString('utf8');
+      need(!/\bdemo\b/i.test(text) && !retiredMode.test(text), 'NON_PRODUCTION_MODE_REFUSED: ' + file.name);
+    }
+  }
+  const pkg = JSON.parse(files.find(file => file.name === 'package.json')?.content.toString('utf8') || '{}');
+  need(!Object.hasOwn(pkg.scripts || {}, 'demo') && !Object.hasOwn(pkg.scripts || {}, 'test'), 'DEVELOPMENT_COMMANDS_REFUSED');
+}
 
 async function directory(filename) {
   const info = await fs.lstat(filename);
@@ -74,13 +90,20 @@ export async function collectPublicFiles(sourceRoot = process.cwd()) {
     await add(name);
   }
   for (const name of SOURCE_DIRECTORIES) { await directory(path.join(root, name)); await add(name); }
+  await directory(path.join(root, 'scripts'));
+  await directory(path.join(root, 'docs'));
+  for (const name of [...BUILD_FILES, ...DOCUMENT_FILES.map(name => `docs/${name}`)]) await add(name);
+  await directory(path.join(root, 'docs/assets'));
+  await add('docs/assets');
   try {
     await fs.lstat(path.join(root, '.github'));
     await directory(path.join(root, '.github'));
     await directory(path.join(root, '.github/workflows'));
     await add('.github/workflows');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  return files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  assertProductionFiles(files);
+  return files;
 }
 
 export async function buildZip(destination, files) {

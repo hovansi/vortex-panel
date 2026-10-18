@@ -50,19 +50,19 @@ function actorFromHeader(header) {
   return { ...actor, serverIds: [...new Set(actor.serverIds)] };
 }
 
-export async function createNodeAgent({ dataDir, nodeId, token, demo = false, tls, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, removalController, emit: observer = () => {} } = {}) {
+export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, removalController, emit: observer = () => {} } = {}) {
   if (!uuid.test(nodeId || '') || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(token)) throw new Error('A UUID nodeId and strong node token are required.');
   if (!tls && !['127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error('Public node listeners require HTTPS. HTTP is limited to literal loopback.');
   if (tls && (!tls.cert || !tls.key)) throw new Error('Both TLS certificate and key are required.');
   dataDir = validateNodeDataDir(dataDir);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   if (fs.lstatSync(dataDir).isSymbolicLink()) throw new Error('Node dataDir must not be a symlink.');
-  const releaseLock = demo || injectedManager ? () => {} : acquireDataLock(dataDir);
+  const releaseLock = injectedManager ? () => {} : acquireDataLock(dataDir);
   let manager, store, closing = false, closePromise;
   const clients = new Set();
   const expectedToken = createHash('sha256').update(token).digest();
   const app = express(); app.disable('x-powered-by');
-  const systemHostname = hostnameController || createHostnameController({ demo });
+  const systemHostname = hostnameController || createHostnameController();
   const identity = () => ({ service: 'vortex-node', protocol: 1, nodeId, version, processId: process.pid });
   const send = (client, event) => {
     if (client.res.destroyed || client.res.writableLength > 1024 ** 2) { client.res.destroy(); clients.delete(client); return; }
@@ -77,18 +77,18 @@ export async function createNodeAgent({ dataDir, nodeId, token, demo = false, tl
   };
   const emit = event => { for (const client of clients) send(client, event); observer(event); };
   try {
-    store = injectedStore || createStore(dataDir, { ephemeral: demo });
+    store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
-    manager = injectedManager || await createManager({ store, dataDir, demo, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
+    manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
     await manager.initialize?.();
   } catch (error) { await manager?.close?.(); releaseLock(); throw error; }
-  const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager, demo });
+  const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager });
   let systemZram, removalAgent;
   try {
     const powerInfo = await systemPower.read();
-    systemZram = zramController || createHostZramController({ role: 'worker', nodeId, dataDir, store, manager, demo });
+    systemZram = zramController || createHostZramController({ role: 'worker', nodeId, dataDir, store, manager });
     await systemZram.read();
-    removalAgent = removalController || createNodeRemovalAgent({ nodeId, dataDir, configFile, manager, instanceId: powerInfo.instanceId, demo });
+    removalAgent = removalController || createNodeRemovalAgent({ nodeId, dataDir, configFile, manager, instanceId: powerInfo.instanceId });
     await removalAgent.initialize?.();
   }
   catch (error) { await removalAgent?.close?.(); await systemZram?.close?.(); await systemPower.close?.(); await manager.close?.(); releaseLock(); throw error; }

@@ -1,4 +1,4 @@
-# Quản lý world và phục hồi trong Vortex MC 0.6.0
+# Quản lý world và phục hồi trong Vortex Panel
 
 Tab **Worlds** nằm trong workspace từng server. Tên trên thẻ có thể lấy từ metadata của Minecraft; tên thư mục được hiển thị riêng và là định danh dùng để chọn, xuất hoặc xóa. Panel không đổi tên world do người dùng đặt khi chuyển English/Tiếng Việt.
 
@@ -30,12 +30,10 @@ Backup cũ thiếu SHA-256 được giữ nguyên và ghi **Legacy**. Chạy **V
 
 **Protect** chặn xóa thủ công và loại snapshot khỏi retention. Mỗi server giữ tối đa 50 bản protected; retention 1–50 tính riêng các bản không protected. Khi vượt số được giữ, rotation chỉ xóa bản không protected sau khi backup mới đã commit. Protected tăng dung lượng lưu trữ thực; vẫn cần backup ra ngoài VPS. Tạo, verify và đổi protection có thể thực hiện khi server đang chạy và không có tác vụ khác. Backup thủ công và theo lịch giữ nguyên tiến trình và kết nối người chơi; restore vẫn cần dừng server để thay dữ liệu an toàn.
 
-Khi sao lưu server đang chạy, panel yêu cầu Bedrock chuẩn bị một mốc dữ liệu, sao chép đúng danh sách tệp và số byte mà Bedrock xác nhận, rồi cho phép lưu tiếp trước khi nén ZIP. Bảng dữ liệu cũ không nằm trong danh sách được bỏ qua; cấu hình, add-on và thư mục trống vẫn được giữ. Nếu không nhận được mốc dữ liệu hợp lệ, panel báo lỗi và không tạo bản sao lưu trong danh sách. Xem [sao lưu trực tuyến](ONLINE-BACKUPS.md) để biết giới hạn, xử lý lỗi và phạm vi kiểm chứng.
+Khi sao lưu server đang chạy, panel yêu cầu Bedrock chuẩn bị một mốc dữ liệu, sao chép đúng danh sách tệp và số byte mà Bedrock xác nhận, rồi cho phép lưu tiếp trước khi nén ZIP. Bảng dữ liệu cũ không nằm trong danh sách được bỏ qua; cấu hình, add-on và thư mục trống vẫn được giữ. Nếu không nhận được mốc dữ liệu hợp lệ, panel báo lỗi và không tạo bản sao lưu trong danh sách. Xem [sao lưu trực tuyến](ONLINE-BACKUPS.md) để biết giới hạn và xử lý lỗi.
 
 Viewer chỉ đọc thông tin backup. Tải, verify, protect, restore và delete cần quyền manage trên đúng server. ZIP backup có thể chứa identity riêng, nên quyền đọc console không cấp quyền tải backup.
 
 Files vẫn cho Viewer đọc file thông thường theo scope; không gọi Viewer là metadata-only cho toàn panel. Các đường đọc/download identity `keys/` và `server_identity_key.pem` được chặn cả GET/HEAD, với capabilities và lý do EN/VI trên listing. Nội dung bí mật trong file tự tạo cần chính sách quyền phù hợp; panel không tự quét mọi file để phát hiện secret.
 
 Nhật ký trong workspace dùng `serverId` bất biến. Rename hoặc hai server cùng tên không trộn lịch sử. Record cũ chưa có ID được giữ trong nhật ký toàn panel của Admin; panel không đoán ID từ tên hoặc command.
-
-Nguồn thiết kế và phạm vi tiếp theo: [nghiên cứu panel ngày 14/10/2026](RESEARCH-2026-10-14.md). API chi tiết: [API](API.md). Bằng chứng thực thi: [VERIFICATION](VERIFICATION.md) và [VPS-ACCEPTANCE](VPS-ACCEPTANCE.md).

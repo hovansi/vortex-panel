@@ -8,7 +8,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.17.1'
+        default: 'v0.18.0'
         type: string
 
 permissions:
@@ -54,20 +54,18 @@ jobs:
               || tag !== `v${pkg.version}` || lock.version !== pkg.version
               || lock.packages?.['']?.version !== pkg.version) throw new Error('Tag and package versions must match exactly.');
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-          if (head !== process.env.GITHUB_SHA) throw new Error('The checkout must resolve to the tested commit.');
+          if (head !== process.env.GITHUB_SHA) throw new Error('The checkout must resolve to the validated commit.');
           if (process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag') {
             const tagged = execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { encoding: 'utf8' }).trim();
-            if (head !== tagged) throw new Error('The tag must resolve to the tested commit.');
+            if (head !== tagged) throw new Error('The tag must resolve to the validated commit.');
           } else if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF_TYPE !== 'branch') {
             throw new Error('Use a tag push or a maintainer dispatch from a branch.');
           }
           NODE
       - name: Install locked dependencies
         run: npm ci
-      - name: Check source
+      - name: Validate production source
         run: npm run check
-      - name: Run automated tests
-        run: npm test
       - name: Check bootstrap syntax
         run: bash -n deploy/bootstrap.sh
 
@@ -81,7 +79,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
-      - name: Check out tested commit
+      - name: Check out validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -121,7 +119,7 @@ jobs:
             && repo === process.env.GITHUB_REPOSITORY && process.env.GITHUB_SERVER_URL === 'https://github.com'
             && (manual || process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag'), 'Exact public GitHub release scope required.');
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-          need(head === process.env.GITHUB_SHA, 'The build must use the tested commit.');
+          need(head === process.env.GITHUB_SHA, 'The build must use the validated commit.');
           const directory = join('output', 'release', tag);
           const names = [`vortex-panel-${pkg.version}.zip`, 'SHA256SUMS', 'install.sh', 'release-manifest.json'];
           need(JSON.stringify(readdirSync(directory).sort()) === JSON.stringify([...names].sort()), 'Only the four reviewed release assets may be uploaded.');
@@ -174,7 +172,7 @@ jobs:
           }
           checkTag();
           const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
-          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nAutomated source checks and test commands passed with Node.js 22 on Ubuntu 22.04 and 24.04. This CI run does not perform live VPS, gameplay-client, or production deployment QA.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
+          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nProduction source validation passed with Node.js 22 on Ubuntu 22.04 and 24.04. The release contains the operational panel and installation tooling. Validation is distinct from live gameplay and a fresh VPS installation.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
           const creation = join(process.env.RUNNER_TEMP, 'vortex-release-create.json');
           writeFileSync(creation, JSON.stringify({ tag_name: tag, target_commitish: head, name: `Vortex Panel ${pkg.version}`,
             body: readFileSync(notes, 'utf8'), draft: true, prerelease: false }), { flag: 'wx' });

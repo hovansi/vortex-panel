@@ -235,11 +235,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Two-factor authentication is temporarily locked. Try again in 15 minutes."
   },
   {
-    "id": "panel.c961c96c18c2",
-    "vi": "Cấu hình MFA không hoạt động trong chế độ demo.",
-    "en": "MFA configuration is unavailable in demo mode."
-  },
-  {
     "id": "panel.ca3d5aa890e8",
     "vi": "Mật khẩu hiện tại chưa đúng.",
     "en": "The current password is incorrect."
@@ -280,16 +275,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "This feature was not found."
   },
   {
-    "id": "panel.0c885be1ac73",
-    "vi": "Tài khoản demo đã được quản trị viên vô hiệu hóa.",
-    "en": "The administrator has disabled the demo account."
-  },
-  {
-    "id": "panel.20eb6fa8d939",
-    "vi": "Mở phiên trải nghiệm demo",
-    "en": "Opened a demo session"
-  },
-  {
     "id": "panel.0b04eead179f",
     "vi": "Panel đã được thiết lập.",
     "en": "The panel has already been set up."
@@ -328,11 +313,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "id": "panel.884c00dac07d",
     "vi": "Đăng nhập với xác thực hai bước",
     "en": "Signed in with two-factor authentication"
-  },
-  {
-    "id": "panel.f29cb4ef2083",
-    "vi": "Không đổi mật khẩu trong chế độ demo.",
-    "en": "Passwords cannot be changed in demo mode."
   },
   {
     "id": "panel.4598a6662fd1",
@@ -490,34 +470,14 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Could not read the information within the time limit."
   },
   {
-    "id": "panel.73ee0c0ffcda",
-    "vi": "DEMO · Ubuntu 24.04 LTS, kiến trúc x86_64.",
-    "en": "DEMO · Ubuntu 24.04 LTS, x86_64 architecture."
-  },
-  {
     "id": "panel.af602b03d469",
     "vi": "Không gian lưu trữ",
     "en": "Storage space"
   },
   {
-    "id": "panel.1679c4e70f1a",
-    "vi": "DEMO · 96 GiB còn trống.",
-    "en": "DEMO · 96 GiB free."
-  },
-  {
     "id": "panel.b0903f929e63",
     "vi": "Thư viện Bedrock",
     "en": "Bedrock libraries"
-  },
-  {
-    "id": "panel.726bd286d3fa",
-    "vi": "DEMO · libcurl và libstdc++ sẵn sàng.",
-    "en": "DEMO · libcurl and libstdc++ are ready."
-  },
-  {
-    "id": "panel.0b6a7e6bcd53",
-    "vi": "Không chạy lệnh host trong chế độ demo.",
-    "en": "Host commands are unavailable in demo mode."
   },
   {
     "id": "panel.982d1118521d",
@@ -636,11 +596,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Content must be UTF-8 text smaller than 2 MiB."
   },
   {
-    "id": "panel.e4c6e2a622e3",
-    "vi": "ZIP demo là bản mô phỏng; không hỗ trợ trình soạn thảo.",
-    "en": "This demo ZIP is simulated and cannot be edited."
-  },
-  {
     "id": "panel.32596f7f654a",
     "vi": "Không tìm thấy tệp.",
     "en": "File not found."
@@ -745,16 +700,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "The file has changed. Reload it before saving to avoid data loss."
   },
   {
-    "id": "panel.cdf1360db5a3",
-    "vi": "Không chỉnh sửa ZIP mô phỏng.",
-    "en": "Simulated ZIPs cannot be edited."
-  },
-  {
-    "id": "panel.8f5788d517b7",
-    "vi": "[DEMO · Tệp tải lên được mô phỏng]\n",
-    "en": "[DEMO · The uploaded file is simulated]"
-  },
-  {
     "id": "panel.61c293a95e04",
     "vi": "; rollback tại {0}: {1}",
     "en": "; rollback at {0}: {1}",
@@ -789,11 +734,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Cannot create a ZIP inside a selected source."
   },
   {
-    "id": "panel.ba6f2b0d4907",
-    "vi": "[DEMO · ZIP mô phỏng; không phải archive thật để tải xuống]\n",
-    "en": "[DEMO · Simulated ZIP; no real archive is available to download]"
-  },
-  {
     "id": "panel.401ce0c1b6f6",
     "vi": "Yêu cầu giải nén không hợp lệ.",
     "en": "Invalid extraction request."
@@ -802,11 +742,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "id": "panel.a179e5312ed2",
     "vi": "Chọn tệp .zip để giải nén.",
     "en": "Select a .zip file to extract."
-  },
-  {
-    "id": "panel.997039ad29f4",
-    "vi": "Demo chỉ giải nén ZIP được tạo bằng công cụ nén mô phỏng.",
-    "en": "Demo mode only extracts ZIPs created by the simulated compression tool."
   },
   {
     "id": "panel.070fc187cbe5",
@@ -1002,19 +937,6 @@ export const PANEL_MESSAGES = Object.freeze([
     ]
   },
   {
-    "id": "panel.ee003f70df50",
-    "vi": "DEMO · Sao lưu trước cập nhật",
-    "en": "DEMO · Backup before update"
-  },
-  {
-    "id": "panel.6a8f0a2ee910",
-    "vi": "DEMO · {0} Bedrock {1} được mô phỏng.",
-    "en": "DEMO · Bedrock {1} {0} is simulated.",
-    "nested": [
-      0
-    ]
-  },
-  {
     "id": "panel.5293d03c5908",
     "vi": "Cập nhật",
     "en": "update"
@@ -1081,11 +1003,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "The server installation is not complete."
   },
   {
-    "id": "panel.f033f3b29ce2",
-    "vi": "DEMO · Server started (mô phỏng), IPv4 {0}, IPv6 {1}.",
-    "en": "DEMO · Server started (simulated), IPv4 {0}, IPv6 {1}."
-  },
-  {
     "id": "panel.039a266fa10d",
     "vi": "Bedrock Linux yêu cầu Ubuntu 22.04+ x86-64. Hãy triển khai panel trên Ubuntu.",
     "en": "Bedrock Linux requires Ubuntu 22.04+ x86-64. Deploy the panel on Ubuntu."
@@ -1139,14 +1056,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Started Bedrock PID {0}; waiting for the server to become ready."
   },
   {
-    "id": "panel.0de1ffc2f033",
-    "vi": "DEMO · {0} server được mô phỏng.",
-    "en": "DEMO · Server {0} is simulated.",
-    "nested": [
-      0
-    ]
-  },
-  {
     "id": "panel.8b9d2bfd81f7",
     "vi": "Buộc dừng",
     "en": "forced stop"
@@ -1170,11 +1079,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "id": "panel.1c89fa4237c9",
     "vi": "Không thể xác nhận tiến trình đã dừng.",
     "en": "Could not confirm that the process has stopped."
-  },
-  {
-    "id": "panel.cc3c646bf04b",
-    "vi": "Pack minh họa cho giao diện demo; không có nội dung Bedrock thật.",
-    "en": "A sample pack for the demo interface; it contains no real Bedrock content."
   },
   {
     "id": "panel.a7704dbe0139",
@@ -1383,16 +1287,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "The panel restarted before the schedule finished."
   },
   {
-    "id": "panel.7a745c286ca2",
-    "vi": "DEMO · Server started. Mọi số liệu server được mô phỏng.",
-    "en": "DEMO · Server started. All server metrics are simulated."
-  },
-  {
-    "id": "panel.63b50a5bb886",
-    "vi": "DEMO · Server đang dừng.",
-    "en": "DEMO · The server is stopping."
-  },
-  {
     "id": "panel.d5b53a84bf2f",
     "vi": "Bạn cần chấp nhận Minecraft EULA và Điều khoản trước khi cài đặt.",
     "en": "Accept the Minecraft EULA and Terms before installation."
@@ -1421,11 +1315,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "id": "panel.72efdf03d55a",
     "vi": "Hãy tắt inbound script debugger trước khi clone để tránh trùng cổng debugger.",
     "en": "Disable the inbound script debugger before cloning to avoid a debugger port conflict."
-  },
-  {
-    "id": "panel.8edc827c16ae",
-    "vi": "DEMO · Nhân bản server được mô phỏng; identity đã được tách riêng.",
-    "en": "DEMO · Server cloning is simulated; the identity is separate."
   },
   {
     "id": "panel.486c1d2afbfd",
@@ -1468,11 +1357,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "The server must be running to send commands."
   },
   {
-    "id": "panel.74db7d2a340a",
-    "vi": "DEMO · Lệnh được ghi nhận; không có tiến trình Bedrock thật.",
-    "en": "DEMO · The command was recorded; no real Bedrock process is running."
-  },
-  {
     "id": "panel.c7385784109f",
     "vi": "Đổi tên cần một source và destination.",
     "en": "Rename requires one source and destination."
@@ -1493,24 +1377,9 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Uploaded files cannot exceed 100 MiB."
   },
   {
-    "id": "panel.4b2157a83770",
-    "vi": "ZIP demo được mô phỏng; không chứa archive thật để tải xuống.",
-    "en": "This demo ZIP is simulated; no real archive is available to download."
-  },
-  {
     "id": "panel.b123135f90b4",
     "vi": "Chỉ tải xuống một tệp.",
     "en": "Only a single file can be downloaded."
-  },
-  {
-    "id": "panel.1215db1ea169",
-    "vi": "DEMO · Pack và thao tác addon được mô phỏng.",
-    "en": "DEMO · Packs and add-on operations are simulated."
-  },
-  {
-    "id": "panel.bf6e1d10b114",
-    "vi": "Nhập archive addon không hoạt động trong demo; dùng pack minh họa có sẵn.",
-    "en": "Add-on archive import is unavailable in demo mode. Use the included sample pack."
   },
   {
     "id": "panel.cdc51e9e5fc9",
@@ -1521,11 +1390,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "id": "panel.d64b48ee2560",
     "vi": "Không tìm thấy pack.",
     "en": "Pack not found."
-  },
-  {
-    "id": "panel.9b75a108bdd0",
-    "vi": "Bản sao lưu demo không chứa dữ liệu thật để tải xuống.",
-    "en": "The demo backup contains no real data to download."
   },
   {
     "id": "panel.0c9461a42e5d",
@@ -2315,11 +2179,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "No downloadable package is available for this version yet."
   },
   {
-    "id": "panel.56e5002775ef",
-    "vi": "Nhập gói chính thức không hoạt động trong chế độ demo.",
-    "en": "Official package import is unavailable in demo mode."
-  },
-  {
     "id": "panel.dc4b6def82d9",
     "vi": "Phiên bản đang được tải hoặc nhập. Vui lòng đợi hoàn tất.",
     "en": "The version is being downloaded or imported. Wait for it to finish."
@@ -2548,29 +2407,14 @@ export const PANEL_MESSAGES = Object.freeze([
     "nested": []
   },
   {
-    "id": "panel.ops.a55e0fba9ce0",
-    "vi": "DEMO · World và metadata được mô phỏng.",
-    "en": "DEMO · Worlds and metadata are simulated."
-  },
-  {
     "id": "panel.ops.6437aea0bc20",
     "vi": "World đang thay đổi trong khi server chạy; hãy tải lại hoặc dừng server để kiểm tra.",
     "en": "The world is changing while the server is running. Refresh or stop the server to inspect it."
   },
   {
-    "id": "panel.ops.dc1dcd4abf0a",
-    "vi": "DEMO · Không tạo hoặc tải world Bedrock thật.",
-    "en": "DEMO · No real Bedrock worlds are created or downloaded."
-  },
-  {
     "id": "panel.ops.748425c7d839",
     "vi": "Kiểm tra metadata và bố cục world không xác minh khả năng chơi; Bedrock sẽ đọc database khi khởi động.",
     "en": "Metadata and layout checks do not verify playability. Bedrock reads the database when the server starts."
-  },
-  {
-    "id": "panel.ops.eab164844144",
-    "vi": "Nhập world không hoạt động trong demo; cần server với dữ liệu Bedrock thật.",
-    "en": "World import is unavailable in demo. A server with real Bedrock data is required."
   },
   {
     "id": "panel.ops.42a9772d32f7",
@@ -2631,11 +2475,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "No valid world directory was found."
   },
   {
-    "id": "panel.ops.b9456a4f8c4b",
-    "vi": "World demo không chứa dữ liệu thật để tải xuống.",
-    "en": "Demo worlds do not contain real data to download."
-  },
-  {
     "id": "panel.ops.a5408e4c3430",
     "vi": "Hãy nhập chính xác tên world để xác nhận xóa.",
     "en": "Enter the exact world name to confirm deletion."
@@ -2687,11 +2526,6 @@ export const PANEL_MESSAGES = Object.freeze([
     "vi": "Đã khôi phục server; còn dữ liệu rollback tại {0} cần kiểm tra: {1}",
     "en": "The server was restored. Rollback data remains at {0} and needs review: {1}",
     "nested": []
-  },
-  {
-    "id": "panel.ops.0d6166678d84",
-    "vi": "Kiểm tra archive sao lưu không hoạt động trong demo; cần dữ liệu thật.",
-    "en": "Backup archive verification is unavailable in demo. Real data is required."
   },
   {
     "id": "panel.ops.48f2fb1c82e6",

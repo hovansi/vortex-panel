@@ -58,9 +58,9 @@ function assertHelperOwnership(helperPath, io = fs) {
   const stat = io.lstatSync(helperPath), bundled = fileURLToPath(new URL('./host-zram.py', import.meta.url));
   if (!stat.isFile() || stat.uid !== 0 || stat.nlink !== 1 || stat.mode & 0o022 || createHash('sha256').update(io.readFileSync(helperPath)).digest('hex') !== createHash('sha256').update(io.readFileSync(bundled)).digest('hex')) throw problem('ZRAM_OWNERSHIP');
 }
-export async function probeHostZramCapabilities({ role, processId = process.pid, platform = process.platform, uid = process.getuid?.(), demo = false,
+export async function probeHostZramCapabilities({ role, processId = process.pid, platform = process.platform, uid = process.getuid?.(),
   helperPath = '/usr/local/libexec/vortex-host-zram.py', execFile = promisify(nodeExecFile), io = fs } = {}) {
-  if (!units[role] || demo || platform !== 'linux' || uid !== 0) throw problem('ZRAM_UNAVAILABLE', 409);
+  if (!units[role] || platform !== 'linux' || uid !== 0) throw problem('ZRAM_UNAVAILABLE', 409);
   for (const executable of ['/usr/bin/python3', '/usr/sbin/modprobe', '/usr/sbin/mkswap', '/usr/sbin/swapon', '/usr/sbin/swapoff', '/usr/sbin/zramctl', '/usr/sbin/blkid']) io.accessSync(executable, fs.constants.X_OK);
   assertHelperOwnership(helperPath, io);
   io.accessSync('/run/systemd/system');
@@ -96,7 +96,7 @@ function nativeHelper(helperPath, action, value) {
   });
 }
 
-export function createHostZramController({ role = 'panel', nodeId = 'local', dataDir, store, manager, demo = false,
+export function createHostZramController({ role = 'panel', nodeId = 'local', dataDir, store, manager,
   helperPath = '/usr/local/libexec/vortex-host-zram.py', platform = process.platform, uid = process.getuid?.(), processId = process.pid,
   instanceId = randomUUID(), execFile = promisify(nodeExecFile), inspect, apply, now = Date.now } = {}) {
   if (!units[role] || !dataDir || typeof nodeId !== 'string' || !nodeId) throw new Error('Managed role, node identity and data directory are required.');
@@ -127,7 +127,7 @@ export function createHostZramController({ role = 'panel', nodeId = 'local', dat
     } catch (error) { if (error.code !== 'ENOENT') storageFailure = true; }
   }
   async function capability() {
-    return probeHostZramCapabilities({ role, processId, platform, uid, demo, helperPath, execFile });
+    return probeHostZramCapabilities({ role, processId, platform, uid, helperPath, execFile });
   }
   async function observe() {
     if (inspect) return inspect();

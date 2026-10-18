@@ -32,31 +32,22 @@ function textContent(content) {
   return content;
 }
 
-export async function readTextFile(root, server, demo, input) {
+export async function readTextFile(root, input) {
   const name = filePath(input);
-  let buffer;
-  if (demo) {
-    if (server.demoArchives?.[name]) fail('ZIP demo là bản mô phỏng; không hỗ trợ trình soạn thảo.', 409);
-    if (!Object.hasOwn(server.demoFiles || {}, name)) fail('Không tìm thấy tệp.', 404);
-    buffer = Buffer.from(server.demoFiles[name]);
-  } else {
-    const target = await safePath(root, name);
-    const stat = await fs.stat(target);
-    if (!stat.isFile() || stat.size > FILE_LIMITS.textBytes) fail('Chỉ đọc tệp văn bản nhỏ hơn 2 MiB.');
-    buffer = await fs.readFile(target);
-  }
+  const target = await safePath(root, name);
+  const stat = await fs.stat(target);
+  if (!stat.isFile() || stat.size > FILE_LIMITS.textBytes) fail('Chỉ đọc tệp văn bản nhỏ hơn 2 MiB.');
+  const buffer = await fs.readFile(target);
   if (buffer.length > FILE_LIMITS.textBytes || buffer.includes(0)) fail('Tệp nhị phân hoặc quá lớn không hỗ trợ trình soạn thảo.');
   let content;
   try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer); }
   catch { fail('Tệp không phải văn bản UTF-8 hợp lệ; hãy tải xuống để chỉnh sửa bằng công cụ phù hợp.'); }
-  return { path: name, content, revision: fileRevision(buffer), demo };
+  return { path: name, content, revision: fileRevision(buffer) };
 }
 
-export function createFileOperations({ root, server, demo = false, guard = filePath, commit }) {
+export function createFileOperations({ root, server, guard = filePath, commit }) {
   const validate = (name, mode) => guard(filePath(name), mode);
-  const state = () => ({ demoFiles: { ...(server.demoFiles || {}) }, demoDirs: [...(server.demoDirs || [])], demoArchives: structuredClone(server.demoArchives || {}) });
-  const demoExists = name => !name || Object.hasOwn(server.demoFiles || {}, name) || (server.demoDirs || []).some(item => inside(item, name)) || Object.keys(server.demoFiles || {}).some(item => inside(item, name));
-  const result = (operation, paths) => ({ ok: true, operation, paths, demo });
+  const result = (operation, paths) => ({ ok: true, operation, paths });
   const record = (fields, action, names) => commit(fields, `file.${action}`, `${server.name}: ${names.join(' → ')}`);
   async function targetPath(name) {
     const target = await safePath(root, name, { allowMissing: true });
@@ -64,11 +55,6 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
     const directory = await safePath(root, parent(name));
     if (!(await fs.stat(directory)).isDirectory()) fail('Đường dẫn cha của đích phải là thư mục.', 409);
     return target;
-  }
-  function demoTarget(name) {
-    if (demoExists(name)) fail('Đường dẫn đích đã tồn tại; không ghi đè.', 409);
-    if (!demoExists(parent(name))) fail('Thư mục đích chưa tồn tại. Hãy tạo thư mục trước.', 404);
-    if (Object.hasOwn(server.demoFiles || {}, parent(name))) fail('Đường dẫn cha của đích phải là thư mục.', 409);
   }
   async function stage() {
     const directory = path.join(path.dirname(root), `.file-op-${randomUUID()}`);
@@ -81,11 +67,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
     while (stack.length) {
       const name = stack.pop(); validate(name, mode);
       let directory, size = 0;
-      if (demo) {
-        if (!demoExists(name)) fail('Không tìm thấy tệp hoặc thư mục nguồn.', 404);
-        directory = !Object.hasOwn(server.demoFiles || {}, name);
-        size = directory ? 0 : Buffer.byteLength(server.demoFiles[name]);
-      } else {
+      {
         const target = await safePath(root, name);
         const stat = await fs.lstat(target);
         if (!stat.isFile() && !stat.isDirectory()) fail('Chỉ hỗ trợ tệp thông thường hoặc thư mục; không dùng liên kết.', 403);
@@ -95,7 +77,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
       if (entries.length >= FILE_LIMITS.maxEntries || bytes > FILE_LIMITS.maxBytes) fail('Thao tác vượt giới hạn 2 GiB hoặc 50.000 mục.');
       entries.push({ name, directory, size });
       if (directory) {
-        const children = demo ? [...new Set([...Object.keys(server.demoFiles || {}), ...(server.demoDirs || [])].filter(item => item.startsWith(name + '/')).map(item => name + '/' + item.slice(name.length + 1).split('/')[0]))] : (await fs.readdir(await safePath(root, name))).map(child => `${name}/${child}`);
+        const children = (await fs.readdir(await safePath(root, name))).map(child => `${name}/${child}`);
         stack.push(...children.reverse());
       }
     }
@@ -125,17 +107,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
       const index = sources.findIndex(source => inside(entry.name, source));
       validate(destinations[index] + entry.name.slice(sources[index].length), 'target');
     }
-    if (demo) {
-      for (const target of destinations) demoTarget(target);
-      const fields = state();
-      for (const entry of entries) {
-        const index = sources.findIndex(source => inside(entry.name, source)); const target = destinations[index] + entry.name.slice(sources[index].length);
-        if (entry.directory) fields.demoDirs.push(target);
-        else { fields.demoFiles[target] = server.demoFiles[entry.name]; if (server.demoArchives?.[entry.name]) fields.demoArchives[target] = structuredClone(server.demoArchives[entry.name]); }
-        if (move) { delete fields.demoFiles[entry.name]; delete fields.demoArchives[entry.name]; fields.demoDirs = fields.demoDirs.filter(name => name !== entry.name); }
-      }
-      fields.demoDirs = [...new Set(fields.demoDirs)]; record(fields, move ? 'move' : 'copy', [...sources, ...destinations]);
-    } else {
+    {
       const targets = [];
       for (const name of destinations) targets.push(await targetPath(name));
       const staging = move ? null : await stage(); const activated = []; let committed = false;
@@ -163,21 +135,11 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
     name = validate(name, existing ? 'edit' : 'target');
     if (!binary) textContent(content);
     if (revision !== undefined && (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision))) fail('Revision tệp không hợp lệ.');
-    if (demo) {
-      const exists = Object.hasOwn(server.demoFiles || {}, name);
-      if (existing && requireRevision && !exists) fail('Tệp không còn tồn tại. Hãy tạo tệp mới bằng công cụ tạo tệp.', 404);
-      if (!existing || !exists) demoTarget(name);
-      if (exists && existing && requireRevision && revision === undefined) fail('Hãy tải lại nội dung tệp trước khi lưu.', 428);
-      if (exists && revision !== undefined && revision !== fileRevision(server.demoFiles[name])) fail('Tệp đã thay đổi. Hãy tải lại trước khi lưu để tránh mất dữ liệu.', 409);
-      if (exists && server.demoArchives?.[name]) fail('Không chỉnh sửa ZIP mô phỏng.', 409);
-      const fields = state(); fields.demoFiles[name] = binary ? '[DEMO · Tệp tải lên được mô phỏng]\n' : content;
-      record(fields, action, [name]); return { ok: true, path: name, revision: fileRevision(fields.demoFiles[name]), demo };
-    }
     const target = await safePath(root, name, { allowMissing: true }); const stat = await missing(target);
     if (existing && requireRevision && !stat) fail('Tệp không còn tồn tại. Hãy tạo tệp mới bằng công cụ tạo tệp.', 404);
     if (stat && (!existing || !stat.isFile())) fail('Đường dẫn đích đã tồn tại; không ghi đè.', 409);
     if (!stat) await targetPath(name);
-    if (stat && !binary) await readTextFile(root, server, false, name);
+    if (stat && !binary) await readTextFile(root, name);
     if (stat && requireRevision && revision === undefined) fail('Hãy tải lại nội dung tệp trước khi lưu.', 428);
     if (stat && revision !== undefined && fileRevision(await fs.readFile(target)) !== revision) fail('Tệp đã thay đổi. Hãy tải lại trước khi lưu để tránh mất dữ liệu.', 409);
     const staging = await stage(); const temporary = path.join(staging, 'content'); const rollback = path.join(staging, 'rollback'); let activated = false, committed = false, restored = false;
@@ -189,7 +151,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
       if (stat && revision !== undefined && fileRevision(await fs.readFile(target)) !== revision) fail('Tệp đã thay đổi. Hãy tải lại trước khi lưu để tránh mất dữ liệu.', 409);
       await fs.rename(temporary, target); activated = true;
       record({}, action, [name]); committed = true;
-      return { ok: true, path: name, ...(binary ? {} : { revision: fileRevision(content) }), demo };
+      return { ok: true, path: name, ...(binary ? {} : { revision: fileRevision(content) }) };
     } catch (error) {
       if (activated && !committed) try { if (stat) await fs.rename(rollback, target); else await fs.rename(target, temporary); restored = true; } catch (rollbackError) { error.message += `; rollback tại ${staging}: ${rollbackError.message}`; }
       throw error;
@@ -197,12 +159,6 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
   }
   async function mkdir(input) {
     const name = validate(input, 'directory');
-    if (demo) {
-      if (demoExists(name)) fail('Đường dẫn đã tồn tại.', 409);
-      const fields = state(); let current = '';
-      for (const piece of name.split('/')) { current = current ? `${current}/${piece}` : piece; validate(current, 'directory'); if (Object.hasOwn(fields.demoFiles, current)) fail('Đường dẫn cha phải là thư mục.', 409); fields.demoDirs.push(current); }
-      fields.demoDirs = [...new Set(fields.demoDirs)]; record(fields, 'mkdir', [name]); return result('mkdir', [name]);
-    }
     if (await missing(await safePath(root, name, { allowMissing: true }))) fail('Đường dẫn đã tồn tại.', 409);
     let first = ''; let current = '';
     for (const piece of name.split('/')) { current = current ? `${current}/${piece}` : piece; validate(current, 'directory'); const stat = await missing(await safePath(root, current, { allowMissing: true })); if (!stat) { first = current; break; } if (!stat.isDirectory()) fail('Đường dẫn cha phải là thư mục.', 409); }
@@ -214,8 +170,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
   }
   async function remove(input) {
     const name = validate(input, 'destructive'); await tree([name], 'destructive');
-    if (demo) { const fields = state(); for (const file of Object.keys(fields.demoFiles)) if (inside(file, name)) { delete fields.demoFiles[file]; delete fields.demoArchives[file]; } fields.demoDirs = fields.demoDirs.filter(file => !inside(file, name)); record(fields, 'delete', [name]); }
-    else {
+    {
       const target = await safePath(root, name); const staging = await stage(); const rollback = path.join(staging, 'deleted'); let moved = false, committed = false, restored = false;
       try { await fs.rename(target, rollback); moved = true; record({}, 'delete', [name]); committed = true; }
       catch (error) { if (moved && !committed) try { await fs.rename(rollback, target); restored = true; } catch (rollbackError) { error.message += `; rollback tại ${staging}: ${rollbackError.message}`; } throw error; }
@@ -229,11 +184,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
     if (!destination.toLowerCase().endsWith('.zip')) fail('Tệp nén cần đuôi .zip.');
     if (sources.some(source => inside(destination, source))) fail('Không thể tạo ZIP bên trong nguồn được chọn.');
     const entries = await tree(sources);
-    if (demo) {
-      demoTarget(destination); const fields = state();
-      fields.demoArchives[destination] = { files: Object.fromEntries(entries.filter(entry => !entry.directory).map(entry => [entry.name, server.demoFiles[entry.name]])), dirs: entries.filter(entry => entry.directory).map(entry => entry.name) };
-      fields.demoFiles[destination] = '[DEMO · ZIP mô phỏng; không phải archive thật để tải xuống]\n'; record(fields, 'compress', [...sources, destination]);
-    } else {
+    {
       const target = await targetPath(destination); const staging = await stage(); const content = path.join(staging, 'selected'); const archive = path.join(staging, 'archive.zip'); let activated = false, committed = false, restored = false;
       try { await fs.mkdir(content); await copyEntries(entries, content); await zipDirectory(content, archive, { ...FILE_LIMITS, includeEmptyDirectories: true }); if (await missing(target)) fail('Đường dẫn đích đã tồn tại; không ghi đè.', 409); await fs.rename(archive, target); activated = true; record({}, 'compress', [...sources, destination]); committed = true; }
       catch (error) { if (activated && !committed) try { await fs.rename(target, archive); restored = true; } catch (rollbackError) { error.message += `; rollback tại ${staging}: ${rollbackError.message}`; } throw error; }
@@ -245,13 +196,7 @@ export function createFileOperations({ root, server, demo = false, guard = fileP
     if (!input || typeof input !== 'object' || Object.keys(input).some(name => !['source', 'destination'].includes(name))) fail('Yêu cầu giải nén không hợp lệ.');
     const source = filePath(input.source); const destination = validate(input.destination, 'target');
     if (!source.toLowerCase().endsWith('.zip')) fail('Chọn tệp .zip để giải nén.');
-    if (demo) {
-      demoTarget(destination); const archive = server.demoArchives?.[source]; if (!archive) fail('Demo chỉ giải nén ZIP được tạo bằng công cụ nén mô phỏng.', 409);
-      const fields = state(); fields.demoDirs.push(destination);
-      for (const dir of archive.dirs) { const name = validate(`${destination}/${dir}`, 'target'); fields.demoDirs.push(name); }
-      for (const [file, content] of Object.entries(archive.files)) fields.demoFiles[validate(`${destination}/${file}`, 'target')] = content;
-      fields.demoDirs = [...new Set(fields.demoDirs)]; record(fields, 'extract', [source, destination]);
-    } else {
+    {
       const original = await safePath(root, source); const stat = await fs.stat(original); if (!stat.isFile() || stat.size > FILE_LIMITS.maxBytes) fail('ZIP phải là tệp thông thường không quá 2 GiB.');
       const target = await targetPath(destination); const staging = await stage(); const content = path.join(staging, 'extracted'); let activated = false, committed = false, restored = false;
       try {

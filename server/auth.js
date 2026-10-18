@@ -32,7 +32,7 @@ function validatePassword(password) {
 function validateUsername(username) {
   if (typeof username !== 'string' || !/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) fail('Tên tài khoản: 3–32 ký tự, chữ, số, dấu chấm hoặc gạch.');
 }
-export function createAuth({ store, demo = false, setupToken = token(), publicUrl = '', secretVault, serverExists = id => (store.data.servers || []).some(server => server.id === id) }) {
+export function createAuth({ store, setupToken = token(), publicUrl = '', secretVault, serverExists = id => (store.data.servers || []).some(server => server.id === id) }) {
   const router = express.Router();
   const sessions = new Map();
   const attempts = new Map();
@@ -49,7 +49,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
     user.id ||= randomUUID(); user.role ||= 'admin'; user.serverIds ||= [];
     user.allServers = user.role === 'admin' || user.allServers === true; user.sessionVersion ||= 0;
   }
-  if (demo && !store.data.users.length) store.data.users.push({ id: randomUUID(), username: 'demo', role: 'admin', allServers: true, serverIds: [], disabled: false, sessionVersion: 0, createdAt: new Date().toISOString() });
   function commit(operation, action, detail, actor) {
     const references = [...store.data.users];
     const users = new Map(references.map(user => [user, structuredClone(user)]));
@@ -96,7 +95,7 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
     res.cookie(COOKIE, sid, { httpOnly: true, sameSite: 'strict', secure: req.secure || publicUrl.startsWith('https:'), maxAge: SESSION_TTL, path: '/' });
     return { user: publicUser(user), csrfToken: session.csrfToken, expires: session.expires, sid };
   }
-  const response = session => ({ setupRequired: !demo && store.data.users.length === 0, authenticated: !!session, ...(session ? { user: session.user, csrfToken: session.csrfToken } : {}), demo });
+  const response = session => ({ setupRequired: store.data.users.length === 0, authenticated: !!session, ...(session ? { user: session.user, csrfToken: session.csrfToken } : {}) });
   function rateLimit(req, res, next) {
     const timestamp = Date.now();
     for (const [key, value] of attempts) if (value.until < timestamp) attempts.delete(key);
@@ -114,7 +113,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
   async function reauthenticateAdmin(req, password) {
     const before = readSession(req);
     if (!before || before.user.role !== 'admin') fail('Phiên quản trị đã bị thu hồi.', 401);
-    if (demo) fail('Thao tác hệ thống cần tài khoản quản trị thật.', 409);
     const timestamp = Date.now();
     for (const [id, value] of administratorAttempts) if (value.until <= timestamp) administratorAttempts.delete(id);
     const attempt = administratorAttempts.get(before.user.id) || { count: 0, until: timestamp + 15 * 60 * 1000 };
@@ -135,7 +133,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
   };
   router.get('/file-access', requireAuth, requireAdmin, (req, res) => res.json({ fileAccess: fileAccess(req, req.query.serverId) }));
   router.post('/file-access', requireAuth, requireAdmin, async (req, res) => {
-    if (demo) fail('Chế độ can thiệp mạnh cần tài khoản quản trị thật.', 409);
     const { serverId, password, confirmed } = req.body;
     if (typeof serverId !== 'string' || !serverExists(serverId)) fail('Không tìm thấy máy chủ.', 404);
     if (confirmed !== true) fail('Cần xác nhận cảnh báo trước khi bật can thiệp mạnh.');
@@ -181,7 +178,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
   const consumeFactor = (user, factor) => { if (factor.counter !== undefined) user.mfaLastCounter = factor.counter; else user.mfaRecoveryHashes.splice(factor.recoveryIndex, 1); };
   async function verifyAccountPassword(req) {
     const user = store.data.users.find(value => value.id === req.session.user.id);
-    if (demo) fail('Cấu hình MFA không hoạt động trong chế độ demo.', 409);
     factorAllowed(user);
     if (!await verifyPassword(req.body.password, user?.passwordHash)) fail('Mật khẩu hiện tại chưa đúng.', 403);
     if (!readSession(req)) fail('Phiên đăng nhập đã bị thu hồi.', 401);
@@ -202,22 +198,11 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
     if (user.role === 'admin' && !user.disabled && (candidate.role !== 'admin' || candidate.disabled) && !store.data.users.some(value => value.id !== user.id && value.role === 'admin' && !value.disabled)) fail('Panel cần ít nhất một quản trị viên đang hoạt động.', 409);
   };
   router.get('/status', (req, res) => {
-    let session = readSession(req);
-    if (demo && !session && !req.headers.cookie) {
-      const user = store.data.users.find(value => value.username === 'demo' && value.role === 'admin' && !value.disabled);
-      if (user) session = createSession(req, res, user);
-    }
+    const session = readSession(req);
     res.json(response(session));
   });
-  router.post('/demo', rateLimit, (req, res) => {
-    if (!demo) fail('Không tìm thấy chức năng này.', 404);
-    const user = store.data.users.find(value => value.username === 'demo' && value.role === 'admin' && !value.disabled);
-    if (!user) fail('Tài khoản demo đã được quản trị viên vô hiệu hóa.', 409);
-    commit(() => {}, 'auth.demo', 'Mở phiên trải nghiệm demo', user.username);
-    res.json(response(createSession(req, res, user)));
-  });
   router.post('/setup', rateLimit, async (req, res) => {
-    if (demo || store.data.users.length || setupBusy) return res.status(409).json({ error: 'Panel đã được thiết lập.' });
+    if (store.data.users.length || setupBusy) return res.status(409).json({ error: 'Panel đã được thiết lập.' });
     if (!constantEqual(req.body.token, setupToken)) return res.status(403).json({ error: 'Mã thiết lập không hợp lệ. Xem terminal chạy panel.' });
     const { username, password } = req.body; validateUsername(username); validatePassword(password); setupBusy = true;
     try {
@@ -235,7 +220,7 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
       for (const [key, challenge] of challenges) if (challenge.expires < Date.now()) challenges.delete(key);
       if (challenges.size >= 200) challenges.delete(challenges.keys().next().value);
       const challengeToken = token(); challenges.set(challengeToken, { userId: user.id, version: user.sessionVersion, expires: Date.now() + 5 * 60 * 1000, failures: 0 });
-      return res.json({ authenticated: false, mfaRequired: true, challengeToken, expiresIn: 300, demo });
+      return res.json({ authenticated: false, mfaRequired: true, challengeToken, expiresIn: 300 });
     }
     commit(() => {}, 'auth.login', 'Đăng nhập', user.username); res.json(response(createSession(req, res, user)));
   });
@@ -251,7 +236,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
   });
   router.post('/logout', requireAuth, (req, res) => { sessions.delete(req.session.sid); res.clearCookie(COOKIE, { path: '/' }); res.json({ ok: true }); });
   router.post('/password', requireAuth, async (req, res) => {
-    if (demo) return res.status(409).json({ error: 'Không đổi mật khẩu trong chế độ demo.' });
     const user = store.data.users.find(value => value.id === req.session.user.id); validatePassword(req.body.password);
     const timestamp = Date.now();
     for (const [id, value] of passwordChangeAttempts) if (value.until <= timestamp) passwordChangeAttempts.delete(id);
@@ -267,7 +251,7 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
   });
   router.get('/mfa', requireAuth, (req, res) => {
     const user = store.data.users.find(value => value.id === req.session.user.id);
-    res.json({ enabled: Boolean(user.mfaSecret), recoveryCodesRemaining: (user.mfaRecoveryHashes || []).length, demo });
+    res.json({ enabled: Boolean(user.mfaSecret), recoveryCodesRemaining: (user.mfaRecoveryHashes || []).length });
   });
   router.post('/mfa/setup', requireAuth, rateLimit, async (req, res) => {
     const user = await verifyAccountPassword(req); requireVault();
@@ -279,7 +263,6 @@ export function createAuth({ store, demo = false, setupToken = token(), publicUr
     res.json({ secret, otpauthUrl: url, qrDataUrl: await QRCode.toDataURL(url, { width: 240, margin: 2 }), expiresIn: 600 });
   });
   router.post('/mfa/enable', requireAuth, rateLimit, (req, res) => {
-    if (demo) fail('Cấu hình MFA không hoạt động trong chế độ demo.', 409);
     const user = store.data.users.find(value => value.id === req.session.user.id); const pending = mfaSetups.get(user.id);
     if (user.mfaSecret) fail('Xác thực hai bước đã được bật.', 409);
     if (!pending || pending.sid !== req.session.sid || pending.version !== user.sessionVersion || pending.expires < Date.now() || pending.failures >= 5) { mfaSetups.delete(user.id); fail('Mã thiết lập đã hết hạn. Tạo lại mã QR.', 409); }
