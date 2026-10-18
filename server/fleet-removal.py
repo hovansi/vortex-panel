@@ -1092,11 +1092,16 @@ server {
         for name in sorted(selected):
             config = self.run(['dpkg-query', '-W', '-f=${Conffiles}', name])
             for line in config.splitlines():
-                match = re.fullmatch(r' (\S+) ([a-f0-9]{32})(?: obsolete)?', line)
-                if match and os.path.lexists(self.path(match[1])):
+                # execute() trims the command's outer whitespace, so the
+                # first row can legitimately have no dpkg indentation.
+                match = re.fullmatch(r'\s*(/\S+)\s+([a-f0-9]{32})(?:\s+obsolete)?\s*', line)
+                if not match:
+                    result['retained'].append({'kind': 'packages', 'path': ','.join(sorted(selected)), 'reason': 'Package conffile metadata is unfamiliar; the complete candidate set is preserved.'})
+                    return
+                if os.path.lexists(self.path(match[1])):
                     info = self.safe(self.path(match[1]))
                     if not stat.S_ISREG(info.st_mode) or hashlib.md5(self.read(self.path(match[1]), 16 * 1024 ** 2)).hexdigest() != match[2]:
-                        result['retained'].append({'kind': 'package', 'path': name, 'reason': 'Its configuration was customized after installation.'})
+                        result['retained'].append({'kind': 'packages', 'path': ','.join(sorted(selected)), 'reason': 'Package configuration was customized after installation; the complete candidate set is preserved.'})
                         return
         proc = self.path('/proc')
         executables = set()
