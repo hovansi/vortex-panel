@@ -3,7 +3,7 @@ const actions = {
  start:'positive',stop:'danger',kill:'danger',restart:'warning',
  'update-server':'warning','delete-server':'danger','delete-file':'danger','world-delete':'danger',
  'delete-backup':'danger','restore-backup':'danger','delete-pack':'danger','delete-player':'danger',
- 'delete-user':'danger','delete-schedule':'danger','node-remove':'danger','node-uninstall':'danger',
+ 'delete-user':'danger','delete-schedule':'danger','node-remove':'danger','node-uninstall':'danger','panel-uninstall':'danger',
  'mfa-disable':'danger','reset-user-mfa':'warning','mfa-recovery':'warning',
  'file-access-toggle':'warning','node-maintenance':'warning','vps-power':'warning'
 };

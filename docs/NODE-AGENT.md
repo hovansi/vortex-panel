@@ -34,7 +34,7 @@ Readiness dùng token đọc từ config riêng, certificate pin, node UUID và 
 
 ## Config và thay token/chứng chỉ
 
-Config JSON là file thường, không symlink/hardlink và có quyền `0600`; private key cũng cần quyền riêng. CLI từ chối config/private key cho phép group/other đọc trên POSIX. Không trỏ `dataDir` về, chứa hoặc nằm dưới `/var/lib/bedrock-panel`; agent từ chối ancestor symlink, thư mục không liên quan đã có dữ liệu, directory cho group/other ghi và store có tài khoản panel. File config chứa `schemaVersion:1`, `nodeId`, `token`, `dataDir`, `host`, `port` và `tls:{certFile,keyFile}`. Không chỉnh UUID sau khi panel đã bind identity.
+Config JSON là file thường, không symlink/hardlink và có quyền `0600`; private key cũng cần quyền riêng. CLI từ chối config/private key cho phép group/other đọc trên POSIX. Không trỏ `dataDir` về, chứa hoặc nằm dưới `/var/lib/vortex-panel` (hoặc đường dẫn cũ `/var/lib/bedrock-panel`); agent từ chối ancestor symlink, thư mục không liên quan đã có dữ liệu, directory cho group/other ghi và store có tài khoản panel. File config chứa `schemaVersion:1`, `nodeId`, `token`, `dataDir`, `host`, `port` và `tls:{certFile,keyFile}`. Không chỉnh UUID sau khi panel đã bind identity.
 
 ```bash
 sudo node /opt/vortex-node/current/server/node-cli.js rotate-token

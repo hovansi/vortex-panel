@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const units = Object.freeze({ panel: 'bedrock-panel.service', worker: 'vortex-node.service' });
+const units = Object.freeze({ panel: 'vortex-panel.service', worker: 'vortex-node.service' });
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const terminal = new Set(['completed', 'failed']);

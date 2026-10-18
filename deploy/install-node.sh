@@ -5,17 +5,56 @@ umask 077
 [[ $EUID -eq 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 ADVERTISE_ENDPOINT=
 AGENT_PORT=8443
+RESUME_LEDGER_SHA=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --endpoint) [[ $# -ge 2 ]] || exit 1; ADVERTISE_ENDPOINT=$2; shift 2;;
     --port) [[ $# -ge 2 ]] || exit 1; AGENT_PORT=$2; shift 2;;
-    *) echo 'Usage: sudo bash deploy/install-node.sh [--endpoint https://YOUR_VPS_IP:8443] [--port 8443]' >&2; exit 1;;
+    --resume-ledger) [[ $# -ge 2 && $2 =~ ^[a-f0-9]{64}$ && -z $RESUME_LEDGER_SHA ]] || exit 1; RESUME_LEDGER_SHA=$2; shift 2;;
+    *) echo 'Usage: sudo bash deploy/install-node.sh [--endpoint https://YOUR_VPS_IP:8443] [--port 8443] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; exit 1;;
   esac
 done
 [[ $AGENT_PORT =~ ^[0-9]{4,5}$ && $AGENT_PORT -ge 1024 && $AGENT_PORT -le 65535 ]] || { echo 'Agent port must be an integer from 1024 to 65535.' >&2; exit 1; }
 source /etc/os-release
 [[ $ID == ubuntu ]] && dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo 'Ubuntu 22.04 LTS or newer is required.' >&2; exit 1; }
 [[ $(uname -m) == x86_64 ]] || { echo 'Official Bedrock Linux binaries require x86_64.' >&2; exit 1; }
+# BEGIN installer transaction lock
+# Serialize the complete installer with host memory and native erasure. Never
+# replace or unlink this shared lock inode, including after failed installation.
+acquire_installer_lock() {
+  local lock_path=/run/vortex-os-maintenance.lock lock_info descriptor_info candidate_fd parent_info parent_owner parent_mode
+  command -v flock >/dev/null 2>&1 || { echo 'The util-linux flock command is required before installation.' >&2; return 1; }
+  [[ -d /run && ! -L /run ]] || return 1
+  parent_info=$(LC_ALL=C stat -c '%u:%a' -- /run) || return 1
+  IFS=: read -r parent_owner parent_mode <<< "$parent_info"
+  [[ $parent_owner == 0 && $parent_mode =~ ^[0-7]{3,4}$ ]] && (( (8#$parent_mode & 0022) == 0 )) || return 1
+  if [[ ! -e $lock_path && ! -L $lock_path ]]; then
+    if ! (umask 077; set -o noclobber; : > "$lock_path") 2>/dev/null; then
+      [[ -e $lock_path || -L $lock_path ]] || return 1
+    fi
+  fi
+  [[ -f $lock_path && ! -L $lock_path ]] || return 1
+  lock_info=$(LC_ALL=C stat -c '%u:%h:%a:%d:%i' -- "$lock_path") || return 1
+  [[ $lock_info == 0:1:600:* ]] || return 1
+  exec {candidate_fd}<>"$lock_path" || return 1
+  descriptor_info=$(LC_ALL=C stat -Lc '%u:%h:%a:%d:%i' -- "/proc/$$/fd/$candidate_fd") || { exec {candidate_fd}>&-; return 1; }
+  if [[ $descriptor_info != "$lock_info" || ! -f $lock_path || -L $lock_path ]] || [[ $(LC_ALL=C stat -c '%u:%h:%a:%d:%i' -- "$lock_path") != "$descriptor_info" ]]; then
+    exec {candidate_fd}>&-
+    return 1
+  fi
+  if ! flock -n "$candidate_fd"; then
+    exec {candidate_fd}>&-
+    echo 'Another Vortex operating-system operation is in progress. Retry after it finishes.' >&2
+    return 1
+  fi
+  if [[ ! -f $lock_path || -L $lock_path ]] || [[ $(LC_ALL=C stat -c '%u:%h:%a:%d:%i' -- "$lock_path") != "$descriptor_info" ]]; then
+    exec {candidate_fd}>&-
+    return 1
+  fi
+  VORTEX_INSTALL_LOCK_FD=$candidate_fd
+}
+acquire_installer_lock || { echo 'The private Vortex transaction lock could not be safely acquired.' >&2; exit 1; }
+# END installer transaction lock
 SOURCE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 INSTALL_ROOT=/opt/vortex-node
 CONFIG_FILE=/etc/vortex-node.json
@@ -25,6 +64,8 @@ ZRAM_HELPER=/usr/local/libexec/vortex-host-zram.py
 PRIVATE_RUNTIME=
 NEW_TLS=false
 NEW_HELPER=false
+UPGRADED_HELPER=false
+NEW_ISOLATION_HELPER=false
 INSTALL_COMPLETED=false
 INSTALL_DIR=$INSTALL_ROOT/releases/$(date -u +%Y%m%dT%H%M%SZ)-$$
 RECOVERY_DIR=$(mktemp -d /tmp/vortex-node-install.XXXXXXXX)
@@ -56,6 +97,12 @@ assert_real_ancestors "$ZRAM_HELPER"
 [[ ! -e $INSTALL_DIR && ! -L $INSTALL_DIR && ! -e $INSTALL_ROOT/current.next && ! -L $INSTALL_ROOT/current.next ]] || { echo 'Node staging paths already exist; review the previous operation before retrying.' >&2; exit 1; }
 [[ ! -f $UNIT_FILE ]] || cp -a -- "$UNIT_FILE" "$RECOVERY_DIR/service"
 cleanup() {
+  if [[ $INSTALL_COMPLETED != true && $UPGRADED_HELPER == true && -n $RECOVERY_DIR && -f $RECOVERY_DIR/host-zram.py && ! -L $ZRAM_HELPER && -f $ZRAM_HELPER ]] && cmp -s -- "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"; then
+    install -m 0755 "$RECOVERY_DIR/host-zram.py" "$ZRAM_HELPER"
+  fi
+  if [[ $INSTALL_COMPLETED != true && $NEW_ISOLATION_HELPER == true && ! -L /usr/local/libexec/vortex-application-isolation.py && -f /usr/local/libexec/vortex-application-isolation.py ]] && cmp -s -- "$SOURCE_DIR/deploy/application-isolation.py" /usr/local/libexec/vortex-application-isolation.py; then
+    rm -f -- /usr/local/libexec/vortex-application-isolation.py
+  fi
   if [[ $INSTALL_COMPLETED != true && $NEW_HELPER == true && ! -L $ZRAM_HELPER && -f $ZRAM_HELPER ]] && cmp -s -- "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"; then
     rm -f -- "$ZRAM_HELPER"
   fi
@@ -85,6 +132,13 @@ rollback() {
 }
 trap cleanup EXIT
 trap 'rollback "$LINENO"' ERR
+if [[ -n $RESUME_LEDGER_SHA ]]; then
+  python3 "$SOURCE_DIR/deploy/install-ledger.py" validate-capture --role worker --capture-sha256 "$RESUME_LEDGER_SHA"
+  python3 "$SOURCE_DIR/deploy/install-ledger.py" capture-resume --role worker --capture-sha256 "$RESUME_LEDGER_SHA"
+else
+  [[ ! -e /run/vortex-install-ledger-worker.json && ! -L /run/vortex-install-ledger-worker.json ]] || { echo 'A previous installer baseline exists. Review its private recovery state, then resume with its exact SHA-256; it will not be overwritten.' >&2; false; }
+  python3 "$SOURCE_DIR/deploy/install-ledger.py" capture --role worker
+fi
 apt-get -o DPkg::Lock::Timeout=120 update
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
@@ -185,6 +239,17 @@ if [[ -f $SOURCE_DIR/deploy/application-isolation.py ]]; then
     echo 'Optional application sandbox setup is unavailable; Minecraft node installation continues.' >&2
   fi
 fi
+# Keep the exact ownership verifier independently of a release tree. Removal
+# executes a trusted private copy, never an administrator-edited helper.
+ISOLATION_HELPER=/usr/local/libexec/vortex-application-isolation.py
+assert_real_ancestors "$ISOLATION_HELPER"
+if [[ -e $ISOLATION_HELPER || -L $ISOLATION_HELPER ]]; then
+  [[ ! -L $ISOLATION_HELPER && -f $ISOLATION_HELPER && $(stat -c '%u:%h' -- "$ISOLATION_HELPER") == 0:1 ]] && cmp -s -- "$SOURCE_DIR/deploy/application-isolation.py" "$ISOLATION_HELPER" || { echo 'Existing application-isolation verifier differs; it was preserved for review.' >&2; false; }
+else
+  install -d -m 0755 /usr/local/libexec
+  install -m 0755 "$SOURCE_DIR/deploy/application-isolation.py" "$ISOLATION_HELPER"
+  NEW_ISOLATION_HELPER=true
+fi
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
 if [[ $NODE_MAJOR -lt 22 ]]; then
   NODE_TEMP=$(mktemp -d /tmp/vortex-node-runtime.XXXXXXXX)
@@ -193,17 +258,42 @@ if [[ $NODE_MAJOR -lt 22 ]]; then
   [[ -n $NODE_FILE ]] || { echo 'Unable to resolve official Node 22 archive.' >&2; false; }
   curl --fail --location --proto '=https' --tlsv1.2 --output "$NODE_TEMP/$NODE_FILE" "https://nodejs.org/dist/latest-v22.x/$NODE_FILE"
   (cd -- "$NODE_TEMP" && awk -v f="$NODE_FILE" '$2 == f' SHASUMS256.txt | sha256sum --check -)
-  PRIVATE_RUNTIME=$INSTALL_ROOT/tools/${NODE_FILE%.tar.xz}
+  PRIVATE_RUNTIME=$INSTALL_ROOT/tools/runtime-$(date -u +%Y%m%dT%H%M%SZ)-$$/${NODE_FILE%.tar.xz}
   assert_real_ancestors "$PRIVATE_RUNTIME"
   [[ ! -e $PRIVATE_RUNTIME && ! -L $PRIVATE_RUNTIME ]] || { echo 'The private runtime path already exists; review it before retrying.' >&2; false; }
   install -d -m 0755 "$PRIVATE_RUNTIME"
-  tar -xJf "$NODE_TEMP/$NODE_FILE" --strip-components=1 -C "$PRIVATE_RUNTIME"
+  tar --no-same-owner --no-same-permissions -xJf "$NODE_TEMP/$NODE_FILE" --strip-components=1 -C "$PRIVATE_RUNTIME"
+  chown -hR -- root:root "$PRIVATE_RUNTIME"
+  chmod -R a+rX,go-w -- "$PRIVATE_RUNTIME"
   export PATH=$PRIVATE_RUNTIME/bin:$PATH
 fi
 NODE_BIN=$(command -v node)
 [[ ! -L $ZRAM_HELPER ]] || { echo 'The OS helper path must not be linked.' >&2; false; }
 if [[ -e $ZRAM_HELPER ]]; then
-  [[ -f $ZRAM_HELPER && $(stat -c '%u:%h' -- "$ZRAM_HELPER") == 0:1 ]] && cmp -s -- "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER" || { echo 'An existing OS helper differs; it was preserved and requires review.' >&2; false; }
+  [[ -f $ZRAM_HELPER && $(stat -c '%u:%h' -- "$ZRAM_HELPER") == 0:1 ]] || { echo 'An existing OS helper is unsafe; it was preserved and requires review.' >&2; false; }
+  if ! cmp -s -- "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"; then
+    python3 - "$INSTALL_ROOT" "$ZRAM_HELPER" <<'PY'
+import os, pathlib, stat, sys
+root, helper = map(pathlib.Path, sys.argv[1:])
+release = (root / 'current').resolve(strict=True)
+if release.parent != root / 'releases':
+    raise SystemExit('Previous helper has no fixed active worker release proof.')
+reference = release / 'server/host-zram.py'
+for path in [helper, reference]:
+    for parent in [*reversed(path.parents), path]:
+        info = parent.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise SystemExit('Previous helper source ownership is unsafe.')
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1024 ** 2:
+        raise SystemExit('Previous helper source is not an exclusive bounded file.')
+if helper.read_bytes() != reference.read_bytes():
+    raise SystemExit('Existing OS helper differs from the previous active release; it was preserved.')
+PY
+    cp -a -- "$ZRAM_HELPER" "$RECOVERY_DIR/host-zram.py"
+    install -m 0755 "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"
+    UPGRADED_HELPER=true
+  fi
 else
   install -d -m 0755 "$(dirname -- "$ZRAM_HELPER")"
   install -m 0755 "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"
@@ -235,7 +325,7 @@ for (const relative of NODE_RUNTIME_FILES) {
 }
 NODE
 cd -- "$INSTALL_DIR"
-npm ci --omit=dev --ignore-scripts
+npm ci --cache "$INSTALL_ROOT/.npm-cache" --omit=dev --ignore-scripts
 chown -hR root:root "$INSTALL_DIR"
 chmod 0755 "$INSTALL_DIR"
 chmod -R go-w "$INSTALL_DIR"
@@ -315,6 +405,7 @@ record(release);if(runtime)record(runtime);if(newTLS==='true'){record(path.join(
 const value={schemaVersion:1,product:'vortex-node',role:'worker',installId,nodeId:config.nodeId,createdAt:previous?.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),components:[...rows.values()],retainedShared:['operating-system-packages','pre-existing-node-runtime','untagged-firewall-rules','separate-legacy-panel']};
 const temporary=filename+'.'+randomUUID()+'.tmp';const fd=fs.openSync(temporary,'wx',0o600);try{fs.writeFileSync(fd,JSON.stringify(value)+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}fs.renameSync(temporary,filename);
 NODE
+python3 "$SOURCE_DIR/deploy/install-ledger.py" finalize --role worker --data-dir /var/lib/vortex-node --source-dir "$INSTALL_ROOT" --service-user root
 INSTALL_COMPLETED=true
 CHANGED_SERVICE=false
 echo 'Vortex node installed. This agent runs as root; keep its credential private and restrict its configured TCP port to the central panel.'

@@ -28,7 +28,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/re
 
 The release installer resolves the latest stable Vortex release, checks its source archive, installs dependencies and starts the systemd service. A fresh installation also prepares HTTPS access on the VPS's public IP. Follow the URL and first-Admin setup instructions printed at completion. IP HTTPS initially uses a self-signed certificate, so the browser will require you to trust that certificate; no account or shared default password is created for you.
 
-The one-command path enables root host administration on a fresh installation. Node.js/Python application code runs under its own non-root account and sandbox. Existing installations retain their configuration. Read the [installation guide](docs/INSTALL.md) for requirements, certificate trust, updates and the local-only alternative.
+The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel` and default data in `/var/lib/vortex-panel`. Legacy managed installs migrate offline with a private backup. The one-command path enables root host administration on a fresh installation. Node.js/Python application code runs under its own non-root account and sandbox. Existing installations retain their configuration. Read the [installation guide](docs/INSTALL.md) for requirements, certificate trust, updates and the local-only alternative.
 
 ## A workspace that follows the workload
 

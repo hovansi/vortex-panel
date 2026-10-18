@@ -59,7 +59,7 @@ Before the first unmount, an exclusive mode-0600 receipt outside the data tree r
 
 ## Names and approximate location
 
-The controller is displayed as **Vortex Main**. Omitting a new node name allocates **Vortex Node 001**, then 002 and so on. The counter is atomically persisted before asynchronous enrollment and is never reduced when a node is unlinked. Failed enrollment can leave a gap. Existing custom labels are preserved; the exact previous generated label `Vortex Node 02` receives the approved migration to `Vortex Node 001` when that label is free.
+The controller is displayed as **Vortex Panel**. Omitting a new node name allocates **Vortex Node 001**, then 002 and so on. The counter is atomically persisted before asynchronous enrollment and is never reduced when a node is unlinked. Failed enrollment can leave a gap. Existing custom labels are preserved; the exact previous generated label `Vortex Node 02` receives the approved migration to `Vortex Node 001` when that label is free.
 
 Automatic location uses the fixed HTTPS `ipwho.is` endpoint for the host's own egress IP, with a 1.5-second timeout and 32 KiB response limit. Only country, region, city and timezone metadata are retained; no account, token or hostname is sent. Successful observations are cached for a day, failures retry after an hour, and dashboard requests never wait for lookup completion. Set **`VORTEX_GEOLOCATION=off`** to disable it. Provider failure produces unknown location, never a guessed country. IP location is approximate and may describe a provider gateway rather than the machine's physical site; an existing manual location takes precedence.
 

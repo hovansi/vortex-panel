@@ -22,7 +22,7 @@ Validation accepts CPU values from 0.10 to the host CPU count in steps of 0.01, 
 
 Fixed limits require a writable unified cgroup v2 mount, CPU and memory controllers, and a delegated systemd service whose MainPID is the panel process. Ubuntu 22.04 and later with the normal systemd service are the primary target. Unsupported platforms or configurations expose an explicit unavailable reason and keep shared mode usable; fixed mode never silently becomes shared mode.
 
-The installer writes the required delegation directive directly into the managed service unit. For an existing manual installation, `deploy/resource-control.conf` may instead be copied to `/etc/systemd/system/bedrock-panel.service.d/resource-control.conf`, followed by a service reload/restart. The required directive is:
+The installer writes the required delegation directive directly into the managed service unit. For an existing manual installation, `deploy/resource-control.conf` may instead be copied to `/etc/systemd/system/vortex-panel.service.d/resource-control.conf`, followed by a service reload/restart. The required directive is:
 
 ```ini
 [Service]

@@ -7,15 +7,15 @@ set -Eeuo pipefail
 SOURCE_PATH=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 STORAGE_CLI=$SOURCE_PATH/server/storage-cli.js
 [[ -f $STORAGE_CLI && ! -L $STORAGE_CLI ]] || { echo 'The matching storage maintenance helper is required.' >&2; exit 1; }
-NODE_BIN=$(command -v node)
-DATA_PATH=/var/lib/bedrock-panel
-if [[ -f /etc/bedrock-panel.env ]]; then
-  CONFIGURED_DATA=$(sed -n 's/^DATA_DIR=//p' /etc/bedrock-panel.env | tail -n 1 | tr -d '\r' | sed 's/^"//;s/"$//')
+if [[ -x /opt/vortex-panel/runtime/bin/node && ! -L /opt/vortex-panel/runtime/bin/node ]]; then NODE_BIN=/opt/vortex-panel/runtime/bin/node; else NODE_BIN=$(command -v node); fi
+DATA_PATH=/var/lib/vortex-panel
+if [[ -f /etc/vortex-panel.env ]]; then
+  CONFIGURED_DATA=$(sed -n 's/^DATA_DIR=//p' /etc/vortex-panel.env | tail -n 1 | tr -d '\r' | sed 's/^"//;s/"$//')
   [[ -z $CONFIGURED_DATA ]] || DATA_PATH=$CONFIGURED_DATA
 fi
 [[ $DATA_PATH == /* && -d $DATA_PATH ]] || { echo 'DATA_DIR must be an existing absolute directory.' >&2; exit 1; }
 DATA_PATH=$(realpath -e -- "$DATA_PATH")
-BACKUP_ARGUMENT=${1:-/var/backups/vortex-mc}
+BACKUP_ARGUMENT=${1:-/var/backups/vortex-panel}
 [[ $BACKUP_ARGUMENT == /* ]] || { echo 'Backup directory must be an absolute path.' >&2; exit 1; }
 BACKUP_PATH=$(realpath -m -- "$BACKUP_ARGUMENT")
 [[ $DATA_PATH != / && $BACKUP_PATH != "$DATA_PATH" && $BACKUP_PATH != "$DATA_PATH/"* && $DATA_PATH != "$BACKUP_PATH/"* ]] || { echo 'Backup destination and DATA_DIR must not overlap.' >&2; exit 1; }
@@ -50,13 +50,13 @@ finish() {
   fi
   if [[ $mounts_restored == true && $LOCK_ACQUIRED == true && -f $DATA_PATH/panel.lock ]] && grep -Fq "\"identity\":\"$LOCK_ID\"" "$DATA_PATH/panel.lock"; then rm -f -- "$DATA_PATH/panel.lock"; fi
   if [[ $RESUME == true ]]; then
-    if ! systemctl start bedrock-panel; then echo 'Snapshot finished, but the panel service could not restart. Check its journal.' >&2; code=1; fi
+    if ! systemctl start vortex-panel; then echo 'Snapshot finished, but the panel service could not restart. Check its journal.' >&2; code=1; fi
   fi
   [[ ! -f $PARTIAL ]] || rm -f -- "$PARTIAL"
   exit "$code"
 }
 trap finish EXIT
-if systemctl is-active --quiet bedrock-panel; then RESUME=true; systemctl stop bedrock-panel; fi
+if systemctl is-active --quiet vortex-panel; then RESUME=true; systemctl stop vortex-panel; fi
 [[ ! -e $DATA_PATH/panel.lock ]] || { echo 'Another panel process owns DATA_DIR. Stop it before taking a consistent snapshot.' >&2; exit 1; }
 umask 0077
 if (set -o noclobber; printf '{"pid":%s,"identity":"%s"}\n' "$$" "$LOCK_ID" > "$DATA_PATH/panel.lock") 2>/dev/null; then

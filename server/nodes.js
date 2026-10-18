@@ -83,7 +83,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
   const acknowledgements = new Map();
   let observation = 0;
   const shutdown = new AbortController();
-  let closed = false, timer, refreshPromise, provisioner, removal, addTail = Promise.resolve();
+  let closed = false, timer, refreshPromise, provisioner, removal, fleetRemoval, pendingAdds = 0, addTail = Promise.resolve();
   store.data.nodes ||= [];
   if (!Array.isArray(store.data.nodes) || store.data.nodes.length > NODE_LIMITS.maxNodes) throw new Error('Invalid node registry.');
   for (const row of store.data.nodes) {
@@ -316,7 +316,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
         network: { ...server.telemetry.network, available: false, stale: true, rxBytes: null, txBytes: null, rxBytesPerSecond: null, txBytesPerSecond: null } } : null });
     return server;
   }
-  const localName = () => store.data.settings?.localNodeName === undefined ? 'Vortex Main' : validateLabel(store.data.settings.localNodeName, 'name', 80);
+  const localName = () => store.data.settings?.localNodeName === undefined ? 'Vortex Panel' : validateLabel(store.data.settings.localNodeName, 'name', 80);
   const localTag = row => ({ ...row, nodeId: 'local', nodeName: localName(), nodeAddress: process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL).hostname : '', nodeOnline: true, nodeStatus: 'online', nodeLastSeen: null });
   function listServers() {
     return [...localManager.listServers().map(localTag), ...store.data.nodes.flatMap(node => (stateOf(node).snapshot?.servers || node.inventory).map(row => taggedServer(node, row)))];
@@ -391,8 +391,8 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
     });
   }
   function add(input, user) {
-    requireOpen();
-    const run = addTail.then(() => addImmediate(input, user));
+    requireOpen(); assertLocalMutation(); pendingAdds++;
+    const run = addTail.then(() => { assertLocalMutation(); return addImmediate(input, user); }).finally(() => { pendingAdds--; });
     addTail = run.catch(() => {}); return run;
   }
   async function update(id, input, user) {
@@ -465,6 +465,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
   }
   function requireAvailable(id, { create = false, mutating = false } = {}) {
     requireOpen(); const node = get(id);
+    if (create || mutating) assertLocalMutation();
     if ((create || mutating) && (node.removalOperationId || removal?.isRemoving(id))) fail('This VPS is being uninstalled or requires uninstall verification.', 409);
     if ((create || mutating) && locks.has(id)) fail('A node configuration operation is already pending.', 409);
     if (!stateOf(node).online) fail('Node is offline. Its servers may still be running; no command was queued.', 503);
@@ -532,7 +533,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
       if (property === 'listServers') return listServers;
       if (property === 'getServer') return id => listServers().find(s => s.id === id) || fail('Không tìm thấy server.', 404);
       if (property === 'withActor') return (user, callback) => actor.run(user, () => localManager.withActor(user, callback));
-      if (property === 'jobs') return () => retainStoreHistory({ jobs: [...localManager.jobs().map(localTag), ...nodeRows('jobs'), ...(provisioner?.jobs() || []), ...(removal?.jobs() || [])], activity: [], servers: listServers(), schedules: [...localManager.schedules().map(localTag), ...nodeRows('schedules')] }, getLogRetentionPolicy(store.data.settings.logRetention)).jobs;
+      if (property === 'jobs') return () => retainStoreHistory({ jobs: [...localManager.jobs().map(localTag), ...nodeRows('jobs'), ...(provisioner?.jobs() || []), ...(removal?.jobs() || []), ...(fleetRemoval?.jobs() || [])], activity: [], servers: listServers(), schedules: [...localManager.schedules().map(localTag), ...nodeRows('schedules')] }, getLogRetentionPolicy(store.data.settings.logRetention)).jobs;
       if (property === 'getJob') return getJob;
       if (property === 'schedules') return () => [...localManager.schedules().map(localTag), ...nodeRows('schedules')];
       if (property === 'activity') return () => [...localManager.activity().map(localTag), ...nodeRows('activity')].sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, 100);
@@ -553,6 +554,11 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
       return Reflect.get(target, property);
     },
   });
+  function beginFleetRemoval(input) {
+    requireOpen();
+    if (pendingAdds || locks.size || activeMutations.size || provisioner?.jobs().some(row => ['queued', 'running'].includes(row.status)) || removal?.jobs().some(row => ['queued', 'running', 'unknown', 'partial'].includes(row.status))) fail('Another node operation needs to finish before uninstall.', 409);
+    return localManager.beginMaintenance(input);
+  }
   async function initialize() {
     if (closed || timer) return;
     refreshAll().catch(() => {});
@@ -565,5 +571,5 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
     for (const id of new Set([...streams.keys(), ...retryTimers.keys(), ...eventTimers.keys()])) stopEvents(id);
     // Never stop agents or remote Bedrock processes when the controller closes.
   }
-  return { manager, initialize, close, attachProvisioner(value) { provisioner = value; }, attachRemoval(value) { removal = value; }, beginRemoval, cancelRemoval, completeRemoval, add, update, remove, get, publicNodes, publicNode, listServers, refresh, refreshAll, requireAvailable, beginMutation, assertPortAllocation, call, readJson, actorHeader, identityHeaders, credentials, stateOf, signal: shutdown.signal, mapResponse: (node, value) => mapNodeResponse(node, value, stateOf(node)), recordResponse(node, value, { mutating = true } = {}) { if (mutating) rememberResponse(node, value); refresh(node.id, { force: true }).catch(() => {}); }, recordDeletedSchedule(node, rawId) { if (!UUID.test(rawId || '')) fail('Invalid schedule identity.', 400); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.schedules.delete(rawId); pending.schedules.set(rawId, { revision: ++observation, row: null }); while (pending.schedules.size > 2000) pending.schedules.delete(pending.schedules.keys().next().value); const state = stateOf(node); if (state.snapshot) state.snapshot.schedules = state.snapshot.schedules.filter(row => row.id !== rawId); emit({ type: 'update' }); }, recordDeletedServer(node, rawId) { const id = nodeResourceId(node.id, rawId); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.servers.set(rawId, { revision: ++observation, row: null }); const state = stateOf(node); if (state.snapshot) state.snapshot.servers = state.snapshot.servers.filter(s => s.id !== rawId); node.inventory = node.inventory.filter(s => s.id !== rawId); for (const user of store.data.users) user.serverIds = (user.serverIds || []).filter(value => value !== id); let warning; try { store.save(); } catch { warning = 'The server was deleted on the node, but its central inventory/grant cleanup could not be saved. Refresh after reconnecting.'; } emit({ type: 'update' }); return warning; }, request, get limits() { return { ...NODE_LIMITS, nextNodeName: naming.preview() }; } };
+  return { manager, initialize, close, attachProvisioner(value) { provisioner = value; }, attachRemoval(value) { removal = value; }, attachFleetRemoval(value) { fleetRemoval = value; }, beginFleetRemoval, beginRemoval, cancelRemoval, completeRemoval, add, update, remove, get, publicNodes, publicNode, listServers, refresh, refreshAll, requireAvailable, beginMutation, assertPortAllocation, call, readJson, actorHeader, identityHeaders, credentials, stateOf, signal: shutdown.signal, mapResponse: (node, value) => mapNodeResponse(node, value, stateOf(node)), recordResponse(node, value, { mutating = true } = {}) { if (mutating) rememberResponse(node, value); refresh(node.id, { force: true }).catch(() => {}); }, recordDeletedSchedule(node, rawId) { if (!UUID.test(rawId || '')) fail('Invalid schedule identity.', 400); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.schedules.delete(rawId); pending.schedules.set(rawId, { revision: ++observation, row: null }); while (pending.schedules.size > 2000) pending.schedules.delete(pending.schedules.keys().next().value); const state = stateOf(node); if (state.snapshot) state.snapshot.schedules = state.snapshot.schedules.filter(row => row.id !== rawId); emit({ type: 'update' }); }, recordDeletedServer(node, rawId) { const id = nodeResourceId(node.id, rawId); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.servers.set(rawId, { revision: ++observation, row: null }); const state = stateOf(node); if (state.snapshot) state.snapshot.servers = state.snapshot.servers.filter(s => s.id !== rawId); node.inventory = node.inventory.filter(s => s.id !== rawId); for (const user of store.data.users) user.serverIds = (user.serverIds || []).filter(value => value !== id); let warning; try { store.save(); } catch { warning = 'The server was deleted on the node, but its central inventory/grant cleanup could not be saved. Refresh after reconnecting.'; } emit({ type: 'update' }); return warning; }, request, get limits() { return { ...NODE_LIMITS, nextNodeName: naming.preview() }; } };
 }

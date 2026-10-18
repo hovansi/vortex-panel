@@ -10,6 +10,7 @@ import { BACKUP_MESSAGES } from './backup-messages.js';
 import { POWER_MESSAGES } from './system-power.js';
 import { ZRAM_MESSAGES } from './host-zram.js';
 import { REMOVAL_MESSAGES } from './node-removal.js';
+import { PANEL_REMOVAL_MESSAGES } from './panel-removal.js';
 import { APPLICATION_MESSAGES } from './application-runtime.js';
 import { PORT_ALLOCATION_MESSAGES } from './port-allocation.js';
 export const PANEL_MESSAGES = Object.freeze([
@@ -28,6 +29,7 @@ export const PANEL_MESSAGES = Object.freeze([
   ...POWER_MESSAGES,
   ...ZRAM_MESSAGES,
   ...REMOVAL_MESSAGES,
+  ...PANEL_REMOVAL_MESSAGES,
   ...APPLICATION_MESSAGES,
   { id: 'panel.application.runtime.pinned', vi: 'Đã ghim runtime chính thức {0} {1}', en: 'Pinned official {0} {1}' },
   { id: 'panel.application.runtime.prepare', vi: 'Đang chuẩn bị runtime đã ghim', en: 'Preparing the exact managed runtime' },

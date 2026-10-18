@@ -150,7 +150,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   }
   const history = [];
   let closed = false;
-  let maintenance = null;
+  let maintenance = null, maintenanceProbe;
   let initialized = false;
   let scheduler;
   let metricsTimer;
@@ -186,7 +186,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const maintenanceMessage = () => ['zram', 'uninstall'].includes(maintenance?.action)
     ? 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.'
     : 'Hệ thống đang chuẩn bị khởi động lại; vui lòng chờ kết nối trở lại.';
-  const assertOpen = () => { if (closed) fail('Panel đang tắt; không nhận thao tác mới.', 503); if (maintenance) fail(maintenanceMessage(), 409); };
+  const assertOpen = () => { maintenanceProbe?.(); if (closed) fail('Panel đang tắt; không nhận thao tác mới.', 503); if (maintenance) fail(maintenanceMessage(), 409); };
   function withHostOperation(callback) {
     assertOpen();
     if (typeof callback !== 'function') fail('Thao tác hệ thống không hợp lệ.', 400);
@@ -1605,6 +1605,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     return { schedule: { ...schedule }, job: { ...record } };
   }
   async function tickSchedules() {
+    maintenanceProbe?.();
     if (closed || maintenance || scheduleBusy) return;
     scheduleBusy = true;
     try {
@@ -1621,6 +1622,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const manager = {
     async initialize() {
       if (initialized) return; initialized = true;
+      // An acknowledged erase intent is an admission freeze, not permission to
+      // recreate mounts, users or counters after an interrupted uninstall.
+      if (maintenance?.action === 'uninstall') return;
       resourceControl = await resourceController.initialize();
       await applicationRuntime.initialize();
       await applicationCapabilities();
@@ -1658,8 +1662,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     getServer: id => publicServer(get(id)),
     withActor: (user, callback) => actorContext.run(user, callback),
     beginMaintenance,
+    setMaintenanceProbe(probe) { if (maintenanceProbe || typeof probe !== 'function') throw new Error('Invalid maintenance probe.'); maintenanceProbe = probe; },
     withHostOperation,
-    maintenanceStatus: () => maintenance ? { active: true, action: maintenance.action, requestId: maintenance.requestId } : null,
+    maintenanceStatus: () => { maintenanceProbe?.(); return maintenance ? { active: true, action: maintenance.action, requestId: maintenance.requestId } : null; },
     withFileAccess: (access, callback) => fileAccessContext.run(access, callback),
     serverHistory: id => ({ history: [...(serverMetrics.get(get(id).id) || [])], sampleIntervalMs: 5000, retentionSeconds: 600 }),
     async createServer(input) {

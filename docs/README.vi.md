@@ -62,3 +62,9 @@ npm start
 Dùng setup token riêng được in trong terminal để tạo Admin đầu tiên. Mặc định ứng dụng lắng nghe tại `127.0.0.1:3000`; xem [hướng dẫn cài đặt](INSTALL.md) để có systemd và HTTPS. Source công khai và ZIP phát hành chỉ gồm runtime, installer, script đóng gói và tài liệu vận hành. Công cụ kiểm thử nội bộ, dữ liệu runtime và thông tin riêng không được đóng gói.
 
 Báo lỗi tại [GitHub Issues](https://github.com/hovansi/vortex-panel/issues), kèm phiên bản panel/Ubuntu và log đã che thông tin riêng. Không đăng mật khẩu, token, cookie hoặc tệp bí mật vào issue công khai.
+
+## Tên dịch vụ và nâng cấp bố cục cũ
+
+VPS chính mặc định hiển thị **Vortex Panel**. Dịch vụ là `vortex-panel.service`, source ở `/opt/vortex-panel`, dữ liệu mặc định ở `/var/lib/vortex-panel`, cấu hình ở `/etc/vortex-panel.env` và tài khoản dịch vụ riêng là `vortex-panel`. Installer chuyển bố cục cũ `bedrock-panel` khi đã dừng dịch vụ, kiểm tra volume và tài khoản ứng dụng, rồi tạo bản sao đầy đủ dữ liệu riêng tư trước khi đổi tên. `DATA_DIR` tùy chỉnh đã khai báo được giữ nguyên. Bản sao và biên nhận rollback lưu riêng cho root dưới `/var/backups/vortex-panel/migration-*/`. Mount không rõ chủ sở hữu, DATA_DIR mặc định là mountpoint, hoặc thao tác tạo tài khoản/build chưa hoàn tất sẽ bị chặn kèm hướng dẫn xử lý. Xem [hướng dẫn migration](INSTALL.md#legacy-layout-migration).
+
+Manifest riêng tư `/etc/vortex-panel/install-manifest.json` ghi baseline package/manual-mark trước cài mới và chỉ xác nhận thay đổi thuộc Vortex. Bản cài cũ không có baseline vẫn được đánh dấu không rõ trạng thái trước cài; không tuyên bố khôi phục toàn bộ VPS về trạng thái chưa từng cài.

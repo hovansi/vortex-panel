@@ -6,6 +6,7 @@ accepts a filesystem path, command, compression expression or device from HTTP.
 The class is importable by the root uninstall helper with its existing flock.
 """
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -25,7 +26,8 @@ UNIT = Path('/etc/systemd/system/vortex-zram.service')
 LOCK = Path('/run/vortex-os-maintenance.lock')
 UUID = re.compile(r'^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$')
 DEVICE = re.compile(r'^/dev/zram(0|[1-9][0-9]{0,5})$')
-SERVICES = {'panel': 'bedrock-panel.service', 'worker': 'vortex-node.service'}
+SERVICES = {'panel': 'vortex-panel.service', 'worker': 'vortex-node.service'}
+SERVICE_ALIASES = {'panel': {'vortex-panel.service', 'bedrock-panel.service'}, 'worker': {'vortex-node.service'}}
 STABLE_DEVICE_FIELDS = ('path', 'enabled', 'logicalSizeBytes', 'residentLimitBytes', 'algorithm', 'priority')
 MAX_SAFE_INTEGER = (1 << 53) - 1
 
@@ -226,7 +228,7 @@ class HostZram:
                 raise ZramError('ZRAM_OWNERSHIP')
             return None
         owner = read_json(BASE / 'owner.json')
-        if owner.get('schema') != 1 or not UUID.fullmatch(str(owner.get('ownerId', ''))) or owner.get('role') != self.role or owner.get('nodeId') != self.node_id or owner.get('serviceId') != SERVICES[self.role]:
+        if owner.get('schema') != 1 or not UUID.fullmatch(str(owner.get('ownerId', ''))) or owner.get('role') != self.role or owner.get('nodeId') != self.node_id or owner.get('serviceId') not in SERVICE_ALIASES[self.role]:
             raise ZramError('ZRAM_OWNERSHIP')
         return owner
 
@@ -252,10 +254,16 @@ class HostZram:
             return None
         if not DEVICE.fullmatch(path) or state.get('bootId') != Path('/proc/sys/kernel/random/boot_id').read_text().strip():
             return None
+        # util-linux zramctl --reset may also hot-remove a dynamic device. A
+        # previous interruption after that operation leaves our old receipt;
+        # absence of BOTH kernel object and node plus swap absence is required
+        # before considering that stale receipt drained.
+        directory = Path('/sys/block') / Path(path).name
+        if not os.path.lexists(path) and not directory.exists() and path not in swaps:
+            return None
         info = Path(path).lstat()
         if not stat.S_ISBLK(info.st_mode) or info.st_rdev != state.get('rdev'):
             raise ZramError('ZRAM_OWNERSHIP')
-        directory = Path('/sys/block') / Path(path).name
         sysinfo = directory.stat()
         if sysinfo.st_dev != state.get('sysfsDev') or sysinfo.st_ino != state.get('sysfsIno'):
             raise ZramError('ZRAM_OWNERSHIP')
@@ -292,20 +300,32 @@ class HostZram:
                 devices.append(path.name)
         return bool(configurations or devices)
 
+    def module_available(self):
+        # Reading hot_add allocates a device. Test existence only, then ask
+        # modprobe for a dry run when the running kernel has not loaded it.
+        if Path('/sys/class/zram-control/hot_add').exists() and Path('/sys/class/zram-control/hot_remove').exists():
+            return True
+        try:
+            self.command('/usr/sbin/modprobe', ['--dry-run', '--ignore-install', 'zram', 'num_devices=0'])
+            return True
+        except (ZramError, OSError):
+            return False
+
     def inspect(self):
         total, available = self.memory()
         owner = self.owner()
         config, state, swaps = self.config(owner), self.state(owner), self.swaps()
         device = self.device(owner, state, swaps) if owner else None
         external = self.foreign(device['path'] if device else None)
+        module_available = self.module_available()
         operation = state.get('operation')
         stable = {'ownerId': owner and owner['ownerId'], 'config': config,
                   # Usage is live telemetry. A read must not invalidate a
                   # reviewed configuration just because compression changed.
                   'device': {k: device[k] for k in STABLE_DEVICE_FIELDS if device and k in device},
-                  'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'external': external}
-        return {'available': os.geteuid() == 0 and not (external and not owner),
-                'reasonCode': 'ZRAM_EXTERNAL' if external and not owner else None,
+                  'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'external': external, 'moduleAvailable': module_available}
+        return {'available': os.geteuid() == 0 and module_available and not (external and not owner),
+                'reasonCode': 'ZRAM_EXTERNAL' if external and not owner else 'ZRAM_MODULE' if not module_available else None,
                 'ownership': 'vortex' if owner else 'external' if external else 'none',
                 'physicalMemoryBytes': total, 'physicalAvailableBytes': available,
                 'configured': {'enabled': config['enabled'], 'profile': 'auto'},
@@ -317,14 +337,49 @@ class HostZram:
 
     def unit_text(self, owner):
         return ('# Vortex owner: ' + owner['ownerId'] + '\n[Unit]\nDescription=Vortex system memory assistance\n'
-                'After=systemd-modules-load.service local-fs.target\nBefore=bedrock-panel.service vortex-node.service\n'
+                'After=systemd-modules-load.service local-fs.target\nBefore=vortex-panel.service vortex-node.service\n'
                 '[Service]\nType=oneshot\nExecStart=/usr/bin/python3 /usr/local/libexec/vortex-host-zram.py boot\n'
                 'RemainAfterExit=yes\nTimeoutStartSec=30\n[Install]\nWantedBy=multi-user.target\n')
 
     def verify_unit(self, owner):
         regular(UNIT, private=False)
-        if UNIT.read_text() != self.unit_text(owner):
+        expected = self.unit_text(owner)
+        legacy = expected.replace('Before=vortex-panel.service vortex-node.service', 'Before=bedrock-panel.service vortex-node.service')
+        if UNIT.read_text() not in [expected, legacy]:
             raise ZramError('ZRAM_OWNERSHIP')
+
+    def device_absent(self, path, wait=False):
+        """Never infer absence from ENODEV or an inactive swap entry alone."""
+        for attempt in range(30 if wait else 1):
+            absent = not os.path.lexists(path) and not (Path('/sys/block') / Path(path).name).exists() and path not in self.swaps()
+            if absent:
+                return True
+            if wait and attempt < 29:
+                time.sleep(0.1)
+        return False
+
+    def remove_reset_device(self, path, state):
+        """Reset owns a dynamic-device hot-remove on some util-linux builds."""
+        directory = Path('/sys/block') / Path(path).name
+        if self.device_absent(path):
+            return
+        if not directory.exists():
+            if self.device_absent(path, wait=True):
+                return
+            raise ZramError('ZRAM_UNKNOWN', True)
+        # Index reuse by another application must never be hot-removed.
+        info, sysinfo = Path(path).lstat(), directory.stat()
+        if (not stat.S_ISBLK(info.st_mode) or info.st_rdev != state.get('rdev')
+                or (sysinfo.st_dev, sysinfo.st_ino) != (state.get('sysfsDev'), state.get('sysfsIno'))
+                or path in self.swaps() or int((directory / 'disksize').read_text()) != 0):
+            raise ZramError('ZRAM_OWNERSHIP')
+        try:
+            Path('/sys/class/zram-control/hot_remove').write_text(Path(path).name[4:])
+        except OSError as error:
+            if error.errno != errno.ENODEV or not self.device_absent(path, wait=True):
+                raise ZramError('ZRAM_UNKNOWN', True) from error
+        if not self.device_absent(path, wait=True):
+            raise ZramError('ZRAM_UNKNOWN', True)
 
     def begin_owner(self):
         self.ensure_directory()
@@ -351,7 +406,7 @@ class HostZram:
         before = self.inspect()
         if before['revision'] != request['revision']:
             raise ZramError('ZRAM_STALE')
-        if not before['available']:
+        if request['enabled'] and not before['available']:
             raise ZramError(before['reasonCode'] or 'ZRAM_UNAVAILABLE')
         owner = self.owner()
         if not owner and not request['enabled']:
@@ -428,7 +483,7 @@ class HostZram:
                     # Recheck identity after swapoff, before destructive reset.
                     self.device(owner, state, self.swaps())
                     self.command('/usr/sbin/zramctl', ['--reset', device['path']])
-                    Path('/sys/class/zram-control/hot_remove').write_text(Path(device['path']).name[4:])
+                    self.remove_reset_device(device['path'], state)
                     for key in ['device', 'rdev', 'swapUuid', 'bootId', 'stage', 'sysfsDev', 'sysfsIno']:
                         state.pop(key, None)
                 config.update(enabled=False)
@@ -438,6 +493,9 @@ class HostZram:
         except ZramError as error:
             operation.update(status='unknown' if error.unknown else 'failed', errorCode=error.code, completedAt=time.time())
             raise
+        except Exception as error:
+            operation.update(status='unknown', errorCode='ZRAM_UNKNOWN', completedAt=time.time())
+            raise ZramError('ZRAM_UNKNOWN', True) from error
         finally:
             atomic_json(BASE / 'state.json', state)
         return self.inspect()
@@ -458,6 +516,9 @@ class HostZram:
         self.apply({'role': self.role, 'nodeId': self.node_id, 'enabled': False, 'profile': 'auto',
                     'confirmed': True, 'revision': before['revision'], 'requestId': str(uuid.uuid4())}, True)
         self.verify_unit(owner)
+        self.command('/usr/bin/systemctl', ['stop', 'vortex-zram.service'])
+        if self.command('/usr/bin/systemctl', ['show', 'vortex-zram.service', '--property=ActiveState', '--value']).strip() in ['active', 'activating', 'deactivating']:
+            raise ZramError('ZRAM_UNKNOWN', True)
         UNIT.unlink()
         for name in ['state.json', 'config.json', 'owner.json']:
             regular(BASE / name)
@@ -470,7 +531,7 @@ class HostZram:
 
 def inspect_owned(role, node_id, service_id):
     """Internal root uninstall hook; no mutation and no foreign adoption."""
-    if SERVICES.get(role) != service_id:
+    if service_id not in SERVICE_ALIASES.get(role, set()):
         raise ZramError('ZRAM_TARGET')
     host = HostZram(role, node_id)
     try:
@@ -483,6 +544,7 @@ def inspect_owned(role, node_id, service_id):
         safe = not value['effective']['enabled'] or safe_to_disable(available, value['effective']['swapUsedBytes'], total)
         return {'present': True, 'owned': True, 'canCleanup': safe,
                 'blockers': [] if safe else ['ZRAM_PRESSURE'], 'ownerId': owner['ownerId'],
+                'revision': value['revision'],
                 'components': [str(UNIT), str(BASE / 'owner.json'), str(BASE / 'config.json'), str(BASE / 'state.json')]}
     except (ZramError, OSError, ValueError):
         return {'present': BASE.exists() or UNIT.exists(), 'owned': False, 'canCleanup': False,
@@ -490,7 +552,7 @@ def inspect_owned(role, node_id, service_id):
 
 
 def cleanup_owned(role, node_id, service_id, lock_held=False):
-    if SERVICES.get(role) != service_id:
+    if service_id not in SERVICE_ALIASES.get(role, set()):
         raise ZramError('ZRAM_TARGET')
     result = HostZram(role, node_id).cleanup_owned(lock_held)
     return {'ok': True, 'removed': result['removed'], 'retained': ['foreign-zram', 'disk-swap', 'shared-helper', 'shared-lock']}

@@ -291,7 +291,7 @@ class Host:
                 filename = pathlib.Path(row.get('path', ''))
                 shared_helper = filename == self.path('/usr/local/libexec/vortex-host-zram.py')
                 require(filename.is_absolute() and (shared_helper or any(filename == parent or parent in filename.parents for parent in [self.install, self.tls])), 'An installer-owned path escaped the worker roots.')
-                if shared_helper and os.path.lexists(self.path('/etc/systemd/system/bedrock-panel.service')):
+                if shared_helper and any(os.path.lexists(self.path('/etc/systemd/system/' + unit)) for unit in ['vortex-panel.service', 'bedrock-panel.service']):
                     components.append({'kind': 'shared-helper', 'path': str(filename), 'action': 'retain', 'reason': 'The host also has a main panel; its shared OS helper is preserved.'})
                     continue
                 if str(filename) in entries or not os.path.lexists(filename):
@@ -309,7 +309,7 @@ class Host:
         for folder in [self.install / 'releases', self.data, self.tls]:
             if folder.exists():
                 components.append({'kind': 'directory', 'path': str(folder), 'action': 'retain', 'reason': 'Unrecorded files and diagnostic/recovery data are preserved; empty owned directories are removed only when safe.'})
-        for filename in ['/etc/systemd/system/bedrock-panel.service', '/opt/bedrock-panel', '/var/lib/bedrock-panel', '/etc/bedrock-panel.env', '/etc/nginx/sites-available/bedrock-panel', '/etc/nginx/sites-enabled/bedrock-panel']:
+        for filename in ['/etc/systemd/system/vortex-panel.service', '/opt/vortex-panel', '/var/lib/vortex-panel', '/etc/vortex-panel.env', '/etc/systemd/system/bedrock-panel.service', '/opt/bedrock-panel', '/var/lib/bedrock-panel', '/etc/bedrock-panel.env', '/etc/nginx/sites-available/bedrock-panel', '/etc/nginx/sites-enabled/bedrock-panel']:
             target = self.path(filename)
             if os.path.lexists(target):
                 components.append({'kind': 'legacy-panel', 'path': str(target), 'action': 'retain', 'reason': 'Separate panel installation is outside this worker identity; its data and configuration are preserved.'})

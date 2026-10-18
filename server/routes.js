@@ -8,10 +8,11 @@ import { fail } from './safety.js';
 import { canAccessServer, requireAdmin, serverPermissions } from './access.js';
 import { isIdentityPath, IDENTITY_READ_PROTECTION } from './file-privacy.js';
 import { createServerFirewall } from './server-firewall.js';
+import { panelFirewallScope } from './panel-layout.js';
 
 export function createRouter(manager, { dataDir, store } = {}) {
   const router = express.Router();
-  const firewall = dataDir ? createServerFirewall({ scope: path.resolve(dataDir) }) : null;
+  const firewall = dataDir ? createServerFirewall({ scope: panelFirewallScope(dataDir) }) : null;
   router.use((req, res, next) => { req.body ??= {}; next(); });
   router.use((req, res, next) => {
     if (!req.session?.user) return res.status(401).json({ error: 'Vui lòng đăng nhập.' });

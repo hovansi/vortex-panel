@@ -10,11 +10,11 @@ Take an off-host snapshot before an important update. Run the [release installer
 
 The installer prepares dependencies before stopping the service, activates a separate release directory and verifies `/healthz` against the systemd MainPID. A failed activation attempts to restore the previous source link, environment, unit and ownership. Preserve any reported recovery path or rollback error. Source rollback does not undo changes to worlds, applications or databases.
 
-The service and data paths keep their original `bedrock-panel` names for upgrade compatibility:
+The managed service and data directory use the canonical `vortex-panel` name. The installer migrates verified legacy layouts before starting the new service:
 
 ```bash
-sudo systemctl status bedrock-panel
-sudo journalctl -u bedrock-panel -n 100 --no-pager
+sudo systemctl status vortex-panel
+sudo journalctl -u vortex-panel -n 100 --no-pager
 curl --fail http://127.0.0.1:3000/healthz
 ```
 
@@ -26,7 +26,7 @@ A clean shutdown records workloads that should resume. Intentionally stopped wor
 
 Automatic public-IP setup uses a self-signed IP certificate valid for 365 days, without automatic renewal. Compare the printed SHA-256 fingerprint before accepting browser trust. Monitor expiry and replace the certificate before it expires; updates preserve existing access configuration.
 
-For a domain or publicly trusted IP certificate, keep the panel bound to `127.0.0.1` behind NGINX. Adapt `deploy/nginx.conf.example` to the actual certificate, hostname and local port. Set `PUBLIC_URL=https://YOUR_DOMAIN` or `https://YOUR_IP` and `TRUST_PROXY=1` in `/etc/bedrock-panel.env`, then restart the panel. Backend upload limits still apply.
+For a domain or publicly trusted IP certificate, keep the panel bound to `127.0.0.1` behind NGINX. Adapt `deploy/nginx.conf.example` to the actual certificate, hostname and local port. Set `PUBLIC_URL=https://YOUR_DOMAIN` or `https://YOUR_IP` and `TRUST_PROXY=1` in `/etc/vortex-panel.env`, then restart the panel. Backend upload limits still apply.
 
 Let’s Encrypt provides IP certificates through its short-lived profile. Follow its [Certbot instructions for IP certificates](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html) and [certificate lifetime policy](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability). Issuance requires a compatible ACME client and a reachable challenge path. CA terms, certificate issuance and renewal are administrator-managed; the Vortex installer does not perform them.
 
@@ -44,7 +44,7 @@ sudo bash deploy/backup-panel.sh /var/backups/vortex-panel
 
 Use an absolute private destination outside `DATA_DIR`, not one of its ancestors. Existing destinations must already belong to root with private permissions. The helper stops the service, obtains the data lock, unmounts owned fixed volumes, creates a private archive, then restores previous mounts and running state. This interrupts workloads managed by that service. Failed mount recovery retains a receipt; understand its storage state before removing a lock or restarting workloads.
 
-Copy snapshots off the VPS. Preserve `panel.json`, `.mfa-key` and `.node-key` together: missing keys can make TOTP or enrolled-node credentials unrecoverable. Back up `/etc/bedrock-panel.env`, proxy configuration, certificates and other host configuration separately. Controller snapshots do not contain remote workers’ worlds; each node needs its own backup.
+Copy snapshots off the VPS. Preserve `panel.json`, `.mfa-key` and `.node-key` together: missing keys can make TOTP or enrolled-node credentials unrecoverable. Back up `/etc/vortex-panel.env`, proxy configuration, certificates and other host configuration separately. Controller snapshots do not contain remote workers’ worlds; each node needs its own backup.
 
 To restore, stop the service, retain the damaged tree separately and restore into an empty private directory. Do not merge snapshots with current metadata or mounted images. Match ownership to the selected service mode, restore host configuration and verify health, accounts, nodes and workloads before reopening access. Sessions and MFA challenges require a new login after restart.
 
@@ -99,3 +99,44 @@ Service restart, reboot and zram require explicit confirmation and current Admin
 Bedrock runs natively without a separate customer container. Node.js/Python uses a non-root identity and verified Bubblewrap/filesystem/cgroup controls, sharing the host network namespace. Resource ceilings are usage limits, not dedicated hardware reservations. The main VPS keeps a ten-percent accounting budget; workers use effective capacity subject to physical disk/RAM and ancestor limits. Legacy directories have no hard quota. See [resource control](RESOURCE-CONTROL.md), [telemetry/storage](OPERATIONS-090.md) and [application isolation](applications.md).
 
 Report reproducible problems with panel/Ubuntu versions and redacted logs. Never publish passwords, tokens, cookies, encryption keys or private project files.
+
+
+## Verified fleet uninstall
+
+Settings → Uninstall Vortex Panel permanently removes all managed server files, worlds,
+backups and runtime caches from each listed installation. Review the native path inventory
+returned by the authenticated SSH check for every machine before confirming. Linked workers
+are processed one at a time and independently checked through a new pinned SSH connection.
+The main panel is scheduled last, only after every linked worker has a complete removal proof.
+An unreachable, mismatched or unverified worker keeps the main panel in place.
+
+Use the current administrator password, type the exact current main-node display name, and
+explicitly acknowledge permanent erasure. Supply root SSH access for every machine and
+verify its observed SSH host-key fingerprint. Credentials stay in memory for this request;
+they are not saved in panel history, browser storage or downloaded receipts. This workflow
+requires the managed root-mode Linux installation. Service-user installations show an
+unavailable state rather than claiming they can remove system files without root privileges.
+
+Keep the downloadable receipt before continuing. Main removal uses a detached systemd timer,
+so the panel disconnects while cleanup continues. A disconnect is not a successful verification.
+Each receipt contains the request UUID, native result path and the exact SSH verification command.
+Run that command on the corresponding VPS before rebooting; the recovery workspace is under
+`/run/vortex-fleet-removal/<request-id>` and is intentionally temporary. An interrupted or
+ambiguous request is not replayed automatically. If a removal stops after making changes,
+keep its receipt and inspect the existing native result through SSH before further action.
+
+Fresh installations record their package, apt manual-mark, service and file baseline before
+installer changes. Uninstall removes only components proven to belong to that installation,
+restores recorded state where possible and retains OS, SSH, networking and foreign software.
+A legacy installation without its original baseline cannot reconstruct the VPS's historic
+package state: unproven shared components are listed as retained, and `baselineRestored` is
+false. This is reported explicitly rather than deleting unrelated packages by guesswork.
+Custom files that replaced managed shared configuration block removal until reviewed.
+The standard migration backup is erased only when its machine-bound committed transaction,
+file identities and content hashes all match; unproven external backups are retained.
+
+Legacy upgrades migrate `bedrock-panel.service`, `/opt/bedrock-panel`,
+`/var/lib/bedrock-panel` and `/etc/bedrock-panel.env` to the `vortex-panel` layout.
+The installer stops the old service, records a private recovery transaction, handles owned
+application accounts and server volumes, and rolls back on an uncommitted failure. Keep
+normal off-host backups when upgrading any production service.

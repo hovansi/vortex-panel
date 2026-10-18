@@ -1,4 +1,4 @@
-# Vortex Panel. Set PUBLIC_URL=https://vortex.example.com and TRUST_PROXY=1 in /etc/bedrock-panel.env.
+# Vortex Panel. Set PUBLIC_URL=https://vortex.example.com and TRUST_PROXY=1 in /etc/vortex-panel.env.
 # TLS certificates must already exist. Replace hostname and paths below.
 server {
     listen 80;

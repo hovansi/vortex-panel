@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const units = Object.freeze({ panel: 'bedrock-panel.service', worker: 'vortex-node.service' });
+const units = Object.freeze({ panel: 'vortex-panel.service', worker: 'vortex-node.service' });
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const pending = new Set(['accepted', 'dispatching', 'scheduled']);
 const messages = {

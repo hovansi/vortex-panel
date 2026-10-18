@@ -70,6 +70,15 @@ bootstrap_preflight() {
 }
 
 bootstrap_dependencies() {
+  # Capture the package baseline before even bootstrap prerequisites are added.
+  # Raw dpkg/apt output works when python3 itself is missing on the fresh host.
+  VORTEX_BOOTSTRAP_CAPTURE=$(mktemp -d /run/vortex-bootstrap-baseline.XXXXXXXX)
+  trap '[[ -z ${VORTEX_BOOTSTRAP_CAPTURE:-} ]] || rm -rf -- "$VORTEX_BOOTSTRAP_CAPTURE"' EXIT
+  chmod 0700 "$VORTEX_BOOTSTRAP_CAPTURE"
+  dpkg-query -W '-f=${binary:Package}\t${Version}\t${Status}\n' > "$VORTEX_BOOTSTRAP_CAPTURE/packages.tsv"
+  apt-mark showmanual > "$VORTEX_BOOTSTRAP_CAPTURE/manual.txt"
+  cat /etc/machine-id > "$VORTEX_BOOTSTRAP_CAPTURE/machine-id"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$VORTEX_BOOTSTRAP_CAPTURE/captured-at"
   local -a missing=()
   command -v curl >/dev/null || missing+=(curl)
   [[ -x /usr/bin/python3 ]] || missing+=(python3)
@@ -80,6 +89,22 @@ bootstrap_dependencies() {
     apt-get update
     DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends --no-remove "${missing[@]}"
   fi
+  /usr/bin/python3 -I -B - "$VORTEX_BOOTSTRAP_CAPTURE" <<'VORTEX_BASELINE_PYTHON'
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manual = set((root / 'manual.txt').read_text().splitlines())
+packages = []
+for line in (root / 'packages.tsv').read_text().splitlines():
+    name, version, status = line.split('\t', 2)
+    if status == 'install ok installed':
+        packages.append({'name': name, 'version': version, 'manual': name in manual or name.split(':')[0] in manual})
+value = {'schemaVersion': 1, 'machineId': (root / 'machine-id').read_text().strip(),
+         'capturedAt': (root / 'captured-at').read_text().strip(), 'packages': packages}
+with (root / 'baseline.json').open('x') as stream:
+    os.chmod(root / 'baseline.json', 0o600)
+    json.dump(value, stream)
+VORTEX_BASELINE_PYTHON
+  export VORTEX_BOOTSTRAP_BASELINE=$VORTEX_BOOTSTRAP_CAPTURE/baseline.json
   [[ -x /usr/bin/python3 && -s /etc/ssl/certs/ca-certificates.crt ]] && command -v curl >/dev/null && command -v ss >/dev/null || {
     bootstrap_fail 'curl, Ubuntu python3, iproute2 and the CA certificate bundle are required.'; return 1;
   }
@@ -121,7 +146,7 @@ PRIVATE_PARTS = {'output', 'data', 'node_modules', '.playwright-cli', 'coverage'
                  'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', '.ds_store', 'thumbs.db',
                  'vortex-access.json', 'live-client-api.py'}
 PRIVATE_SUFFIX = re.compile(r'(?:\.bk[^/]*|\.bak|\.backup|\.orig|~|\.tmp|\.log|\.pyc|\.pem|\.key|\.p12|\.pfx)$', re.I)
-REQUIRED = {'package.json', 'package-lock.json', 'README.md', 'server/index.js', 'server/host-zram.py', 'public/index.html', 'deploy/install.sh', 'deploy/application-isolation.py', 'deploy/configure-access.py'}
+REQUIRED = {'package.json', 'package-lock.json', 'README.md', 'server/index.js', 'server/host-zram.py', 'public/index.html', 'deploy/install.sh', 'deploy/application-isolation.py', 'deploy/configure-access.py', 'deploy/install-ledger.py', 'deploy/panel-layout-migrate.py'}
 HOSTS = {'api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
 SEMVER = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
 

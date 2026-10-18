@@ -90,7 +90,7 @@ class AccessSetup:
         self.cert = self.directory + '/tls/ip.crt'
         self.key = self.directory + '/tls/ip.key'
         self.receipt = self.directory + '/access.json'
-        self.env = '/etc/bedrock-panel.env'
+        self.env = '/etc/vortex-panel.env'
 
     def path(self, name):
         if not name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts:
@@ -303,9 +303,9 @@ server {
 '''.replace('ADDRESS', address).replace(':PORT;', ':' + str(port) + ';')).encode()
 
     def panel_pid(self):
-        if self.run(['systemctl', 'is-active', '--quiet', 'bedrock-panel'], check=False).returncode:
+        if self.run(['systemctl', 'is-active', '--quiet', 'vortex-panel'], check=False).returncode:
             raise AccessError('Panel service is not active.')
-        pid = self.run(['systemctl', 'show', '--property', 'MainPID', '--value', 'bedrock-panel']).stdout.strip()
+        pid = self.run(['systemctl', 'show', '--property', 'MainPID', '--value', 'vortex-panel']).stdout.strip()
         if not re.fullmatch(r'[1-9][0-9]*', pid):
             raise AccessError('Panel service PID is unavailable.')
         return pid
@@ -324,7 +324,7 @@ server {
                     raise AccessError('Health response exceeds its size limit.')
                 if response.returncode == 0:
                     value = json.loads(response.stdout)
-                    if value.get('ok') is True and value.get('service') == 'vortex-mc' and value.get('processId') == int(pid) and self.panel_pid() == pid:
+                    if value.get('ok') is True and value.get('service') in ('vortex-panel', 'vortex-mc') and value.get('processId') == int(pid) and self.panel_pid() == pid:
                         return pid
             except (AccessError, ValueError, TypeError, AttributeError):
                 pass
@@ -413,7 +413,7 @@ server {
             old, new = transaction['environment']
             try:
                 self.replace_expected(self.env, new, old)
-                self.run(['systemctl', 'restart', 'bedrock-panel'])
+                self.run(['systemctl', 'restart', 'vortex-panel'])
             except (OSError, AccessError) as error:
                 errors.append(str(error))
         try:
@@ -476,7 +476,7 @@ server {
             self.run(['nginx', '-t'])
             self.replace_expected(self.env, old, new)
             transaction['environment'] = (old, new)
-            self.run(['systemctl', 'restart', 'bedrock-panel'])
+            self.run(['systemctl', 'restart', 'vortex-panel'])
             self.health(plan['address'], port)
             self.run(['systemctl', 'enable', 'nginx'])
             self.run(['systemctl', 'reload' if transaction['nginxActive'] else 'start', 'nginx'])

@@ -9,6 +9,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/configuration.js', 'server/diagnostics.js',
   'server/file-operations.js', 'server/file-privacy.js',
   'server/gameplay-messages.js', 'server/gameplay.js',
+  'server/panel-removal.js', 'server/panel-layout.js', 'server/fleet-removal.py',
   'server/host-location.js', 'server/host-telemetry.js', 'server/host.js',
   'server/hostname.js', 'server/host-zram.js', 'server/host-zram.py', 'server/job-progress.js', 'server/locale-catalog.js',
   'server/locale.js', 'server/live-backup.js', 'server/lock.js', 'server/log-retention.js',
@@ -26,5 +27,5 @@ export const NODE_RUNTIME_FILES = Object.freeze([
 ]);
 
 export const NODE_INSTALLER_FILES = Object.freeze([
-  ...NODE_RUNTIME_FILES, 'deploy/install-node.sh', 'deploy/application-isolation.py',
+  ...NODE_RUNTIME_FILES, 'deploy/install-node.sh', 'deploy/application-isolation.py', 'deploy/install-ledger.py',
 ]);

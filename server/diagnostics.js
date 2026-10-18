@@ -71,7 +71,7 @@ export async function collectDiagnostics({ dataDir, host }) {
   const [sockets, libraries, serviceResult, processList] = await Promise.all([
     linux ? tool('/usr/bin/ss', ['-H', '-lntu']) : Promise.resolve({ available: false, output: '' }),
     linux ? tool('/usr/sbin/ldconfig', ['-p']) : Promise.resolve({ available: false, output: '' }),
-    linux ? tool('/usr/bin/systemctl', ['show', 'bedrock-panel.service', '--property=ActiveState,SubState,MainPID', '--no-pager']) : Promise.resolve({ available: false, output: '' }),
+    linux ? tool('/usr/bin/systemctl', ['show', 'vortex-panel.service', '--property=ActiveState,SubState,MainPID', '--no-pager']) : Promise.resolve({ available: false, output: '' }),
     processes(),
   ]);
   if (linux) add('dependencies', 'Thư viện Bedrock', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'ok' : 'warning', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'libcurl và libstdc++ đã được ghi nhận trên host.' : 'Chưa xác nhận libcurl/libstdc++. Chạy installer Ubuntu để cài dependency.');
@@ -82,7 +82,7 @@ export async function collectDiagnostics({ dataDir, host }) {
     network: { available: sockets.available, addresses, listeners: parseListeners(sockets.output) },
     processes: processList,
     panel: { pid: process.pid, uptime: Math.floor(process.uptime()), memoryMB: Math.round(process.memoryUsage().rss / MiB * 10) / 10, nodeVersion: process.version, user: os.userInfo().username, root: process.getuid?.() === 0 },
-    service: { name: 'bedrock-panel.service', available: serviceResult.available, activeState: serviceFields.ActiveState || 'unknown', subState: serviceFields.SubState || 'unknown' },
+    service: { name: 'vortex-panel.service', available: serviceResult.available, activeState: serviceFields.ActiveState || 'unknown', subState: serviceFields.SubState || 'unknown' },
     storage: { dataDir: path.resolve(dataDir), freeBytes, totalBytes: host.diskTotal },
   };
 }

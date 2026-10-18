@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createStore } from './store.js';
 import { createManager } from './manager.js';
+import { restoreFleetRemovalIntent } from './panel-removal.js';
 import { createRouter } from './routes.js';
 import { acquireDataLock } from './lock.js';
 import { localeMiddleware } from './locale.js';
@@ -27,10 +28,10 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const serviceActor = Object.freeze({ id: 'vortex-control-plane', username: 'node-control-plane', role: 'admin', allServers: true, serverIds: [] });
 export function validateNodeDataDir(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('Node dataDir must be absolute.');
-  const directory = path.resolve(value), panel = path.resolve('/var/lib/bedrock-panel');
+  const directory = path.resolve(value), panels = ['/var/lib/vortex-panel', '/var/lib/bedrock-panel'].map(value => path.resolve(value));
   const compared = text => process.platform === 'win32' ? text.toLowerCase() : text;
-  const a = compared(directory), b = compared(panel);
-  if (a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep)) throw new Error('Node data must not overlap panel data.');
+  const a = compared(directory);
+  if (panels.some(panel => { const b = compared(panel); return a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep); })) throw new Error('Node data must not overlap panel data.');
   if (process.platform !== 'win32' && (/^\/(?:etc|usr|bin|sbin|lib|lib64|boot|dev|proc|sys|run)(?:\/|$)/.test(directory) || ['/', '/var', '/var/lib', '/var/backups', '/opt', '/home', '/root', '/tmp', '/var/tmp'].includes(directory))) throw new Error('Use a dedicated node data directory outside system roots.');
   let current = directory;
   while (true) { try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error('Node data ancestors must not be symlinks.'); } catch (error) { if (error.code !== 'ENOENT') throw error; } const parent = path.dirname(current); if (parent === current) break; current = parent; }
@@ -80,6 +81,8 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
     manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
+    manager.setMaintenanceProbe?.(() => restoreFleetRemovalIntent({ manager, dataDir, role: 'worker', nodeId: nodeId, store }));
+    restoreFleetRemovalIntent({ manager, dataDir, role: 'worker', nodeId, store });
     await manager.initialize?.();
   } catch (error) { await manager?.close?.(); releaseLock(); throw error; }
   const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager });

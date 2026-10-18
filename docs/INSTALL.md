@@ -49,7 +49,7 @@ For a domain or a publicly trusted IP certificate, use the documented [HTTPS con
 If you need the initial token again, inspect the service journal on the host:
 
 ```bash
-sudo journalctl -u bedrock-panel -n 60 --no-pager
+sudo journalctl -u vortex-panel -n 60 --no-pager
 ```
 
 Treat journal output containing a setup token as private.
@@ -101,29 +101,41 @@ Run the same one-command installer to update to the latest stable release. It pr
 Before an update, take an off-host backup of panel data, service environment, proxy configuration and TLS keys/certificates. For the panel's data snapshot helper:
 
 ```bash
-sudo bash /opt/bedrock-panel/current/deploy/backup-panel.sh /var/backups/vortex-panel
+sudo bash /opt/vortex-panel/current/deploy/backup-panel.sh /var/backups/vortex-panel
 ```
 
 The snapshot helper stops the service to obtain exclusive data access and restores its prior running state afterward. Its archive includes sensitive account/encryption material. Store it privately, copy it off the VPS and back up the host configuration separately. See [snapshot and recovery details](OPERATIONS.md).
 
 The installer retains source releases and can roll source/service configuration back after a failed health check. That rollback does **not** undo world or application data changes. Do not treat it as a data backup.
 
+If an interrupted install leaves `/run/vortex-install-ledger-panel.json`, a normal retry refuses to overwrite that original private baseline. Inspect the reported recovery files and resolve the original failure first. From the same reviewed source release, review the root-only capture and obtain its exact SHA-256 with `sudo sha256sum /run/vortex-install-ledger-panel.json`, then run `sudo bash deploy/install.sh --resume-ledger REVIEWED_CAPTURE_SHA256` with the applicable original mode/access options. The source installer validates the preserved capture's owner, permissions, host identity and exact hash before reusing it; the release bootstrap does not accept this recovery option. A separate private resume snapshot records the current state before the retry, so packages or shared helpers added during the interruption are not automatically claimed. Resuming does not repair foreign or partial paths automatically. Successful completion consumes both captures into the permanent private manifest.
+
+## Legacy layout migration
+
+An update from the previous `bedrock-panel` layout performs an offline migration to `vortex-panel.service`, `/opt/vortex-panel`, `/var/lib/vortex-panel` and `/etc/vortex-panel.env`. It stops the old service, verifies owned storage mounts and application identities, unmounts owned volumes without force, and takes a complete private stopped-data snapshot before renaming the default roots. Application account names and their data-path scope change together while UID/GID ownership remains stable. Managed environment, unit drop-ins, application-isolation ownership and Vortex memory-assistance references follow the new service name. Existing explicit custom `DATA_DIR` values remain in place.
+
+Migration backups and the durable transaction receipt remain under `/var/backups/vortex-panel/migration-*/` (root-only). The installer restores the old layout and service state if activation fails. It refuses mixed old/new installations, unknown mounts, incomplete application-account/build transactions, custom legacy service layouts and a default data directory that is itself a filesystem mountpoint. Resolve the reported condition before retrying; no forced unmount or overwrite is used. If the installer reports an interrupted transaction, use its exact printed recovery command with the matching release's `deploy/panel-layout-migrate.py rollback --transaction /var/backups/vortex-panel/migration-TIMESTAMP/transaction.json`. A completed migration cannot be reversed blindly after new writes; use the retained snapshot in a planned restore.
+
+Fresh installations record the OS package/manual-mark baseline before installing prerequisites and retain a private ownership manifest. Shared or pre-existing packages, accounts, firewall rules and host configuration are not assumed to belong to Vortex. Older installations have an unknown pre-install baseline; upgrading them records that limitation rather than claiming their original VPS state can be fully restored. The panel's downloaded Node.js interpreter is installed under its owned `/opt/vortex-panel/runtime/` directory when a suitable host interpreter is unavailable.
+
 ## Paths and service commands
 
-The original service/path names remain stable for upgrades:
+Managed installations use the Vortex Panel names below. The default main VPS display name is **Vortex Panel**:
 
 | Item | Path/name |
 | --- | --- |
-| Service | `bedrock-panel.service` |
-| Source releases | `/opt/bedrock-panel/releases/` |
-| Active source | `/opt/bedrock-panel/current` |
-| Panel and local-server data | `/var/lib/bedrock-panel` |
-| Service environment | `/etc/bedrock-panel.env` |
+| Service | `vortex-panel.service` |
+| Source releases | `/opt/vortex-panel/releases/` |
+| Active source | `/opt/vortex-panel/current` |
+| Panel and local-server data | `/var/lib/vortex-panel` |
+| Service environment | `/etc/vortex-panel.env` |
+| Dedicated service account | `vortex-panel` |
+| Private installation ownership/baseline receipt | `/etc/vortex-panel/install-manifest.json` |
 
 ```bash
-sudo systemctl status bedrock-panel
-sudo journalctl -u bedrock-panel -n 100 --no-pager
-sudo systemctl restart bedrock-panel
+sudo systemctl status vortex-panel
+sudo journalctl -u vortex-panel -n 100 --no-pager
+sudo systemctl restart vortex-panel
 ```
 
 If setup stops, keep the reported recovery information and inspect the specific failure before repeating a state-changing operation. Unknown web services, port conflicts, public-IP detection failures or a failed health check should be resolved explicitly.

@@ -34,7 +34,7 @@ PROFILE_NAMES = ("vortex-bwrap", "vortex-unpriv-bwrap")
 MEMBER = "usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 MAX_PROFILE = 65536
 MAX_PACKAGE = 32 * 1024 ** 2
-OWNERS = ("bedrock-panel.service", "vortex-node.service")
+OWNERS = ("vortex-panel.service", "bedrock-panel.service", "vortex-node.service")
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
