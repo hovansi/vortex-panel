@@ -1,0 +1,88 @@
+# Maintainer release guide
+
+Vortex Panel is published from [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel). The default README is English, with a [Vietnamese overview](README.vi.md). Author attribution is **@CallMeHak**. Public releases distribute source, installation helpers and documentation; application/server data belongs outside the repository.
+
+## Release contract
+
+The first public automation release is **0.17.0**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the tested commit.
+
+The workflow tests on Ubuntu 22.04 and 24.04 before packaging. It creates a draft release, uploads and verifies all four assets, then publishes the draft. An existing draft or published release is an explicit stop condition; the workflow never overwrites assets or automatically replays a failed publication.
+
+| Asset | Purpose |
+| --- | --- |
+| `vortex-panel-X.Y.Z.zip` | Complete allowlisted source with deterministic archive metadata |
+| `install.sh` | Standalone release downloader bound to this repository |
+| `release-manifest.json` | Public source inventory and release metadata |
+| `SHA256SUMS` | SHA-256 entries for the other three files |
+
+The generic source downloader remains `deploy/bootstrap.sh`. The builder substitutes the repository into the standalone release asset only. The downloaded ZIP contains `deploy/install.sh`, the full installer and its helpers.
+
+## Prepare a version
+
+1. Review the final source diff, public documentation, dependency changes and installation behavior. Bump `package.json` and the top-level/root-package versions in `package-lock.json` together.
+2. Run source checks, tests and shell syntax checks. Treat fixture tests, native Linux checks, clean-host installation, upgrades and live production behavior as separate evidence.
+3. Review the public inventory and every staged path. Keep credentials, `.env` variants, private keys, server data, local output, dependencies, backups and private operational receipts out of Git history and release assets.
+4. Build into a new output directory; the builder refuses to overwrite an existing artifact directory.
+
+```bash
+npm ci
+npm run check
+npm test
+node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.17.0
+```
+
+Build from a clean checkout of the intended commit when comparing local source bytes with CI. `.gitattributes` standardizes text files to LF; the source archive records the bytes actually collected by its builder.
+
+## Publish from GitHub Actions
+
+Upload or commit the reviewed public source on `main`, then:
+
+1. Open the repository's **Actions** tab and choose **Release**.
+2. Select **Run workflow**, choose branch **main** and enter **`v0.17.0`** in the tag input.
+3. Run the workflow and follow both Ubuntu verification jobs and the publication job.
+
+The verification jobs test the selected source commit first. The publisher creates the requested tag only if it is missing and binds it to that same commit. An existing tag must already resolve to the tested commit; a conflicting tag stops publication. A newly created tag is not automatically recreated after an uncertain response.
+
+For later releases, replace `v0.17.0` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
+
+### Alternative: push a tag
+
+The workflow also retains its tag-push trigger. After committing the reviewed source, create and push a tag pointing to that exact commit:
+
+```bash
+git tag -a v0.17.0 -m "Vortex Panel 0.17.0"
+git push origin v0.17.0
+```
+
+Choose one trigger for a release. Do not dispatch a second run while a tag-triggered release is active. If a prior run stopped after a mutation, inspect its remote tag/release state before deciding how to continue; publication never silently resumes or overwrites an existing draft.
+
+Protect the default branch and release tags, and enable immutable releases if available. Workflow changes deserve explicit review because their publisher token can write releases. GitHub recommends attaching assets to a draft before publishing an immutable release; see its [release management documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
+
+## Observe the publication
+
+The release job verifies local checksums, public repository visibility and the remote tag's commit. Only an explicit HTTP 404 establishes that a release does not exist; authentication, rate limits, transport failures and other HTTP errors stop the job.
+
+After creating the draft, it checks its identity and uploads four explicit files. Before publishing, it verifies the uploaded names, count, size, state and SHA-256 digest against local files, then rechecks the remote tag. GitHub's [release asset API](https://docs.github.com/en/rest/releases/assets) exposes those digest/state fields.
+
+A partial draft or uncertain publish result needs inspection. Do not blindly delete evidence or replay mutations. If a published file needs correction, release a new version instead of replacing it. The commands follow the official [`gh release create`](https://cli.github.com/manual/gh_release_create), [`upload`](https://cli.github.com/manual/gh_release_upload) and [`edit`](https://cli.github.com/manual/gh_release_edit) sequence.
+
+Once publication succeeds, verify the public download from outside the authenticated session. The documented command is:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
+```
+
+The initial script trusts the HTTPS repository publisher. Its subsequent checksum verification does not independently authenticate the bootstrap that is already executing. The [installation guide](INSTALL.md) also documents downloading and reviewing the script first.
+
+## Actions and permissions
+
+CI has read-only repository permissions. The release verification jobs are also read-only; only the publish job receives `contents: write`, with its token scoped to the GitHub CLI publishing step.
+
+| Official action | Reviewed release | Pinned commit |
+| --- | --- | --- |
+| `actions/checkout` | [v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) | [3d3c42e5aac5ba805825da76410c181273ba90b1](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1) |
+| `actions/setup-node` | [v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0) | [949feb2413d6458794dcd2491c4babbbce0c15c1](https://github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1) |
+
+The actions use Node.js 24 internally and select Node.js 22 for this project's commands. Update action pins through a reviewed change. See GitHub's [secure workflow guidance](https://docs.github.com/en/actions/reference/security/secure-use).
+
+`test/release-workflows.test.js` runs the actual inline publication code against synthetic filesystem/GitHub CLI boundaries. It tests ordering and refusal paths without publishing. A passing local suite is distinct from a completed real GitHub Actions run or clean-host installation.

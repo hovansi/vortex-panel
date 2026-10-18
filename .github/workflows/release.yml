@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Exact stable release tag matching package.json'
+        required: true
+        default: 'v0.17.0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag / Node 22 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Require an exact stable version tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
+              || tag !== `v${pkg.version}` || lock.version !== pkg.version
+              || lock.packages?.['']?.version !== pkg.version) throw new Error('Tag and package versions must match exactly.');
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (head !== process.env.GITHUB_SHA) throw new Error('The checkout must resolve to the tested commit.');
+          if (process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag') {
+            const tagged = execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { encoding: 'utf8' }).trim();
+            if (head !== tagged) throw new Error('The tag must resolve to the tested commit.');
+          } else if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF_TYPE !== 'branch') {
+            throw new Error('Use a tag push or a maintainer dispatch from a branch.');
+          }
+          NODE
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check source
+        run: npm run check
+      - name: Run automated tests
+        run: npm test
+      - name: Check bootstrap syntax
+        run: bash -n deploy/bootstrap.sh
+
+  publish:
+    name: Build and publish verified assets
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build public release assets
+        run: |
+          node scripts/release.js --repository "$GITHUB_REPOSITORY" --output "output/release/$RELEASE_TAG"
+          cd "output/release/$RELEASE_TAG"
+          sha256sum --check --strict SHA256SUMS
+          bash -n install.sh
+      - name: Create draft, verify uploaded assets, then publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_HOST: github.com
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, readdirSync, lstatSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { createHash } from 'node:crypto';
+          import { spawnSync, execFileSync } from 'node:child_process';
+          const need = (value, message) => { if (!value) throw new Error(message); };
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          const repo = process.env.GH_REPO;
+          const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.GITHUB_REF_TYPE === 'branch';
+          need(/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
+            && tag === `v${pkg.version}` && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)
+            && repo === process.env.GITHUB_REPOSITORY && process.env.GITHUB_SERVER_URL === 'https://github.com'
+            && (manual || process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag'), 'Exact public GitHub release scope required.');
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          need(head === process.env.GITHUB_SHA, 'The build must use the tested commit.');
+          const directory = join('output', 'release', tag);
+          const names = [`vortex-panel-${pkg.version}.zip`, 'SHA256SUMS', 'install.sh', 'release-manifest.json'];
+          need(JSON.stringify(readdirSync(directory).sort()) === JSON.stringify([...names].sort()), 'Only the four reviewed release assets may be uploaded.');
+          const expected = new Map(names.map(name => {
+            const path = join(directory, name);
+            const stat = lstatSync(path);
+            need(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size > 0, 'Regular release assets required.');
+            const raw = readFileSync(path);
+            return [name, { size: raw.length, digest: `sha256:${createHash('sha256').update(raw).digest('hex')}` }];
+          }));
+          const sums = String(readFileSync(join(directory, 'SHA256SUMS'), 'utf8')).trimEnd().split('\n');
+          const checksumNames = new Set();
+          need(sums.length === names.length - 1, 'Checksums must cover the ZIP, installer and manifest exactly.');
+          for (const line of sums) {
+            const match = /^([a-f0-9]{64})  ([A-Za-z0-9.-]+)$/.exec(line);
+            need(match && match[2] !== 'SHA256SUMS' && !checksumNames.has(match[2])
+              && expected.get(match[2])?.digest === `sha256:${match[1]}`, 'Current release bytes differ from their checksums.');
+            checksumNames.add(match[2]);
+          }
+          const gh = (args, absent = false) => {
+            const result = spawnSync('gh', args, { encoding: 'utf8', timeout: 120000, maxBuffer: 2 * 1024 * 1024 });
+            if (absent && !result.error && result.status !== 0 && /^HTTP\/\S+ 404(?:\s|$)/m.test(result.stdout)) return null;
+            need(!result.error && result.status === 0, 'GitHub CLI operation failed. Inspect the tag and any retained draft; no operation is retried.');
+            return result.stdout;
+          };
+          const api = path => JSON.parse(gh(['api', path]));
+          const releasePath = `repos/${repo}/releases/tags/${tag}`;
+          need(api(`repos/${repo}`).private === false, 'Publication requires the approved public repository.');
+          need(gh(['api', '--include', '--silent', releasePath], true) === null, 'A release already exists for this tag; it will not be overwritten.');
+          const checkTag = () => need(api(`repos/${repo}/commits/${tag}`).sha === head, 'Remote tag changed; refusing publication.');
+          if (gh(['api', '--include', '--silent', `repos/${repo}/git/ref/tags/${tag}`], true) === null) {
+            need(manual, 'Only a maintainer dispatch can create a missing release tag.');
+            // One explicit creation after tests and absence checks. A timeout or
+            // lost acknowledgement stops; never retry a possibly completed write.
+            gh(['api', '--method', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${tag}`, '-f', `sha=${head}`]);
+          }
+          checkTag();
+          const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
+          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nAutomated source checks and test commands passed with Node.js 22 on Ubuntu 22.04 and 24.04. This CI run does not perform live VPS, gameplay-client, or production deployment QA.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
+          gh(['release', 'create', tag, '--draft', '--verify-tag', '--target', head, '--title', `Vortex Panel ${pkg.version}`, '--notes-file', notes]);
+          const draft = api(releasePath);
+          need(draft.draft === true && draft.tag_name === tag && draft.prerelease === false && Number.isSafeInteger(draft.id) && draft.assets?.length === 0, 'Expected a new empty draft release.');
+          gh(['release', 'upload', tag, ...names.map(name => join(directory, name))]);
+          const verify = (row, isDraft) => {
+            need(row.id === draft.id && row.tag_name === tag && row.draft === isDraft && row.prerelease === false && row.assets?.length === names.length, 'Release identity or asset count changed.');
+            const seen = new Set();
+            for (const asset of row.assets) {
+              const local = expected.get(asset.name);
+              need(local && !seen.has(asset.name) && asset.state === 'uploaded' && asset.size === local.size && asset.digest === local.digest, 'Uploaded asset size or SHA256 differs. Draft will not be published.');
+              seen.add(asset.name);
+            }
+          };
+          verify(api(releasePath), true);
+          checkTag();
+          gh(['release', 'edit', tag, '--draft=false', '--latest']);
+          const published = api(releasePath);
+          verify(published, false);
+          console.log(`Published verified release: ${published.html_url}`);
+          NODE

@@ -1,0 +1,29 @@
+import {wireText,uiText} from './i18n.js';
+const copy=(en,vi)=>wireText(en,{en,vi});
+const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const phases={prepare:['Preparing operation','Chuẩn bị thao tác'],download:['Downloading official package','Đang tải gói chính thức'],cache:['Checking cached package','Kiểm tra gói đã lưu'],extract:['Extracting package','Đang giải nén gói'],verify:['Verifying package','Đang kiểm tra gói'],install:['Installing server','Đang cài đặt máy chủ'],storage:['Preparing server storage','Đang chuẩn bị lưu trữ máy chủ'],'runtime-resolve':['Resolving official stable runtime','Xác định môi trường ổn định chính thức'],'runtime-download':['Downloading runtime','Đang tải môi trường chạy'],'runtime-verify':['Verifying runtime package','Kiểm tra gói môi trường chạy'],'runtime-build':['Building Python runtime','Biên dịch môi trường Python'],'runtime-prepare':['Preparing isolated runtime','Chuẩn bị môi trường chạy riêng'],dependencies:['Installing project dependencies','Cài thư viện dự án'],complete:['Operation completed','Tác vụ hoàn tất']};
+const jobTypes={dependencies:['Install dependencies','Cài thư viện'],install:['Install server','Cài máy chủ'],update:['Update Bedrock','Cập nhật Bedrock'],clone:['Clone server','Nhân bản máy chủ'],backup:['Create backup','Tạo sao lưu'],'backup-verify':['Verify backup','Kiểm tra sao lưu'],restore:['Restore backup','Khôi phục sao lưu'],'world-import':['Import world','Nhập thế giới'],'storage-grow':['Grow server storage','Tăng lưu trữ máy chủ'],'node-provision':['VPS setup','Thiết lập VPS'],'node-uninstall':['Uninstall Vortex','Gỡ Vortex'],schedule:['Scheduled operation','Tác vụ theo lịch']};
+export const operationJobLabel=type=>jobTypes[type]?copy(...jobTypes[type]):type;
+export const operationPhaseLabel=phase=>phase==='queued'?copy('Queued','Đang chờ'):phase==='failed'?copy('Operation failed','Tác vụ thất bại'):phases[phase]?copy(...phases[phase]):phase;
+export function progressModel(job){
+  const completed=job.status==='completed',failed=['failed','error','interrupted'].includes(job.status),cancelled=job.status==='cancelled',active=!completed&&!failed&&!cancelled;
+  const progress=completed?100:Math.max(0,Math.min(99,Number(job.progress)||0));
+  const transfer=['download','runtime-download'].includes(job.phase)||job.transfer?.phase==='download'?job.transfer:null;
+  const loaded=transfer&&Number.isFinite(transfer.loadedBytes)?Math.max(0,transfer.loadedBytes):0;
+  const total=transfer&&Number.isFinite(transfer.totalBytes)&&transfer.totalBytes>0?transfer.totalBytes:null;
+  return {active,completed,failed,cancelled,progress,phase:job.phase||transfer?.phase||'',loaded,total,downloadPercent:total?Math.min(100,Math.floor(loaded/total*100)):null,downloading:active&&Boolean(transfer)};
+}
+export function operationProgressMarkup(job){
+  return `<section class="operation-progress" data-progress-live="${escape(job.id)}"><div class="operation-orbit" aria-hidden="true"><span></span><span></span><strong data-progress-number></strong></div><div class="operation-progress-copy"><span class="eyebrow" data-progress-state></span><h3 data-progress-phase></h3><p data-progress-message role="status" aria-live="polite"></p></div><div class="operation-meter" role="progressbar" aria-label="${escape(copy('Operation progress','Tiến trình tác vụ'))}" aria-valuemin="0" aria-valuemax="100"><span></span></div><div class="operation-transfer" hidden><span data-transfer-label></span><strong data-transfer-value></strong></div><p class="panel-description operation-progress-note">${escape(copy('You can close this window and continue working. Follow the operation in Notifications.','Bạn có thể đóng cửa sổ và tiếp tục làm việc. Theo dõi tác vụ trong Thông báo.'))}</p></section>`;
+}
+export function updateOperationProgress(root,job,formatBytes){
+  if(!root)return;const model=progressModel(job),phase=phases[model.phase];
+  root.classList.toggle('is-active',model.active);root.classList.toggle('is-failed',model.failed);root.classList.toggle('is-completed',model.completed);
+  uiText(root.querySelector('[data-progress-state]'),model.active?copy('LIVE OPERATION','TIẾN TRÌNH TRỰC TIẾP'):copy('OPERATION RECORD','BẢN GHI TÁC VỤ'));root.querySelector('.operation-progress-note').hidden=!model.active;
+  uiText(root.querySelector('[data-progress-number]'),`${model.progress}%`);
+  uiText(root.querySelector('[data-progress-phase]'),model.completed?copy('Operation completed','Tác vụ hoàn tất'):model.failed?copy('Operation failed','Tác vụ thất bại'):model.cancelled?copy('Operation cancelled','Tác vụ đã hủy'):job.type==='storage-grow'?copy('Growing server storage','Đang tăng lưu trữ máy chủ'):phase?copy(...phase):operationJobLabel(job.type));
+  const status=root.querySelector('[data-progress-message]');uiText(status,wireText(job.message,job.messageI18n)||'');status.hidden=model.failed||!job.message;
+  const bar=root.querySelector('[role=progressbar]');bar.setAttribute('aria-valuenow',String(model.progress));bar.querySelector('span').style.transform=`scaleX(${model.progress/100})`;
+  const transfer=root.querySelector('.operation-transfer');transfer.hidden=!model.downloading;transfer.classList.toggle('indeterminate',model.downloading&&model.total===null);
+  if(model.downloading){uiText(root.querySelector('[data-transfer-label]'),model.total?copy('Package download','Tải gói cài đặt'):copy('Downloading · total size unknown','Đang tải · chưa biết tổng dung lượng'));uiText(root.querySelector('[data-transfer-value]'),model.total?`${model.downloadPercent}% · ${formatBytes(model.loaded)} / ${formatBytes(model.total)}`:formatBytes(model.loaded));}
+}

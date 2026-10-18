@@ -1,0 +1,15 @@
+# Automatic port allocation — 0.15.5
+
+New Minecraft Bedrock, Node.js and Python servers use automatic ports by default. Bedrock clones receive a separate allocation on their source VPS. The selected VPS makes the decision when the request is accepted; the browser does not reserve a suggestion. The returned server and connection address show the assigned ports. Existing servers retain their current ports.
+
+The allocator uses cryptographic randomness within 20000–59999 and excludes the operating system's current ephemeral-port interval and explicitly reserved host ports. Native Ubuntu allocation reads local TCP/UDP socket tables for IPv4/IPv6 and checks persisted servers, stopped/installing servers and pending network changes. Bedrock allocation includes its primary/IPv6 ports and the complete NetherNet UDP range where required. Automatic allocation conservatively avoids numeric overlap across those reservations. Allocations are scoped to one VPS: separate IP addresses can use the same port number.
+
+Selection and registration run through the node's admission lock. An owned pending reservation remains in place while native bind checks await, then the accepted server record retains the allocation. A failed request releases its temporary reservation. An unreadable or malformed socket inventory and exhaustion return an explicit error before a server/job is created; they do not silently choose a fixed default. Concurrent creates must receive different allocations or a clear capacity/allocation error.
+
+Advanced custom ports remain available. Explicit legacy API ports retain their existing protocol-aware validation; TCP and UDP are separate network namespaces. Automatic requests omit numeric port fields and use `portAllocation:"auto"`; a request mixing automatic allocation with explicit ports is invalid. Older agents without the capability must be updated before automatic allocation can be used; custom allocation remains the compatible option.
+
+Socket-table reads and bind checks establish availability at the time of admission. They cannot permanently prevent an unrelated operating-system service from claiming a port later. Startup therefore retains native bind checks and reports a conflict; it does not silently change an established connection address. An accepted allocation is a panel reservation, not a firewall rule or proof of public reachability. Existing network-access controls still apply.
+
+Release evidence records the focused parser/allocator, concurrency, persistence-failure, UI-payload and federation checks, the full suite results, the deployed source identity and the real owned-server acceptance checks. Simulated tests and actual host operations are reported separately.
+
+Implementation references: [Linux ephemeral and reserved port policy](https://www.kernel.org/doc/html/latest/networking/ip-sysctl.html) and [Node.js cryptographic random integers](https://nodejs.org/download/release/v22.18.0/docs/api/crypto.html#cryptorandomintmin-max-callback). The panel reads the host policy and does not change those sysctls.

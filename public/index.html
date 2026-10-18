@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-auth-boot="pending">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#eeedf8">
+  <meta name="color-scheme" content="light dark">
+  <script src="/theme-init.js"></script>
+  <meta name="description" content="Vortex Panel — manage Minecraft Bedrock servers, Node.js services and Python applications.">
+  <title>Vortex Panel · Servers & Applications</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preload" as="image" type="image/webp" href="/assets/vortex-world.webp" fetchpriority="high">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/operations.css">
+  <link rel="stylesheet" href="/nodes.css">
+  <link rel="stylesheet" href="/panel.css">
+  <link rel="stylesheet" href="/auth-boot.css">
+  <link rel="stylesheet" href="/select-control.css">
+  <link rel="stylesheet" href="/metrics.css">
+  <link rel="stylesheet" href="/polish.css">
+  <link rel="stylesheet" href="/application-workspace.css">
+  <script type="module" src="/auth-boot.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="wallpaper" aria-hidden="true"></div>
+  <a href="#workspace" class="skip-link"><span data-vx-i18n="Đến nội dung">Skip to content</span></a>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-vortex" viewBox="0 0 24 24"><path d="m12 2 8.7 5v10L12 22l-8.7-5V7L12 2Zm0 4 5.2 3v6L12 18l-5.2-3V9L12 6Zm0 4 1.8 1v2L12 14l-1.8-1v-2L12 10Z"/><path d="m12 2 0 4M20.7 7l-3.5 2M20.7 17l-3.5-2M12 22v-4M3.3 17l3.5-2M3.3 7l3.5 2"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M5 16h14l-2-3V8a5 5 0 0 0-10 0v5l-2 3Zm4 4a3 3 0 0 0 6 0"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3ZM20 2v4m-2-2h4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3" fill="var(--surface)"/><circle cx="16" cy="17" r="3" fill="var(--surface)"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8M12 13v9M7.5 5.5l9 5"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-nodes" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="6" rx="2"/><rect x="2" y="16" width="8" height="6" rx="2"/><rect x="14" y="16" width="8" height="6" rx="2"/><path d="M12 8v4M6 16v-4h12v4"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6m-6 11h6"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 6 6 6-6 6m9 0h6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Zm0 0h18"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 10 5-10 5L2 8l10-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-backup" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6M12 7v5l3 2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-host" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5m-5 0h10M7 7h10M7 11h4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9 3h6l.6 3 2.6 1.5 3-.9 3 5.2-2.4 2.1v3l2.4 2.1-3 5.2-3-.9L15.6 25 15 28H9l-.6-3-2.6-1.5-3 .9-3-5.2 2.4-2.1v-3L-.2 12l3-5.2 3 .9L8.4 6 9 3Z" transform="translate(3 -1) scale(.75)"/><circle cx="12" cy="11" r="3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 4v6h-6M4 20v-6h6M5.5 7a8 8 0 0 1 14.5 3M4 14a8 8 0 0 0 14.5 3"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14A9 9 0 0 1 10 4a9 9 0 1 0 10 10Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 5a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 4v3"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 1v5m6-5v5M9 18v5m6-5v5M1 9h5m-5 6h5m12-6h5m-5 6h5"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
+    <symbol id="i-memory" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M6 17v3m4-3v3m4-3v3m4-3v3M7 9v4m5-4v4m5-4v4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><path d="m3 13 3-9h12l3 9v7H3v-7Zm0 0h18M16 17h.01M7 17h4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8m-8 4h5"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M2 12h4l3-8 6 16 3-8h4"/></symbol>
+    <symbol id="i-cut" viewBox="0 0 24 24"><circle cx="5" cy="6" r="3"/><circle cx="5" cy="18" r="3"/><path d="m8 7.5 13 13M8 16.5 21 3M12 12l3-3"/></symbol>
+    <symbol id="i-paste" viewBox="0 0 24 24"><path d="M8 5H5v16h14V5h-3M8 3h8v4H8V3Zm1 9h6m-6 4h6"/></symbol>
+    <symbol id="i-rename" viewBox="0 0 24 24"><path d="M3 6h5M3 6v12h5M16 6h5v12h-5M10 3h4m-2 0v18m-2 0h4"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8l-5-5Zm0 0v5h5M10 5h2m-2 3h2m-2 3h2m-2 3h2m-2 3h2"/></symbol>
+    <symbol id="i-extract" viewBox="0 0 24 24"><path d="M3 8V5h7l2 3h9v13H3V8Zm9 9V9m-3 3 3-3 3 3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 3H3v18h6M9 12h12m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 14 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m2 1 2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(2 1) scale(.9)"/></symbol>
+  </svg>
+  <div id="auth-loader" class="auth-loader" role="status" aria-live="polite"><div class="auth-loading-content"><div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-vortex"/></svg></span><strong>Vortex<span>Panel</span></strong></div><span class="auth-loading-label" data-vx-i18n="Đang kết nối workspace…">Connecting to workspace…</span></div></div>
+  <main id="auth" class="auth-screen" data-auth-ready="false" aria-busy="true" hidden><section class="auth-card" inert></section></main>
+  <div id="app" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark"><svg class="icon"><use href="#i-vortex"/></svg></span><strong>Vortex<span>Panel</span></strong></a>
+      <button class="sidebar-search" data-action="palette"><svg class="icon"><use href="#i-search"/></svg><span><span data-vx-i18n="Tìm kiếm">Search</span></span><kbd>⌘ K</kbd></button>
+      <span class="nav-label">WORKSPACE</span>
+      <nav id="navigation" class="navigation" aria-label="Main navigation" data-vx-i18n-aria-label="Điều hướng chính"></nav>
+      <div class="sidebar-bottom"><div id="host-mini" class="host-mini"></div><div class="sidebar-meta"><span>Vortex Panel</span><span data-panel-version>Version unavailable</span></div><div class="sidebar-meta sidebar-credit"><span data-vx-i18n="Tác giả">Author</span><strong>@CallMeHak</strong></div></div>
+    </aside>
+    <div class="main-shell">
+      <header class="toolbar"><div class="breadcrumb"><span>Workspace</span><svg class="icon"><use href="#i-chevron"/></svg><strong id="view-title"><span data-vx-i18n="Tổng quan">Overview</span></strong></div><div class="toolbar-actions"><span id="demo-badge" class="badge demo" hidden>DEMO</span><span id="connection" class="connection"><i class="dot"></i><span><span data-vx-i18n="Đang kết nối">Connecting</span></span></span><div class="toolbar-controls"><button class="icon-button" data-action="palette" aria-label="Search and quick commands" data-vx-i18n-aria-label="Tìm kiếm và lệnh nhanh"><svg class="icon"><use href="#i-search"/></svg></button><button class="icon-button" data-action="theme" aria-label="Toggle light and dark mode" data-vx-i18n-aria-label="Đổi giao diện sáng tối"><svg class="icon"><use href="#i-moon"/></svg></button><button class="icon-button notification-button" data-action="notifications" aria-label="Notifications and tasks" data-vx-i18n-aria-label="Thông báo và tác vụ"><svg class="icon"><use href="#i-bell"/></svg><span id="notification-count" hidden>0</span></button></div><button class="avatar" data-action="navigate" data-view="settings" aria-label="Account settings" data-vx-i18n-aria-label="Cài đặt tài khoản">A</button></div></header>
+      <main id="workspace" class="workspace" tabindex="-1"></main>
+      <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile navigation" data-vx-i18n-aria-label="Điều hướng di động"></nav>
+    </div>
+  </div>
+  <dialog id="server-picker" class="server-picker" aria-label="Choose server" data-vx-i18n-aria-label="Chọn máy chủ"></dialog>
+  <dialog id="file-actions" class="file-actions" aria-labelledby="file-actions-title"></dialog>
+  <dialog id="file-folder-picker" class="file-folder-picker" aria-labelledby="folder-picker-title"></dialog>
+  <dialog id="confirmation" class="confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description"></dialog>
+  <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
+  <dialog id="palette" class="palette" aria-label="Search and quick commands" data-vx-i18n-aria-label="Tìm kiếm và lệnh nhanh"></dialog>
+  <dialog id="drawer" class="drawer" aria-labelledby="drawer-title"></dialog>
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  <input id="file-upload" type="file" multiple hidden>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Vortex Panel 0.15.4 authentication follow-up
+
+The independent review and native checks for [0.15.3](AUDIT-0153.md) found a further browser hygiene defect: after successful authentication, the connected hidden form retained password, setup-token or MFA/recovery-code values. A later same-origin script could read a password still present in that form. This finding does not establish a new XSS or authentication bypass.
+
+Authentication now recognizes an explicit session response, or a valid login-only MFA challenge, before continuing. Only after that acknowledgement are secret controls emptied, before workspace initialization or challenge rendering. The username remains. Invalid JSON, unrecognized responses and failed requests preserve the visible inputs for correction. A later workspace failure does not restore consumed secrets. Session-generation checks continue to reject obsolete responses.
+
+Eight new automated regressions exercise ordinary login, first setup, MFA and recovery codes, pending requests, workspace failure and malformed acknowledgements through the actual browser API/submit code. Independent adversarial response and stale-session checks supplement the release suite. These are application-boundary tests; they are not live MFA enrollment or account-recovery exercises.
+
+This follow-up changes the browser authentication handler, its regression tests and release documentation/version metadata. The release evidence compares every backend, deployment and existing runtime source byte with the tested 0.15.3 package. Native Node.js/Python operations, Bedrock player-list conflict checks and cleanup results belong to that exact earlier runtime source and are carried forward only where byte equality is verified. The final package is also tested on Windows and both Ubuntu hosts before deployment.
+
+Fresh production-browser acceptance checks automatic password clearing before manual cleanup, preserved username, workspace access and logout over normal HTTPS. Setup/MFA controls absent from that session are not counted as live checks; their paths are covered by regressions. Empty DOM controls do not erase request buffers, JavaScript heap copies or a password manager.
+
+The final local evidence report records exact package hashes, suite results, deployed processes, server preservation and remaining limits. It distinguishes static review, simulated cases, real native actions and real browser observations. Passing those checks reduces known risks and does not guarantee the absence of defects, indefinite uptime or compatibility with every deployment. No private deployment evidence, credentials, server data or local test artifacts are included in the source ZIP.
