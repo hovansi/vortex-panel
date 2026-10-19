@@ -1,4 +1,5 @@
 /* The connecting scene and its offline fallback are drawn immediately, without network artwork. */
+.auth-load-retry{display:block;max-width:280px;margin:24px auto 0;padding:12px 16px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);font-size:12px;line-height:1.6;text-align:center;text-decoration:none;visibility:hidden;animation:auth-load-retry-show 0s 12s forwards}.auth-load-retry:focus-visible{outline:2px solid var(--accent);outline-offset:4px}@keyframes auth-load-retry-show{to{visibility:visible}}
 .auth-screen,.auth-loader{background:radial-gradient(ellipse at 22% 8%,#ae94d14d,transparent 50%),radial-gradient(ellipse at 85% 82%,#929edd66,transparent 48%),linear-gradient(145deg,#e5d9ef,#dce1f5 55%,#e9edf6)}
 :root[data-theme=dark] .auth-screen,:root[data-theme=dark] .auth-loader{background:radial-gradient(ellipse at 18% 12%,#65457966,transparent 55%),radial-gradient(ellipse at 88% 85%,#334e7066,transparent 52%),linear-gradient(145deg,#191628,#292238 60%,#1d2435)}
 .auth-loader{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:24px;isolation:isolate}

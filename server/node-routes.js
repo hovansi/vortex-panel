@@ -2,7 +2,7 @@ import express from 'express';
 import { pipeline } from 'node:stream/promises';
 import { canAccessServer, requireAdmin } from './access.js';
 import { isIdentityPath, IDENTITY_READ_PROTECTION } from './file-privacy.js';
-import { splitNodeResourceId } from './nodes.js';
+import { splitNodeResourceId, NODE_LIMITS } from './nodes.js';
 import { fail } from './safety.js';
 import { createRouter } from './routes.js';
 import { buildNodeBundle } from './node-bundle.js';
@@ -11,6 +11,7 @@ import { sendPowerRequest, validatePowerRequest } from './system-power.js';
 import { sendZramRequest, validateZramRequest } from './host-zram.js';
 import { validateTimezoneRequest, timezoneErrorPayload } from './host-timezone.js';
 import { validateNetworkTuningRequest, networkTuningErrorPayload } from './host-network-tuning.js';
+import { validateSchedule, supportsSchedulePreCommands, scheduleCommandIssue, scheduleCommandErrorPayload } from './schedule-commands.js';
 
 const safeResponseHeaders = ['content-type', 'content-disposition', 'content-length', 'content-encoding', 'etag', 'last-modified'];
 const safeRequestHeaders = ['content-type', 'content-length', 'accept', 'accept-language'];
@@ -224,7 +225,33 @@ export function createNodeRouter(nodes, { projectDir, provisioner, removal, stor
   return router;
 }
 
-async function proxy(nodes, node, remotePath, req, res, bodyOverride) {
+async function prepareRemoteSchedule(nodes, node, request, body, operation, signal) {
+  let snapshot;
+  try { snapshot = await nodes.call(node, { path: '/api/node/snapshot', timeoutMs: 10000, signal }); }
+  catch { throw scheduleCommandIssue('SCHEDULE_NODE_UNVERIFIED'); }
+  const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  if (snapshot?.service !== 'vortex-node' || snapshot.protocol !== 1 || snapshot.nodeId !== node.agentId || !Array.isArray(snapshot.schedules) || snapshot.schedules.length > 2000 || !Array.isArray(snapshot.servers) || snapshot.servers.length > NODE_LIMITS.serversPerNode) throw scheduleCommandIssue('SCHEDULE_NODE_UNVERIFIED');
+  let previous = {};
+  if (operation.id) {
+    const records = snapshot.schedules.filter(row => row?.id === operation.id);
+    if (records.length !== 1) fail('Schedule was not found. Refresh node status and retry.', 404);
+    previous = records[0];
+  }
+  const serverId = previous.serverId ?? body.serverId;
+  if (!uuid.test(serverId || '') || !snapshot.servers.some(server => server?.id === serverId)) throw scheduleCommandIssue('SCHEDULE_NODE_UNVERIFIED');
+  if (!canAccessServer(request.session.user, `${node.id}:${serverId}`, true)) fail('You do not have permission to modify this schedule.', 403);
+  if (body.serverId !== undefined && body.serverId !== serverId) fail('A schedule cannot move between servers or nodes.', 400);
+  const fields = validateSchedule(operation.run ? {} : body, previous);
+  if (fields.command && ['backup', 'restart'].includes(fields.action) && !supportsSchedulePreCommands(snapshot.capabilities?.scheduleCommands, snapshot.version)) throw scheduleCommandIssue('SCHEDULE_NODE_UPGRADE_REQUIRED');
+  return { id: operation.id || null, serverId, ...fields };
+}
+
+function verifyScheduleAcknowledgement(value, expected) {
+  const row = value?.schedule, uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  if (!row || !uuid.test(row.id || '') || expected.id && row.id !== expected.id || row.serverId !== expected.serverId || row.action !== expected.action || row.intervalMinutes !== expected.intervalMinutes || row.enabled !== expected.enabled || (row.command ?? null) !== expected.command) throw scheduleCommandIssue('SCHEDULE_NODE_ACK_MISMATCH');
+}
+
+async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule = null } = {}) {
   const abort = new AbortController();
   const finishMutation = writes(req.method) ? nodes.beginMutation(node.id, { placement: req.method === 'POST' && /\/clone\/?$/.test(remotePath) }) : () => {};
   let upstream;
@@ -247,11 +274,16 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride) {
   } else delete headers['content-length'];
   const query = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
   try {
+    // Hold mutation admission while reading an authenticated fresh snapshot;
+    // a cached new version cannot authorize an
+    // older worker after a downgrade. Missing PATCH commands remain omitted.
+    const scheduleExpected = schedule ? await prepareRemoteSchedule(nodes, node, req, bodyOverride ?? req.body ?? {}, schedule, abort.signal) : null;
     if (req.method === 'POST' && /\/clone\/?$/.test(remotePath)) await nodes.assertPortAllocation(node, bodyOverride ?? req.body);
     const response = await nodes.request(nodes.credentials(node), { path: remotePath + query, method: req.method, body, headers, stream: true, signal: AbortSignal.any([abort.signal, nodes.signal]), timeoutMs: 300000, maxBytes: 2 * 1024 ** 3 + 20 * 1024 ** 2 });
     upstream = response.stream; nodes.identityHeaders(node, response);
     const contentType = String(response.headers['content-type'] || '').toLowerCase();
     const transformedJson = contentType.includes('application/json') && !response.headers['content-disposition'];
+    if (scheduleExpected && response.statusCode >= 200 && response.statusCode < 300 && !transformedJson) throw scheduleCommandIssue('SCHEDULE_NODE_ACK_MISMATCH');
     // HEAD has the GET representation's headers and deliberately no body,
     // including when its Content-Type is JSON. Never feed it to a JSON parser.
     if (req.method === 'HEAD') {
@@ -269,6 +301,7 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride) {
         if (error.body) { res.status(error.status).json(error.body); return; }
         throw error;
       }
+      if (scheduleExpected) verifyScheduleAcknowledgement(value, scheduleExpected);
       nodes.recordResponse(node, value, { mutating: writes(req.method) });
       if (req.method === 'DELETE' && /^\/api\/servers\/[^/]+\/?$/.test(remotePath) && value.ok) { const warning = nodes.recordDeletedServer?.(node, remotePath.split('/')[3]); if (warning) value.warnings = [...(value.warnings || []), warning]; }
       if (req.method === 'DELETE' && /^\/api\/schedules\/[^/]+\/?$/.test(remotePath) && value.ok) nodes.recordDeletedSchedule(node, remotePath.split('/')[3]);
@@ -281,6 +314,8 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride) {
     upstream?.destroy();
     if (req.aborted || res.destroyed) return;
     if (res.headersSent) { res.destroy(error); return; }
+    const scheduleError = scheduleCommandErrorPayload(error, req.panelLanguage);
+    if (scheduleError) { res.status(error.status).json(scheduleError); return; }
     if (writes(req.method) && !error.body && ![400, 401, 403, 404, 409].includes(error.status)) {
       error.message = 'The node request outcome is unknown. No automatic retry was made; reconnect and inspect the server/job state before trying again.';
       error.status = error.status === 504 ? 504 : 502;
@@ -313,7 +348,7 @@ export function createRemoteServerProxy(nodes) {
     if (req.path === '/schedules' && req.method === 'POST') {
       const composite = splitNodeResourceId(req.body?.serverId); if (!composite) return next();
       if (!canAccessServer(req.session.user, req.body.serverId, true)) fail('You do not have permission to schedule this server.', 403);
-      return proxy(nodes, nodes.requireAvailable(composite.nodeId), '/api/schedules', req, res, { ...req.body, serverId: composite.rawId });
+      return proxy(nodes, nodes.requireAvailable(composite.nodeId), '/api/schedules', req, res, { ...req.body, serverId: composite.rawId }, { schedule: {} });
     }
     const schedule = req.path.match(/^\/schedules\/([^/]+)(\/run)?\/?$/);
     if (schedule) {
@@ -328,7 +363,7 @@ export function createRemoteServerProxy(nodes) {
         if (body.serverId !== record.serverId) fail('A schedule cannot move between servers or nodes.', 400);
         body.serverId = splitNodeResourceId(record.serverId).rawId;
       }
-      return proxy(nodes, nodes.requireAvailable(composite.nodeId), `/api/schedules/${composite.rawId}${schedule[2] || ''}`, req, res, body);
+      return proxy(nodes, nodes.requireAvailable(composite.nodeId), `/api/schedules/${composite.rawId}${schedule[2] || ''}`, req, res, body, req.method === 'DELETE' ? {} : { schedule: { id: composite.rawId, run: Boolean(schedule[2]) } });
     }
     next();
   });

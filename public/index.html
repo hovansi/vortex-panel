@@ -26,6 +26,7 @@
   <link rel="stylesheet" href="/network-tuning.css">
   <link rel="stylesheet" href="/host-tls.css">
   <link rel="stylesheet" href="/restart-recovery.css">
+  <link rel="stylesheet" href="/frontend-release.css">
   <script type="module" src="/auth-boot.js"></script>
   <script type="module" src="/app.js"></script>
 </head>
@@ -82,7 +83,7 @@
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 14 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m2 1 2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(2 1) scale(.9)"/></symbol>
   </svg>
-  <div id="auth-loader" class="auth-loader" role="status" aria-live="polite"><div class="auth-loading-content"><div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-vortex"/></svg></span><strong>Vortex<span>Panel</span></strong></div><span class="auth-loading-label" data-vx-i18n="Đang kết nối workspace…">Connecting to workspace…</span></div></div>
+  <div id="auth-loader" class="auth-loader" role="status" aria-live="polite"><div class="auth-loading-content"><div class="brand"><span class="brand-mark"><svg class="icon"><use href="#i-vortex"/></svg></span><strong>Vortex<span>Panel</span></strong></div><span class="auth-loading-label" data-vx-i18n="Đang kết nối workspace…">Connecting to workspace…</span><a class="auth-load-retry" href="/">Taking longer than expected? Reload interface</a></div></div>
   <main id="auth" class="auth-screen" data-auth-ready="false" aria-busy="true" hidden><section class="auth-card" inert></section></main>
   <div id="app" class="app-shell" hidden>
     <aside class="sidebar">

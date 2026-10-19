@@ -701,6 +701,8 @@ if [[ $VORTEX_MANAGED_TLS == true && $VORTEX_ACCESS_MODE != local && -f $INSTALL
   fi
 fi
 echo 'Vortex Panel installed and healthy.'
+echo 'Reload any open panel browser tab to load the installed interface.'
+echo 'Linked workers are separate installations. Review their versions in Settings > Panel administration > Check for updates.'
 if [[ $VORTEX_AUTO_ACCESS != true ]]; then
   PUBLIC_PANEL_URL=$(sed -n 's/^PUBLIC_URL=//p' /etc/vortex-panel.env | tail -n 1 | tr -d '"\r')
   echo "Panel URL: ${PUBLIC_PANEL_URL:-http://$PANEL_CHECK_HOST:$PANEL_PORT}"

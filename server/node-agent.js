@@ -26,6 +26,7 @@ import { createNodeRemovalAgent, nodeRemovalErrorPayload } from './node-removal.
 import { playerListErrorPayload } from './player-lists.js';
 import { createHostTimezoneController, timezoneErrorPayload } from './host-timezone.js';
 import { createHostNetworkTuningController, networkTuningErrorPayload } from './host-network-tuning.js';
+import { SCHEDULE_COMMAND_CAPABILITIES } from './schedule-commands.js';
 
 const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -164,7 +165,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   app.get('/api/node/snapshot', async (req, res) => {
     if (req.session.user.role !== 'admin') return res.status(403).json({ error: 'Node inventory requires a control-plane administrator.' });
     const dashboard = withTimezone(await manager.dashboard());
-    res.json({ ...dashboard, capabilities: { ...dashboard.capabilities, hostTerminal: false }, schedules: manager.schedules(), ...identity() });
+    res.json({ ...dashboard, capabilities: { ...dashboard.capabilities, scheduleCommands: SCHEDULE_COMMAND_CAPABILITIES, hostTerminal: false }, schedules: manager.schedules(), ...identity() });
   });
   app.get('/api/node/events', (req, res) => {
     res.status(200).set({ 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.flushHeaders();
@@ -175,7 +176,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   // No host router, web assets, cookie login, setup, password or MFA API is
   // mounted. The bearer links a trusted control plane, never a browser session.
   app.use(['/api/auth', '/api/host', '/api/node'], (_req, res) => res.status(404).json({ error: 'API is not exposed by the node agent.' }));
-  const exposedManager = new Proxy(manager, { get(target, key) { if (key === 'dashboard') return async () => { const data = withTimezone(await target.dashboard()); return { ...data, capabilities: { ...data.capabilities, hostTerminal: false } }; }; return Reflect.get(target, key); } });
+  const exposedManager = new Proxy(manager, { get(target, key) { if (key === 'dashboard') return async () => { const data = withTimezone(await target.dashboard()); return { ...data, capabilities: { ...data.capabilities, scheduleCommands: SCHEDULE_COMMAND_CAPABILITIES, hostTerminal: false } }; }; return Reflect.get(target, key); } });
   app.use('/api', createRouter(exposedManager, { dataDir, store, timezoneController: systemTimezone }));
   app.use((_req, res) => res.status(404).json({ error: 'Node API not found.' }));
   app.use((error, _req, res, _next) => {

@@ -10,6 +10,7 @@ const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
 const MACHINE = /^[a-f0-9]{32}$/i;
 const VERSION = /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
+const UPDATE_PROTOCOL_VERSION = '0.20.0';
 const pending = new Set(['queued', 'running', 'unknown']);
 const secrets = ['password', 'privateKey', 'passphrase'];
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -23,12 +24,15 @@ const messages = {
   release: ['The official stable release could not be verified. Refresh the release check before updating.', 'Không xác minh được bản ổn định chính thức. Tải lại thông tin bản phát hành trước khi cập nhật.'],
   busy: ['Finish other system operations and stop every server before updating. Customer workloads are never stopped automatically.', 'Hoàn tất tác vụ hệ thống và dừng mọi server trước khi cập nhật. Hệ thống không tự dừng server của bạn.'],
   stale: ['The release, fleet or installation changed. Refresh the plan and verify SSH again.', 'Bản phát hành, cụm VPS hoặc bản cài đã thay đổi. Tải lại kế hoạch và xác minh SSH lại.'],
+  protocol: ['This legacy VPS needs a one-time maintenance upgrade through its worker installer before safe panel updates. Stop its servers, preserve its existing node configuration and data, then upgrade and refresh this plan. The panel will not bypass update admission or stop workloads automatically.', 'VPS cũ này cần nâng cấp bảo trì một lần bằng bộ cài worker trước khi cập nhật an toàn từ panel. Dừng server, giữ nguyên cấu hình node và dữ liệu, nâng cấp rồi tải lại kế hoạch. Panel không bỏ qua khóa cập nhật hoặc tự dừng server.'],
+  newer: ['A VPS is newer than the verified stable release. Downgrades are blocked; refresh the release and fleet before updating.', 'Có VPS mới hơn bản ổn định đã xác minh. Không cho hạ phiên bản; tải lại bản phát hành và cụm VPS trước khi cập nhật.'],
   ssh: ['Pinned root SSH must match the exact installation on every VPS.', 'SSH root đã ghim phải khớp đúng bản cài trên từng VPS.'],
   native: ['Source update verification failed. Review the existing request before retrying.', 'Xác minh cập nhật source thất bại. Kiểm tra yêu cầu hiện có trước khi thử lại.'],
   queued: ['Update accepted. Preparing verified source on every VPS before activating any release.', 'Đã nhận cập nhật. Đang chuẩn bị source đã xác minh trên mọi VPS trước khi kích hoạt.'],
   preparing: ['Verifying release assets and installing isolated source dependencies.', 'Đang xác minh gói phát hành và chuẩn bị dependency riêng cho source.'],
   updating: ['Activating this worker before the main panel.', 'Đang kích hoạt bản mới trên VPS phụ trước panel chính.'],
   verifying: ['Independently verifying the worker through a new pinned SSH connection.', 'Đang xác minh độc lập VPS phụ qua kết nối SSH mới đã ghim.'],
+  verifying_main: ['Workers are verified. Verifying the already-current main panel without restarting it.', 'Đã xác minh VPS phụ. Đang xác minh panel chính đã dùng bản mới nhất mà không khởi động lại.'],
   verified: ['Worker source and service verified; customer definitions and data identity were preserved.', 'Đã xác minh source và dịch vụ VPS phụ; cấu hình server cùng định danh dữ liệu được giữ nguyên.'],
   handoff: ['Every worker is verified. The main panel will restart shortly; reconnect to verify the result.', 'Đã xác minh mọi VPS phụ. Panel chính sẽ khởi động lại; kết nối lại để kiểm tra kết quả.'],
   completed: ['All linked workers and the main panel are running the verified release.', 'Mọi VPS phụ và panel chính đang chạy bản phát hành đã xác minh.'],
@@ -145,7 +149,7 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
   const get = id => store.data.panelUpdateJobs.find(row => row.id === id) || (() => { throw fail('input', 404); })();
   const publicJob = job => {
     const result = copy(Object.fromEntries(['id', 'requestId', 'type', 'scope', 'adminOnly', 'serverId', 'panelName', 'revision', 'version', 'release', 'status', 'phase', 'progress', 'verified', 'createdAt', 'updatedAt', 'finishedAt', 'nodes', 'handoff', 'message', 'messageI18n', 'outcomeUnknown', 'nativeMessage'].filter(key => job[key] !== undefined).map(key => [key, job[key]])));
-    result.nodes = result.nodes.map(row => ({ ...row, verified: validProof(row.proof, row, job), recoveryPath: row.alreadyCurrent ? '/opt/vortex-node/current' : `${row.local ? '/opt/vortex-panel' : '/opt/vortex-node'}/updates/${job.requestId}`, verificationCommand: row.alreadyCurrent ? null : `/usr/bin/python3 -I -B ${helperFor(row, job.requestId)} verify --role ${row.local ? 'panel' : 'worker'} --node-id ${row.local ? 'local' : row.agentId} --request-id ${job.requestId}` }));
+    result.nodes = result.nodes.map(row => ({ ...row, verified: validProof(row.proof, row, job), recoveryPath: row.alreadyCurrent ? `${row.local ? '/opt/vortex-panel' : '/opt/vortex-node'}/current` : `${row.local ? '/opt/vortex-panel' : '/opt/vortex-node'}/updates/${job.requestId}`, verificationCommand: row.alreadyCurrent ? null : `/usr/bin/python3 -I -B ${helperFor(row, job.requestId)} verify --role ${row.local ? 'panel' : 'worker'} --node-id ${row.local ? 'local' : row.agentId} --request-id ${job.requestId}` }));
     return result;
   };
   function change(job, fields, nodeId, rowFields) {
@@ -166,15 +170,20 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
     for (const row of rows) {
       const servers = row.local ? store.data.servers : store.data.nodes.find(node => node.id === row.nodeId)?.inventory || [];
       row.blockers = servers.some(server => !['stopped', 'error'].includes(server.status) || server.busy) ? [{ code: 'UPDATE_SERVERS_RUNNING', ...present('busy') }] : [];
-      if (row.local && local) { row.version = local.version; row.blockers = local.blockers; }
+      if (row.local && local) { row.version = local.version; row.blockers = [...local.blockers]; }
+      row.needsUpdate = Boolean(release && row.version && compare(release.version, row.version) > 0);
+      row.updateProtocolRequired = Boolean(!row.local && row.version && compare(row.version, UPDATE_PROTOCOL_VERSION) < 0);
+      if (row.updateProtocolRequired) row.blockers.push({ code: 'UPDATE_PROTOCOL_REQUIRED', ...present('protocol') });
+      if (release && row.version && compare(row.version, release.version) > 0) row.blockers.push({ code: 'UPDATE_NEWER_VERSION', ...present('newer') });
       if (row.blockers.length) blockers.push({ nodeId: row.nodeId, ...row.blockers[0] });
       row.sshRequired = true;
     }
     const existing = store.data.panelUpdateJobs.find(row => pending.has(row.status));
     if (existing) blockers.push({ code: 'UPDATE_PENDING', ...present('unknown') });
     const currentVersion = local?.version || JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')).version;
-    const available = Boolean(release && compare(release.version, currentVersion) > 0);
-    return { update: { schemaVersion: 1, currentVersion, latestVersion: release?.version || null, available, status: blockers.length ? 'blocked' : available ? 'ready' : 'current', release: release || null, revision: local && release ? revisionFor(local, release) : null, nodes: rows, blockers, latestJobId: existing?.id || store.data.panelUpdateJobs[0]?.id || null, policy: { sourceOnly: true, workersFirst: true, requiresStoppedServers: true, changesRuntimeVersions: false, automaticWorkloadStop: false } } };
+    const mainUpdateRequired = Boolean(release && compare(release.version, currentVersion) > 0), laggingNodeIds = rows.filter(row => row.needsUpdate).map(row => row.nodeId);
+    const available = Boolean(release && compare(release.version, currentVersion) >= 0 && (mainUpdateRequired || laggingNodeIds.length));
+    return { update: { schemaVersion: 1, currentVersion, latestVersion: release?.version || null, available, availableReason: available ? mainUpdateRequired ? 'panel' : 'fleet' : 'current', mainUpdateRequired, laggingNodeIds, bootstrapRequiredNodeIds: rows.filter(row => row.updateProtocolRequired).map(row => row.nodeId), status: blockers.length ? 'blocked' : available ? 'ready' : 'current', release: release || null, revision: local && release ? revisionFor(local, release) : null, nodes: rows, blockers, latestJobId: existing?.id || store.data.panelUpdateJobs[0]?.id || null, policy: { sourceOnly: true, workersFirst: true, mainRestartRequired: mainUpdateRequired, requiresStoppedServers: true, changesRuntimeVersions: false, automaticWorkloadStop: false } } };
   }
   async function stage(connection, callback) {
     const parent = await connection.lstat('/run'); if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || parent.mode & 0o022) throw fail('ssh');
@@ -203,6 +212,7 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
   async function withConnection(credentials, callback) { if (closed || typeof ssh !== 'function') throw fail('unavailable', 503); return ssh(copy(credentials), callback); }
   function bind(row, value, local) {
     validPlan(value, row.local ? 'panel' : 'worker', row.local ? 'local' : row.agentId);
+    if (value.blockers.some(row => row.code === 'UPDATE_PROTOCOL_REQUIRED')) throw fail('protocol');
     if (value.status !== 'ready') throw fail('busy');
     if (row.local) { if (value.machineId !== local.machineId || value.revision !== local.revision) throw fail('ssh'); }
     else { const credentials = nodes.credentials(nodes.get(row.nodeId)); if (value.machineId === local.machineId || value.tokenHash !== createHash('sha256').update(credentials.token).digest('hex')) throw fail('ssh'); }
@@ -217,7 +227,8 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
       if (input.ssh.username !== 'root') throw fail('ssh', 400);
       const local = await localPlan(), release = await latest();
       const observed = await withConnection(input.ssh, connection => stage(connection, helper => remote(connection, helper, 'plan', base(row)).then(value => bind(row, value, local))));
-      if (compare(release.version, observed.version) < 0 || row.local && compare(release.version, observed.version) === 0) throw fail('stale');
+      if (!row.local && compare(observed.version, UPDATE_PROTOCOL_VERSION) < 0) throw fail('protocol');
+      if (compare(release.version, observed.version) < 0) throw fail('stale');
       checks.set(checkKey(user, row.nodeId), { at: Date.now(), target: { host: input.ssh.host, port: input.ssh.port ?? 22, hostFingerprint: input.ssh.hostFingerprint }, observed, fleetRevision: revisionFor(local, release) });
       return { nodeId: row.nodeId, authenticated: true, hostFingerprint: input.ssh.hostFingerprint, version: observed.version, machineId: observed.machineId, serverCount: observed.serverCount, status: observed.status, blockers: observed.blockers };
     } finally { clear(input.ssh); }
@@ -245,10 +256,11 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
     }
   }
   async function execute(job, credentials) {
-    const prepared = new Set(); let dispatched, preparing;
+    const prepared = new Set(); let dispatched, preparing, verifyingCurrentMain = false;
     try {
       for (const row of job.nodes) {
         if (closed) throw fail('busy');
+        if (row.local && row.observed.version === job.version) { change(job, {}, row.nodeId, { alreadyCurrent: true }); continue; }
         change(job, { status: 'running', phase: 'preparing', ...present('preparing') }, row.nodeId, { status: 'preparing', progress: 10 });
         const request = requestFor(row, job);
         if (!row.local && row.observed.version === job.version) {
@@ -288,13 +300,22 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
         change(job, { progress: 30 + Math.floor(55 * (job.nodes.filter(value => !value.local && value.proof).length + 1) / Math.max(1, job.nodes.length - 1)), ...present('verified') }, row.nodeId, { status: 'completed', progress: 100, proof });
       }
       if (closed) throw fail('busy');
-      const main = job.nodes.find(row => row.local); dispatched = main.nodeId;
+      const main = job.nodes.find(row => row.local);
+      if (main.alreadyCurrent) {
+        verifyingCurrentMain = true;
+        change(job, { phase: 'verifying', progress: 95, ...present('verifying_main') }, main.nodeId, { status: 'running', progress: 85 });
+        const proof = await withConnection(credentials.get(main.nodeId), connection => stage(connection, helper => remote(connection, helper, 'attest', requestFor(main, job))));
+        if (closed || !validProof(proof, main, job)) throw fail('native', 502, { outcomeUnknown: true });
+        change(job, { status: 'completed', phase: 'completed', progress: 100, verified: true, outcomeUnknown: false, finishedAt: now(), ...present('completed') }, main.nodeId, { status: 'completed', proof, progress: 100 });
+        releaseLock?.(); releaseLock = undefined; return;
+      }
+      dispatched = main.nodeId;
       change(job, { phase: 'handoff', progress: 90, handoff: true, ...present('handoff') }, main.nodeId, { status: 'scheduled', progress: 50 });
       await invoke('launch', { ...base(main), requestId: job.requestId });
       // The detached native helper survives this controller's service restart.
       // Only a fresh process inspecting its completed receipt may report green.
     } catch (error) {
-      let unknown = Boolean(dispatched || error.outcomeUnknown);
+      let unknown = Boolean(dispatched || verifyingCurrentMain || error.outcomeUnknown);
       if (preparing) {
         const row = job.nodes.find(value => value.nodeId === preparing);
         try {
@@ -319,13 +340,16 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
     admission = true; const credentials = new Map(); let lock;
     try {
       const local = await localPlan(), release = await latest(true), rows = members();
-      if (local.status !== 'ready' || compare(release.version, local.version) <= 0 || release.version !== input.version || revisionFor(local, release) !== input.revision || input.connections.length !== rows.length) throw fail('stale');
+      if (local.status !== 'ready' || compare(release.version, local.version) < 0 || release.version !== input.version || revisionFor(local, release) !== input.revision || input.connections.length !== rows.length) throw fail('stale');
       for (const value of input.connections) {
         strict(value, ['nodeId', 'ssh']); strict(value.ssh, ['host', 'port', 'username', 'password', 'privateKey', 'passphrase', 'hostFingerprint']);
         const row = rows.find(row => row.nodeId === value.nodeId), check = checks.get(checkKey(user, value.nodeId));
         if (!row || credentials.has(value.nodeId) || !check || Date.now() - check.at > 10 * 60 * 1000 || check.fleetRevision !== input.revision || value.ssh.username !== 'root' || digest({ host: value.ssh.host, port: value.ssh.port ?? 22, hostFingerprint: value.ssh.hostFingerprint }) !== digest(check.target)) throw fail('ssh');
         row.observed = copy(check.observed); row.sshTarget = copy(check.target); credentials.set(row.nodeId, copy(value.ssh));
+        if (!row.local && compare(row.observed.version, UPDATE_PROTOCOL_VERSION) < 0) throw fail('protocol');
+        if (compare(release.version, row.observed.version) < 0) throw fail('stale');
       }
+      if (!rows.some(row => compare(release.version, row.observed.version) > 0)) throw fail('stale');
       lock = (nodes.beginFleetUpdate || nodes.beginFleetRemoval)?.call(nodes, { action: 'update', requestId: input.requestId }) || manager.beginMaintenance({ action: 'update', requestId: input.requestId });
       const job = { id: input.requestId, requestId: input.requestId, type: 'panel-update', scope: 'host', adminOnly: true, serverId: null, panelName: currentName(), revision: input.revision, version: release.version, release: copy(release), status: 'queued', phase: 'queued', progress: 0, verified: false, createdAt: now(), updatedAt: now(), nodes: rows.map(row => ({ ...row, status: 'queued', progress: 0 })), ...present('queued') };
       store.data.panelUpdateJobs.unshift(job);

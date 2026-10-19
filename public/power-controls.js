@@ -4,10 +4,11 @@ const text=(en,vi)=>wireText(en,{en,vi});
 const escape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const pending=new Map(),observing=new WeakMap();
 let panelVersion=null,pendingGeneration=0;
+const frontendVersion=typeof document==='undefined'?null:document.querySelector?.('meta[name="vortex-frontend-version"]')?.content;
 export function resetPowerClientState(){pendingGeneration++;pending.clear();}
 function releasePending(nodeId,request){if(pending.get(nodeId)?.requestId===request?.requestId)pending.delete(nodeId);}
 
-export function panelVersionLabel(value=panelVersion){return typeof value==='string'&&/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value)?`v${value}`:text('Version unavailable','Chưa rõ phiên bản');}
+export function panelVersionLabel(value=frontendVersion||panelVersion){return typeof value==='string'&&/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value)?`v${value}`:text('Version unavailable','Chưa rõ phiên bản');}
 export function syncPanelVersion(root=document){for(const element of root.querySelectorAll('[data-panel-version]'))uiText(element,panelVersionLabel());}
 export async function refreshPanelVersion(fetcher=fetch,root=document){
  try{const response=await fetcher('/healthz',{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(12000)});if(!response.ok)throw Error();const result=await response.json();panelVersion=typeof result.version==='string'?result.version:null;}catch{panelVersion=null;}

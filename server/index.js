@@ -29,11 +29,13 @@ import { createHostnameController, hostnameErrorPayload } from './hostname.js';
 import { createHostTimezoneController, timezoneErrorPayload } from './host-timezone.js';
 import { createHostNetworkTuningController, networkTuningErrorPayload } from './host-network-tuning.js';
 import { createHostTLSController, tlsErrorPayload } from './host-tls.js';
+import { createFrontendRelease } from './frontend-release.js';
 import { playerListErrorPayload } from './player-lists.js';
 import { localeMiddleware, requestLanguage, localizeWebSocketEvent, formatPanelMessage, translatePanelMessage } from './locale.js';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageVersion = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')).version;
+const frontendRelease = createFrontendRelease({ publicDir: path.join(projectDir, 'public'), version: packageVersion });
 export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, panelRemovalControllerFactory = createPanelRemovalController, panelUpdateControllerFactory = createPanelUpdateController, hostnameController, powerController, zramController, timezoneController, networkController, tlsController } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const releaseLock = acquireDataLock(dataDir);
@@ -142,7 +144,14 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
   app.use('/api', createRemoteServerProxy(nodes));
   app.use('/api', createRouter(manager, { dataDir, store, timezoneController: systemTimezone }));
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API không tồn tại.' }));
-  app.get('/healthz', (_req, res) => res.status(closing ? 503 : 200).set('Cache-Control', 'no-store').json({ ok: !closing, service: 'vortex-panel', version: packageVersion, processId: process.pid, instanceId: powerInfo.instanceId, maintenance: manager.maintenanceStatus?.() || null }));
+  app.get('/healthz', (_req, res) => res.status(closing ? 503 : 200).set('Cache-Control', 'no-store').json({ ok: !closing, service: 'vortex-panel', version: packageVersion, frontendBuild: frontendRelease.buildId, processId: process.pid, instanceId: powerInfo.instanceId, maintenance: manager.maintenanceStatus?.() || null }));
+  app.get(['/', '/index.html'], (_req, res) => res.set('Cache-Control', 'no-store').type('html').send(frontendRelease.html));
+  app.get('/_vortex/frontend/:build/*asset', (req, res) => {
+    const name = Array.isArray(req.params.asset) ? req.params.asset.join('/') : req.params.asset;
+    const asset = frontendRelease.asset(req.params.build, name);
+    if (!asset) return res.status(404).set('Cache-Control', 'no-store').end();
+    res.set({ 'Content-Type': asset.contentType, 'Cache-Control': asset.cacheControl, ETag: asset.etag }).send(asset.body);
+  });
   app.use(express.static(path.join(projectDir, 'public'), { maxAge: 0, dotfiles: 'deny', index: 'index.html', setHeaders(res, filename) {
     if (filename.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
     else if (/\.(?:js|css)$/.test(filename)) res.setHeader('Cache-Control', 'no-cache, must-revalidate');

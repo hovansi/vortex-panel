@@ -63,7 +63,7 @@ export function syncSchedules(root,data,context){
 }
 
 export function bindScheduleForm(form){
-  const action=form.elements.action,input=form.elements.command,label=form.querySelector('label[for="f-command"]');
+  const action=form.elements.namedItem('action'),input=form.elements.namedItem('command'),label=input?.labels?.[0];
   if(!action||!input||!label)return;
   const hint=form.ownerDocument.createElement('small');hint.id='schedule-command-help';input.closest('.field').append(hint);input.setAttribute('aria-describedby',hint.id);input.maxLength=2048;
   function sync(){

@@ -31,7 +31,11 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/re
 
 The installer detects the existing main panel, preserves accounts/data and upgrades the managed source/service. It has a wider scope than the source-only updater: it may install prerequisites and prepare optional owned host features. Review [installation options](INSTALL.md), including `--self-signed` and `--no-network-tuning`. Do not delete the data directory or create a replacement Admin.
 
+Reload an existing browser tab after the installer finishes. Older tabs retain their JavaScript even when their live backend-version badge changes. From 0.22.2, each page identifies its frontend build and loads one immutable module graph; a backend change shows an explicit reload notice. Reloading never happens automatically while a draft or operation is open. The Settings version badge identifies the loaded interface, so it cannot claim that old code has already become the new UI.
+
 A linked worker uses the separate [worker installer](NODE-AGENT.md); do not run the main panel installer on it. Upgrade incompatible older workers during maintenance before the main panel, preserving their agent ID, token, configuration and TLS pin.
+
+Installing on the main VPS does not implicitly replace a remote worker. Review each worker version in the update plan. A 0.19.x worker cannot retain a backup/restart pre-command; newer panels reject that unsupported request before forwarding instead of silently losing the text. After the worker is upgraded, enter the original command again if the older agent already discarded it. A command that was never stored cannot be reconstructed from an empty field.
 
 ## What the update changes
 
@@ -45,9 +49,9 @@ The release is restricted to the public [hovansi/vortex-panel](https://github.co
 
 Source/dependencies are prepared on the listed VPS before activation. A root-private durable intent then freezes new mutations and schedules. Immediately before stopping a service, its running API must acknowledge that exact update UUID; stale/legacy code cannot silently bypass the freeze.
 
-Linked workers activate sequentially before the main panel. Each worker must pass source, authenticated service, configuration and data-identity checks through a fresh pinned SSH connection. An already-current worker is attested against the approved official source and kept on that version. A newer worker is never downgraded.
+Linked workers activate sequentially before the main panel. Each worker must pass source, authenticated service, configuration and data-identity checks through a fresh pinned SSH connection. An already-current worker is attested against the approved official source and kept on that version. A newer worker is never downgraded. If the main panel is already current but compatible workers are behind, the plan offers a worker update: workers activate first, then a fresh pinned SSH connection attests the unchanged main panel without preparing or restarting it. Older workers that lack update admission remain blocked with one-time worker-installer guidance.
 
-Only after every worker is verified does a detached native task restart the main panel. Browser/API connections can briefly disappear, and the in-memory login session may require signing in again. Reopen the task from Settings or Notifications. Read-only checks inspect the original UUID; losing a response never causes automatic replay. A progress percentage or closed connection alone is not completion proof.
+When the main source needs updating, only after every worker is verified does a detached native task restart the main panel. Browser/API connections can briefly disappear, and the in-memory login session may require signing in again. Reopen the task from Settings or Notifications. Read-only checks inspect the original UUID; losing a response never causes automatic replay. A progress percentage or closed connection alone is not completion proof.
 
 | Outcome | Meaning |
 | --- | --- |
@@ -87,3 +91,5 @@ sudo /usr/bin/python3 -I -B /opt/vortex-node/updates/REQUEST_UUID/helper.py veri
 For the main panel use its directory, `--role panel` and `--node-id local`. A known rollback has a separate `verify-rollback` action. These inspection commands do not activate a release. An already-current attested worker has no new native update workspace; its proof is in the central task instead.
 
 Private npm staging caches are cleaned after dependency preparation when their ownership/mount checks permit it. Successful independently verified updates retain the three newest full metadata/archive recovery snapshots; older verified requests keep their compact receipts. Unknown and unsuccessful recovery material is preserved for review. Source releases are retained for rollback. Investigate any retention warning rather than removing unfamiliar paths or deleting snapshots still needed for recovery.
+
+Worker-only catch-up does not create a new main request workspace. Its final main proof attests `/opt/vortex-panel/current`; the central job retains that evidence and the original request UUID.
