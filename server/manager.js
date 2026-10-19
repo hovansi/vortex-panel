@@ -123,6 +123,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const storagePaused = new Set(), deferredLogs = new Map();
   let lastHost = null, metricsSampledAt = null, storageControl = await storageController.capabilities();
   let collectingMetrics = null;
+  const processMetricSamples = new Set();
   const capacityGate = createCapacityGate({ readHost: async () => {
     await applicationRuntime.assertNoPendingBuilds?.();
     const host = await capacityHostInfo();
@@ -162,6 +163,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   let initialized = false;
   let scheduler;
   let metricsTimer;
+  let processMetricsTimer;
   let releaseTimer;
   let scheduleBusy = false;
   let lastLogMaintenance = 0;
@@ -621,7 +623,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       launched = plan ? resourceHandle.spawnWithArgs(plan.executable, plan.args, plan.options, plan.execution) : resourceHandle.spawn(executable, { cwd: workingDirectory, env: { ...process.env, LD_LIBRARY_PATH: workingDirectory }, stdio: ['pipe', 'pipe', 'pipe'], detached: false });
     } catch (error) { await resourceHandle?.cleanup().catch(() => {}); server.status = 'error'; server.error = error.message; log(server, `${isApp(server) ? 'Cannot start application' : 'Không thể chạy Bedrock'}: ${error.message}`, 'error'); persistRuntime(server); throw error; }
     const { child, ready } = launched;
-    const runtime = { child, resourceHandle, resourceUsage: null, startedAt: Date.now(), expected: false, online: new Map(), connections: new Map(), instanceId: randomUUID(), worldName: properties['level-name'] || 'Bedrock level', startupProperties: { ...properties }, gameRules: new Map(), previousTicks: 0, previousTime: performance.now(), ready: false, close: null };
+    const runtime = { child, resourceHandle, resourceUsage: null, startedAt: Date.now(), expected: false, online: new Map(), connections: new Map(), instanceId: randomUUID(), worldName: properties['level-name'] || 'Bedrock level', startupProperties: { ...properties }, gameRules: new Map(), previousTicks: null, previousTime: performance.now(), ready: false, close: null };
     runtime.consoleRunId = consoleRun(server);
     runtime.startupPacks = startupPacks;
     runtime.rulesRefresh = createGameRuleRefresh();
@@ -1500,42 +1502,86 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     });
   }
 
-  async function collectMetricsOnce() {
-    metricsSampledAt = now();
-    if (Date.now() - lastLogMaintenance >= 60000) { lastLogMaintenance = Date.now(); await Promise.allSettled([...logWriters].filter(([id]) => !storagePaused.has(id)).map(([, value]) => value.maintain())); }
-    for (const [id, runtime] of processes) {
-      const server = get(id);
-      try {
-        const stat = await fs.readFile(`/proc/${runtime.child.pid}/stat`, 'utf8');
-        const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
-        const ticks = Number(fields[11]) + Number(fields[12]);
-        const measuredAt = performance.now(), elapsed = measuredAt - runtime.previousTime;
-        runtime.cpuUsedCores = runtime.previousTicks && elapsed > 0 ? Math.max(0, (ticks - runtime.previousTicks) / clockTicks / (elapsed / 1000)) : null;
-        server.cpuPercent = runtime.cpuUsedCores == null ? 0 : Math.round(runtime.cpuUsedCores * 1000) / 10;
-        const status = await fs.readFile(`/proc/${runtime.child.pid}/status`, 'utf8');
-        const rss = status.match(/VmRSS:\s+(\d+)/)?.[1];
-        runtime.memoryBytes = rss === undefined ? null : Number(rss) * 1024;
-        server.memoryMB = runtime.memoryBytes === null ? 0 : Math.round(runtime.memoryBytes / 1024 ** 2);
-        runtime.previousTicks = ticks; runtime.previousTime = measuredAt;
-        runtime.sampledAt = now();
-      } catch { runtime.cpuUsedCores = null; runtime.memoryBytes = null; runtime.sampledAt = null; }
-      try {
-        runtime.resourceUsage = await runtime.resourceHandle.stats();
-        const usage = runtime.resourceUsage, sampled = performance.now();
-        if (usage && Number.isFinite(usage.cpuUsageUsec)) {
-          const elapsed = sampled - (runtime.previousResourceTime ?? sampled);
-          runtime.cpuUsedCores = runtime.previousResourceCPU != null && elapsed > 0 && usage.cpuUsageUsec >= runtime.previousResourceCPU ? (usage.cpuUsageUsec - runtime.previousResourceCPU) / (elapsed * 1000) : null;
-          runtime.previousResourceCPU = usage.cpuUsageUsec; runtime.previousResourceTime = sampled; runtime.cpuScope = 'cgroup';
-          server.cpuPercent = runtime.cpuUsedCores === null ? 0 : Math.round(runtime.cpuUsedCores * 1000) / 10;
-        } else runtime.cpuScope = 'process';
-        if (isApp(server)) {
-          // The direct child is Bubblewrap's supervisor. Its idle CPU/RSS
-          // cannot stand in for the application and all its descendants.
-          if (!usage || !Number.isFinite(usage.cpuUsageUsec) || !Number.isFinite(usage.memoryCurrentBytes)) throw new Error('Application cgroup usage is unavailable.');
-          runtime.sampledAt = now(); runtime.memoryBytes = usage.memoryCurrentBytes;
-        }
-      } catch (error) { runtime.resourceUsage = null; runtime.resourceStatsError = error.message; runtime.cpuScope = isApp(server) ? 'unavailable' : 'process'; if (isApp(server)) { runtime.cpuUsedCores = null; runtime.memoryBytes = null; runtime.sampledAt = null; } }
+  function recordServerMetrics(server) {
+    const samples = serverMetrics.get(server.id) || [], value = telemetry(server);
+    samples.push({ time: now(), cpu: processes.has(server.id) ? value.cpu.usedPercent : 0, memoryMB: processes.has(server.id) ? value.memory.usedBytes === null ? null : value.memory.usedBytes / 1024 ** 2 : 0, players: server.players || 0, status: server.status, telemetry: value });
+    if (samples.length > 120) samples.splice(0, samples.length - 120);
+    serverMetrics.set(server.id, samples);
+  }
+  async function sampleProcessMetrics(server, runtime) {
+    // A stopped child can finish an old /proc or cgroup read after its
+    // replacement has started. Publish only for the launch which began it.
+    const current = () => !closed && runtimeCurrent(server, runtime) && !runtime.expected && runtime.child.exitCode == null && runtime.child.signalCode == null;
+    if (!current()) return;
+    let processSample = null;
+    if (!isApp(server)) try {
+      const stat = await fs.readFile(`/proc/${runtime.child.pid}/stat`, 'utf8');
+      if (!current()) return;
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/), ticks = Number(fields[11]) + Number(fields[12]);
+      const measuredAt = performance.now();
+      const status = await fs.readFile(`/proc/${runtime.child.pid}/status`, 'utf8');
+      if (!current()) return;
+      const rss = status.match(/VmRSS:\s+(\d+)/)?.[1];
+      if (Number.isFinite(ticks) && ticks >= 0) processSample = { ticks, measuredAt, memoryBytes: rss === undefined ? null : Number(rss) * 1024, sampledAt: now() };
+    } catch { if (!current()) return; }
+    let usage = null, resourceError = null;
+    try { usage = await runtime.resourceHandle.stats(); }
+    catch (error) { resourceError = error.message; }
+    if (!current()) return;
+    const sampled = performance.now(), resourceSampledAt = now();
+    const validCPU = usage && Number.isFinite(usage.cpuUsageUsec) && usage.cpuUsageUsec >= 0;
+    const validMemory = usage && Number.isFinite(usage.memoryCurrentBytes) && usage.memoryCurrentBytes >= 0;
+    const next = { resourceUsage: usage, resourceStatsError: resourceError, cpuUsedCores: null, memoryBytes: null, sampledAt: null, cpuScope: 'process' };
+    if (processSample) {
+      const elapsed = processSample.measuredAt - runtime.previousTime;
+      next.cpuUsedCores = runtime.previousTicks != null && elapsed > 0 && processSample.ticks >= runtime.previousTicks ? (processSample.ticks - runtime.previousTicks) / clockTicks / (elapsed / 1000) : null;
+      next.previousTicks = processSample.ticks; next.previousTime = processSample.measuredAt;
+      next.memoryBytes = processSample.memoryBytes; next.sampledAt = processSample.sampledAt;
     }
+    if (validCPU) {
+      const elapsed = sampled - (runtime.previousResourceTime ?? sampled);
+      next.cpuUsedCores = runtime.previousResourceCPU != null && elapsed > 0 && usage.cpuUsageUsec >= runtime.previousResourceCPU ? (usage.cpuUsageUsec - runtime.previousResourceCPU) / (elapsed * 1000) : null;
+      next.previousResourceCPU = usage.cpuUsageUsec; next.previousResourceTime = sampled; next.cpuScope = 'cgroup';
+    }
+    if (validMemory) next.memoryBytes = usage.memoryCurrentBytes;
+    if (validCPU && validMemory) next.sampledAt = resourceSampledAt;
+    if (isApp(server) && (!validCPU || !validMemory)) {
+      // Bubblewrap's supervisor is not the workload. Missing cgroup counters
+      // stay unknown instead of falling back to its almost-idle CPU/RSS.
+      Object.assign(next, { resourceUsage: null, resourceStatsError: resourceError || 'Application cgroup usage is unavailable.', cpuUsedCores: null, memoryBytes: null, sampledAt: null, cpuScope: 'unavailable' });
+    }
+    Object.assign(runtime, next);
+    server.cpuPercent = runtime.cpuUsedCores == null ? 0 : Math.round(runtime.cpuUsedCores * 1000) / 10;
+    server.memoryMB = runtime.memoryBytes === null ? 0 : Math.round(runtime.memoryBytes / 1024 ** 2);
+    recordServerMetrics(server);
+  }
+  function collectProcessMetrics({ waitForPending = true } = {}) {
+    if (closed) return Promise.resolve();
+    metricsSampledAt = now();
+    const pending = [], started = [];
+    for (const server of store.data.servers) {
+      const runtime = processes.get(server.id);
+      if (!runtime) { recordServerMetrics(server); continue; }
+      if (!runtime.metricsFlight) {
+        const sample = sampleProcessMetrics(server, runtime).finally(() => { if (runtime.metricsFlight === sample) runtime.metricsFlight = null; processMetricSamples.delete(sample); });
+        runtime.metricsFlight = sample; processMetricSamples.add(sample); started.push(sample);
+      }
+      if (waitForPending) pending.push(runtime.metricsFlight);
+    }
+    // The heartbeat never queues another read on a busy launch. A slow scope
+    // also cannot prevent fresh samples for other launches on the next tick.
+    const completion = Promise.allSettled(waitForPending ? pending : started);
+    if (!waitForPending) completion.then(() => { if (!closed) emit({ type: 'update' }); });
+    return completion;
+  }
+  async function collectMetricsOnce() {
+    // Only seed the initial sample here. Auxiliary work has its own completion
+    // clock; resampling here afterwards would create very short CPU intervals
+    // whenever its timer drifts a little from the five-second heartbeat.
+    if (metricsSampledAt === null) await collectProcessMetrics();
+    if (closed) return;
+    if (Date.now() - lastLogMaintenance >= 60000) { lastLogMaintenance = Date.now(); await Promise.allSettled([...logWriters].filter(([id]) => !storagePaused.has(id)).map(([, value]) => value.maintain())); }
+    if (closed) return;
     {
       await networkMetrics.syncServers([...processes.keys()].map(id => get(id))).catch(() => {});
       await networkMetrics.sample().catch(() => {});
@@ -1545,18 +1591,13 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         catch (error) { storageMetrics.set(server.id, { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: storagePolicy(server).diskGiB === null ? null : storagePolicy(server).diskGiB * GIB, hardEnforced: false, sampledAt: now(), reason: error.message }); }
       }));
     }
-    for (const server of store.data.servers) {
-      const samples = serverMetrics.get(server.id) || [];
-      samples.push({ time: now(), cpu: processes.has(server.id) ? telemetry(server).cpu.usedPercent : 0, memoryMB: processes.has(server.id) ? telemetry(server).memory.usedBytes === null ? null : telemetry(server).memory.usedBytes / 1024 ** 2 : 0, players: server.players || 0, status: server.status, telemetry: telemetry(server) });
-      if (samples.length > 120) samples.splice(0, samples.length - 120);
-      serverMetrics.set(server.id, samples);
-    }
+    if (closed) return;
     try {
       const host = await hostInfo();
       history.push({ time: now(), cpu: host.cpuPercent, memory: host.memoryTotal ? Math.round(host.memoryUsed / host.memoryTotal * 1000) / 10 : 0 });
       if (history.length > 60) history.shift();
     } catch {}
-    emit({ type: 'update' });
+    if (!closed) emit({ type: 'update' });
   }
   function collectMetrics() {
     if (collectingMetrics) return collectingMetrics;
@@ -1713,7 +1754,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         releaseTimer = setInterval(() => versionService.refresh().catch(() => {}), 6 * 60 * 60 * 1000); releaseTimer.unref();
       }
       for (const server of store.data.servers.filter(item => !updatingAtBoot && !item.restoreRecoveryRequired && !item.storageMountError && (item.autoStart || item.resumeOnPanelStart) && !['running', 'starting'].includes(item.status))) manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); });
+      if (closed) return;
+      // Arm CPU/RAM sampling before awaiting disk/network maintenance. Those
+      // operations can take longer than the freshness window on a busy VPS.
+      processMetricsTimer = setInterval(() => { void collectProcessMetrics({ waitForPending: false }); }, 5000); processMetricsTimer.unref();
       await collectMetrics();
+      if (closed) return;
       metricsTimer = setInterval(() => collectMetrics().catch(() => {}), 5000); metricsTimer.unref();
       scheduler = setInterval(() => tickSchedules().catch(() => {}), 15000); scheduler.unref();
     },
@@ -2123,8 +2169,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       }
       let persistenceError;
       try { persist(); } catch (error) { persistenceError = error; }
-      clearInterval(scheduler); clearInterval(metricsTimer); clearInterval(releaseTimer);
-      await collectingMetrics?.catch(() => {});
+      clearInterval(scheduler); clearInterval(metricsTimer); clearInterval(processMetricsTimer); clearInterval(releaseTimer);
+      await Promise.allSettled([collectingMetrics, ...processMetricSamples].filter(Boolean));
       await capacityGate.close();
       versionService.close();
       for (const timer of restartTimers.values()) clearTimeout(timer); restartTimers.clear();
