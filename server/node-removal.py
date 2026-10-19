@@ -22,6 +22,7 @@ import time
 sys.dont_write_bytecode = True
 
 UUID = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.I)
+NETWORK_KEYS = ('net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_congestion_control', 'net.core.default_qdisc')
 UNIT = 'vortex-node.service'
 WORK_BASE = '/var/lib/vortex-node-removal'
 LOCK = '/run/vortex-os-maintenance.lock'
@@ -206,6 +207,80 @@ class Host:
             return module.cleanup_owned(role='worker', node_id=self.node_id, service_id=UNIT, lock_held=True)
         return module.inspect_owned(role='worker', node_id=self.node_id, service_id=UNIT)
 
+    def maintenance_module(self, filename, expected_sha=None):
+        raw = self.read(filename, 2 * 1024 ** 2)
+        require(expected_sha is None or hashlib.sha256(raw).hexdigest() == expected_sha, 'The owned host-maintenance helper changed.')
+        spec = importlib.util.spec_from_file_location('vortex_worker_host_maintenance', filename)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        require(all(hasattr(module.Host, name) for name in ['network_profile', 'host_timezone', 'cleanup_network_profile', 'cleanup_timezone']), 'Update this worker before uninstalling its managed host settings.')
+        host = module.Host(root=self.root, run=self.run, enforce_owner=self.enforce_owner)
+        host.role, host.node_id, host.unit = 'worker', self.node_id, UNIT
+        host.install, host.data, host.config_root = self.install, self.data, self.tls
+        return host
+
+    def host_maintenance(self, release):
+        profile = self.path('/etc/sysctl.d/70-vortex-node-network.conf')
+        if not any(os.path.lexists(path) for path in [profile, self.tls / 'network-tuning.json', self.data / 'timezone-operations.json']):
+            return None
+        reference = release / 'server/fleet-removal.py'
+        ownership_file = self.tls / 'install-ledger.json'
+        ownership = self.load(ownership_file, 48 * 1024 ** 2, private=True)
+        machine = self.read(self.path('/etc/machine-id'), 128).decode().strip()
+        require(ownership.get('schemaVersion') == 1 and ownership.get('product') == 'vortex-node' and ownership.get('role') == 'worker' and ownership.get('nodeId') == self.node_id
+                and re.fullmatch('[a-f0-9]{32}', machine) and ownership.get('machineId') == machine and UUID.fullmatch(str(ownership.get('installId', '')))
+                and isinstance(ownership.get('components'), list) and len(ownership['components']) <= 150000, 'Managed host restoration needs this worker installation receipt.')
+        references = [reference]
+        if os.path.lexists(profile) or os.path.lexists(self.tls / 'network-tuning.json'):
+            references.append(release / 'server/host-network-tuning.py')
+        for filename in references:
+            actual = self.stamp(filename)
+            require(any(row.get('path') == str(filename) and row.get('existedBefore') is False and row.get('createdByInstallId') == ownership['installId']
+                        and all(row.get(key) == value for key, value in actual.items()) for row in ownership['components']), 'An unproven or changed host-maintenance helper was preserved without execution.')
+        host = self.maintenance_module(reference)
+        host.release = release
+        network, timezone = host.network_profile(), host.host_timezone()
+        return {'referenceSHA256': hashlib.sha256(self.read(reference, 2 * 1024 ** 2)).hexdigest(), 'installerReceipt': self.stamp(ownership_file), 'networkProfile': network, 'hostTimezone': timezone}
+
+    def stage_host_maintenance(self, proof, release, work):
+        require(proof.get('installerReceipt', {}).get('path') == str(self.tls / 'install-ledger.json') and self.same(proof['installerReceipt']), 'The host-maintenance installer receipt changed before private staging.')
+        sources = [(release / 'server/fleet-removal.py', work / 'fleet-maintenance.reference.py', proof['referenceSHA256'])]
+        if proof.get('networkProfile'):
+            sources.append((release / 'server/host-network-tuning.py', work / 'host-network-tuning.reference.py', proof['networkProfile']['referenceSHA256']))
+        for source, target, expected in sources:
+            raw = self.read(source, 2 * 1024 ** 2)
+            require(hashlib.sha256(raw).hexdigest() == expected and not os.path.lexists(target), 'A host-maintenance reference changed before private staging.')
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+    def restore_host_maintenance(self, proof, work, result):
+        host = self.maintenance_module(work / 'fleet-maintenance.reference.py', proof['referenceSHA256'])
+        host.cleanup_network_profile(proof, work, result)
+        host.cleanup_timezone(proof, result)
+
+    def verify_host_maintenance(self, proof, result):
+        network, timezone = True, True
+        if proof and proof.get('networkProfile'):
+            restored = result.get('networkProfileRestoration') or {}
+            network = restored.get('outcome') == 'restored' and not os.path.lexists(self.path('/etc/sysctl.d/70-vortex-node-network.conf')) and isinstance(restored.get('values'), dict) and set(restored['values']).issubset(NETWORK_KEYS)
+            if network:
+                try:
+                    network = all(self.read(self.path('/proc/sys/' + key.replace('.', '/')), 4096).decode().strip() == value for key, value in restored['values'].items())
+                except (RemovalError, OSError, UnicodeError):
+                    network = False
+        if proof and proof.get('hostTimezone'):
+            restored = result.get('hostTimezoneRestoration') or {}
+            timezone = restored.get('outcome') in ['restored', 'preserved-external']
+            if timezone and restored['outcome'] == 'restored':
+                try:
+                    timezone = self.run(['/usr/bin/timedatectl', 'show', '--property=Timezone', '--value']) == proof['hostTimezone']['original']
+                except (RemovalError, OSError, subprocess.SubprocessError):
+                    timezone = False
+        return bool(network), bool(timezone)
+
     def plan(self, node_id):
         require(UUID.fullmatch(node_id or ''), 'Invalid worker identity.')
         self.node_id = node_id
@@ -253,6 +328,13 @@ class Host:
             block('REMOVAL_PROCESSES', 'Other processes still use the worker source or data.')
         if self.mounts() or self.loops():
             block('REMOVAL_MOUNTS', 'A storage mount remains inside the worker paths; it was preserved.')
+        maintenance = None
+        try:
+            maintenance = self.host_maintenance(release)
+        except Exception:
+            message = 'Managed host settings cannot be verified for restoration. Update this worker or review its network profile and timezone journal before uninstalling.'
+            block('REMOVAL_HOST_SETTINGS', message)
+            blockers[-1]['messageI18n'] = {'id': 'panel.node-removal.host-settings', 'en': message, 'vi': 'Chưa xác minh được việc khôi phục thiết lập hệ thống. Cập nhật VPS phụ hoặc kiểm tra cấu hình mạng và nhật ký múi giờ trước khi gỡ.', 'params': []}
         for folder in [self.data / 'servers', self.data / '.storage']:
             if folder.exists():
                 self.safe(folder)
@@ -268,6 +350,12 @@ class Host:
                 components.append({'kind': row['kind'], 'path': str(filename), 'action': 'remove', 'reason': reason})
         for filename in [self.unit, self.config, self.tls / 'tls.crt', self.tls / 'tls.key', current, self.data / 'panel.json']:
             add(filename, 'Verified worker service, identity, connection or empty inventory.')
+        if maintenance:
+            if maintenance.get('networkProfile'):
+                add(self.tls / 'network-tuning.json', 'Owned network profile state; removed only after restoring unchanged Vortex-applied values.')
+                components.append({'kind': 'network-profile', 'path': str(self.path('/etc/sysctl.d/70-vortex-node-network.conf')), 'action': 'restore', 'reason': 'Restore only unchanged Vortex-applied values; preserve later administrator settings.'})
+            if maintenance.get('hostTimezone'):
+                add(self.data / 'timezone-operations.json', 'Verified role-bound timezone journal; original zone restored only if the last completed Vortex choice is still active.')
         if drop_paths:
             add(drop_in, 'Exact Vortex graceful-shutdown service override.')
         firewall = self.firewall_rules()
@@ -320,6 +408,8 @@ class Host:
             block('REMOVAL_ZRAM_BUSY', zram.get('reason') or 'Owned compressed swap cannot be safely deactivated with current memory headroom.')
         boot = self.read(self.path('/proc/sys/kernel/random/boot_id'), 100).decode().strip()
         identity = {'agentId': node_id, 'fingerprint': fingerprint, 'pid': pid, 'bootId': boot, 'release': str(release), 'data': self.stamp(self.data), 'entries': list(entries.values()), 'firewall': firewall, 'networkTable': network_table, 'ownedZram': zram.get('owned') is True, 'nodeBinary': start_args[0]}
+        if maintenance:
+            identity['hostMaintenance'] = maintenance
         return {'schemaVersion': 1, 'agentId': node_id, 'revision': digest(identity), 'status': 'blocked' if blockers else 'ready', 'serverCount': len(store['servers']), 'blockers': blockers, 'components': components, 'sshRequired': True, 'legacyOwnership': legacy, 'fullyClean': False, 'fingerprint': fingerprint, 'processId': pid, 'bootId': boot, '_identity': identity}
 
     @contextlib.contextmanager
@@ -377,6 +467,9 @@ class Host:
                 result['plan'] = plan
                 result['retained'] = [row for row in plan['components'] if row['action'] == 'retain']
                 self.save(result_path, result)
+                maintenance = plan['_identity'].get('hostMaintenance')
+                if maintenance:
+                    self.stage_host_maintenance(maintenance, pathlib.Path(plan['_identity']['release']), work)
                 if self.zram().get('owned'):
                     result['effectStarted'] = True
                     self.save(result_path, result)
@@ -388,6 +481,18 @@ class Host:
                 self.run(['systemctl', 'stop', UNIT], timeout=270)
                 require(self.property('ActiveState') not in ['active', 'activating', 'deactivating'] and self.property('MainPID') in ['0', ''], 'The managed worker has not stopped.')
                 require(not self.processes() and not self.mounts() and not self.loops(), 'Processes or mounts remain; source/data were preserved.')
+                if maintenance:
+                    result['phase'] = 'host-maintenance'
+                    self.save(result_path, result)
+                    self.restore_host_maintenance(maintenance, work, result)
+                    if maintenance.get('networkProfile'):
+                        # Restoring the durable profile atomically updates its
+                        # own state file. Only this verified fixed state may
+                        # replace its preview stamp before erasure.
+                        for row in plan['_identity']['entries']:
+                            if row['path'] == str(self.tls / 'network-tuning.json'):
+                                row.update(self.stamp(row['path']))
+                    self.save(result_path, result)
                 if self.network_table():
                     program = 'import {pathToFileURL} from "node:url";const {createNetworkMetrics}=await import(pathToFileURL(process.argv[1]));const c=createNetworkMetrics({dataDir:process.argv[2]});await c.initialize();const r=await c.close();if(r?.cleaned!==true)process.exit(1);'
                     self.run([plan['_identity']['nodeBinary'], '--input-type=module', '-e', program, str(self.install / 'current/server/network-metrics.js'), str(self.data)])
@@ -428,6 +533,11 @@ class Host:
                 require(proof['verified'], 'Independent removal conditions were not satisfied.')
                 result.update(status='completed', phase='complete', finishedAt=time.time())
                 self.save(result_path, result)
+                if maintenance:
+                    for name, expected in [('fleet-maintenance.reference.py', maintenance['referenceSHA256']), ('host-network-tuning.reference.py', (maintenance.get('networkProfile') or {}).get('referenceSHA256'))]:
+                        filename = work / name
+                        if expected and os.path.lexists(filename) and hashlib.sha256(self.read(filename, 2 * 1024 ** 2)).hexdigest() == expected:
+                            filename.unlink()
         except Exception:
             # Never expose command stderr, configuration, credentials or logs.
             result.update(status='partial' if result['effectStarted'] else 'failed', phase='review', finishedAt=time.time(), error='Worker removal stopped; retain this receipt and verify the remaining components before recovery.')
@@ -479,8 +589,10 @@ class Host:
             require(isinstance(tables, list) and len(tables) <= 10000, 'Network-counter verification is unavailable.')
             network_removed = not any(row.get('table', {}).get('family') == 'inet' and row.get('table', {}).get('name') == identity['networkTable'] for row in tables if isinstance(row, dict))
         zram_removed = not identity.get('ownedZram') or not os.path.lexists(self.path('/etc/vortex-zram/owner.json')) and not os.path.lexists(self.path('/etc/systemd/system/vortex-zram.service'))
-        verified = inactive and enabled not in ['enabled', 'enabled-runtime', 'linked', 'linked-runtime'] and not missing and process_free and mount_free and firewall_removed and network_removed and zram_removed
-        return {'schemaVersion': 1, 'requestId': request_id, 'nodeId': node_id, 'verified': verified, 'inventoryEmpty': True, 'serviceRemoved': inactive and not os.path.lexists(self.unit), 'filesVerified': not missing, 'processesAbsent': process_free, 'mountsAbsent': mount_free, 'firewallRemoved': firewall_removed, 'networkCountersRemoved': network_removed, 'zramRemoved': zram_removed, 'remainingOwnedPaths': missing, 'retained': result.get('retained', []), 'outcomeStatus': result.get('status'), 'effectStarted': result.get('effectStarted', False)}
+        network_profile_restored, timezone_restored = self.verify_host_maintenance(identity.get('hostMaintenance'), result)
+        files_verified = not missing and network_profile_restored and timezone_restored
+        verified = inactive and enabled not in ['enabled', 'enabled-runtime', 'linked', 'linked-runtime'] and files_verified and process_free and mount_free and firewall_removed and network_removed and zram_removed
+        return {'schemaVersion': 1, 'requestId': request_id, 'nodeId': node_id, 'verified': verified, 'inventoryEmpty': True, 'serviceRemoved': inactive and not os.path.lexists(self.unit), 'filesVerified': files_verified, 'processesAbsent': process_free, 'mountsAbsent': mount_free, 'firewallRemoved': firewall_removed, 'networkCountersRemoved': network_removed, 'zramRemoved': zram_removed, 'networkProfileRestored': network_profile_restored, 'timezoneRestorationVerified': timezone_restored, 'remainingOwnedPaths': missing, 'retained': result.get('retained', []), 'outcomeStatus': result.get('status'), 'effectStarted': result.get('effectStarted', False)}
 
 
 def main():

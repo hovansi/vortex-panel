@@ -16,9 +16,9 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/re
 
 Installer tải release ổn định mới nhất, kiểm tra checksum/archive, cài dependency và dịch vụ. Bản cài mới tự chuẩn bị HTTPS theo IP công khai; kết thúc sẽ in URL và hướng dẫn tạo Admin bằng setup token riêng. Không có mật khẩu `admin` dùng chung.
 
-HTTPS ban đầu dùng chứng chỉ tự ký: trình duyệt sẽ yêu cầu tin cậy chứng chỉ. Đối chiếu fingerprint được in khi cài trước khi chấp nhận. Muốn chứng chỉ được trình duyệt tin cậy sẵn, cấu hình CA/domain/IP theo [hướng dẫn vận hành](OPERATIONS.md). Installer không tự chấp nhận điều khoản ACME thay bạn.
+HTTPS theo IP tự yêu cầu chứng chỉ công khai từ Let’s Encrypt và cài timer gia hạn. Cần mở TCP 80/443 chiều vào. Thao tác tự động tạo tài khoản ACME riêng không kèm email và chấp nhận thỏa thuận của CA; dùng `--self-signed` nếu muốn giữ chứng chỉ tự ký. Khi cấp chứng chỉ thất bại, HTTPS hiện có được giữ và cảnh báo còn được hiển thị đúng. Xem [quản lý HTTPS](HTTPS.md).
 
-Chứng chỉ tự ký có hạn **365 ngày**, chưa tự gia hạn; cập nhật panel giữ nguyên chứng chỉ hiện có. Thay chứng chỉ trước khi hết hạn, xác minh lại fingerprint/endpoint và cập nhật tin cậy trên trình duyệt nếu chứng chỉ đổi. Với chứng chỉ từ CA, làm theo hướng dẫn vận hành và kiểm tra cơ chế gia hạn thực tế.
+Chứng chỉ IP công khai có hạn **sáu ngày**; Vortex kiểm tra gia hạn mỗi sáu giờ và xác minh chứng chỉ đang phục vụ sau khi NGINX reload. Chứng chỉ tự ký dự phòng có hạn 365 ngày và vẫn cần quyết định tin cậy riêng. Cập nhật source trong panel giữ nguyên cấu hình truy cập. Múi giờ VPS, trạng thái phục hồi sau crash và [cấu hình mạng có thể khôi phục](NETWORK-TUNING.md) có trong phần quản trị; không thay đổi phiên bản runtime đã ghim của server.
 
 Lệnh mặc định bật quyền quản trị host root cho bản cài mới. Ứng dụng Node.js/Python vẫn chạy bằng tài khoản riêng không có quyền root, trong sandbox. Bản nâng cấp giữ chế độ dịch vụ và cấu hình truy cập đã có. Installer dừng khi gặp dịch vụ web không thuộc quyền quản lý hoặc cổng xung đột; firewall nhà cung cấp/NAT cần cho phép truy cập phù hợp. Xem [chi tiết cài đặt, tùy chọn và cập nhật](INSTALL.md).
 

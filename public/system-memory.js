@@ -1,4 +1,5 @@
 import {wireText,uiHTML,uiText,replaceUI,uiAttr,formatUI} from './i18n.js';
+import {formatPanelDate} from './timezone.js';
 import {serviceText as text,serviceEscape as escape,serviceDialogContext,serviceField,clearServiceSecrets,protectServiceSecrets} from './service-ui.js';
 
 const pending=new Map();let generation=0;
@@ -35,7 +36,7 @@ export function memoryDetailsMarkup(value){
   [text('Compression algorithm','Cách nén'),effective.algorithm||'—'],
   ...(summary?[[text('Other swap in use / capacity','Swap ngoài zram đang dùng / tổng'),summary.complete?`${bytes(summary.other?.usedBytes)} / ${bytes(summary.other?.totalBytes)}`:text('Not fully identified','Chưa xác định đầy đủ')]]:[])
  ];
- const stamp=typeof value.observedAt==='string'?new Date(value.observedAt):null,time=stamp&&Number.isFinite(stamp.getTime())?stamp.toLocaleTimeString(undefined,{hour12:false}):'';
+ const stamp=typeof value.observedAt==='string'?new Date(value.observedAt):null,time=stamp&&Number.isFinite(stamp.getTime())?formatUI(stamp,(locale,instant)=>formatPanelDate(instant,locale,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})):'';
  return `<details class="service-details" data-zram-details><summary>${escape(text('Compressed memory details (zram)','Chi tiết bộ nhớ nén (zram)'))}</summary><dl class="service-facts">${details.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v)}</dd></div>`).join('')}</dl><p class="panel-description">${escape(text('Compressed data is only the payload. Physical RAM use also includes allocation overhead. Logical capacity is not extra physical RAM, and occupied swap can differ from stored data.','Dữ liệu đã nén chỉ là phần nội dung. RAM thực dùng còn gồm chi phí cấp phát. Dung lượng logic không phải RAM vật lý cộng thêm; swap đã chiếm có thể khác dữ liệu đang lưu.'))}</p></details>${time?`<p class="memory-observation"><span>${escape(text('Measured','Đo lúc'))}</span> <time datetime="${escape(value.observedAt)}">${escape(time)}</time><span> · ${escape(text('Refresh to update','Tải lại trạng thái để cập nhật'))}</span></p>`:''}`;
 }
 function sync(root,value){

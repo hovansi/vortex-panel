@@ -10,7 +10,7 @@ import { isIdentityPath, IDENTITY_READ_PROTECTION } from './file-privacy.js';
 import { createServerFirewall } from './server-firewall.js';
 import { panelFirewallScope } from './panel-layout.js';
 
-export function createRouter(manager, { dataDir, store } = {}) {
+export function createRouter(manager, { dataDir, store, timezoneController } = {}) {
   const router = express.Router();
   const firewall = dataDir ? createServerFirewall({ scope: panelFirewallScope(dataDir) }) : null;
   router.use((req, res, next) => { req.body ??= {}; next(); });
@@ -66,6 +66,9 @@ export function createRouter(manager, { dataDir, store } = {}) {
   };
   router.get('/dashboard', async (req, res) => {
     const data = await manager.dashboard(); const user = req.session.user; const admin = user.role === 'admin';
+    const systemTimezone = timezoneController?.current?.()?.timezone || null;
+    data.panelTimezone = systemTimezone;
+    if (data.host) data.host = { ...data.host, systemTimezone };
     data.servers = scoped(user, data.servers).map(server => describe(user, server)); data.jobs = scoped(user, data.jobs);
     data.activity = admin ? data.activity : []; if (!admin) { data.host = null; data.history = []; }
     if (Array.isArray(data.nodes) && !admin) data.nodes = data.nodes.filter(node => data.servers.some(server => server.nodeId === node.id)).map(node => ({ id: node.id, name: node.name, publicAddress: node.publicAddress, local: node.local, online: node.online, status: node.status, stale: node.stale, lastSeen: node.lastSeen }));

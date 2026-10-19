@@ -9,6 +9,8 @@ import { buildNodeBundle } from './node-bundle.js';
 import { createHostnameController, changeHostname } from './hostname.js';
 import { sendPowerRequest, validatePowerRequest } from './system-power.js';
 import { sendZramRequest, validateZramRequest } from './host-zram.js';
+import { validateTimezoneRequest, timezoneErrorPayload } from './host-timezone.js';
+import { validateNetworkTuningRequest, networkTuningErrorPayload } from './host-network-tuning.js';
 
 const safeResponseHeaders = ['content-type', 'content-disposition', 'content-length', 'content-encoding', 'etag', 'last-modified'];
 const safeRequestHeaders = ['content-type', 'content-length', 'accept', 'accept-language'];
@@ -35,7 +37,7 @@ export function remoteServerRouteAllowed(method, suffix) {
   return serverRoutes.some(([methods, expression]) => methods.split(',').includes(method === 'HEAD' ? 'GET' : method) && expression.test(suffix));
 }
 
-export function createNodeRouter(nodes, { projectDir, provisioner, removal, store, powerController, zramController, reauthenticateAdmin, hostnameController = createHostnameController() }) {
+export function createNodeRouter(nodes, { projectDir, provisioner, removal, store, powerController, zramController, timezoneController, networkController, reauthenticateAdmin, hostnameController = createHostnameController() }) {
   const router = express.Router();
   router.use(requireAdmin);
   router.get('/', async (_req, res) => res.json({ nodes: await nodes.publicNodes(), limits: nodes.limits }));
@@ -156,6 +158,44 @@ export function createNodeRouter(nodes, { projectDir, provisioner, removal, stor
   };
   router.get('/:id/zram', zramOperation);
   router.post('/:id/zram', zramOperation);
+  // Session, Origin and CSRF are checked by the parent panel before this router.
+  // Forward only these two bounded schemas to the verified agent identity.
+  for (const feature of ['timezone', 'network']) {
+    const controller = feature === 'timezone' ? timezoneController : networkController;
+    const validate = feature === 'timezone' ? validateTimezoneRequest : validateNetworkTuningRequest;
+    const errorPayload = feature === 'timezone' ? timezoneErrorPayload : networkTuningErrorPayload;
+    const operation = async (req, res) => {
+      const mutating = req.method === 'POST';
+      if (mutating) {
+        validate(req.body);
+        if (feature === 'timezone' && req.body.nodeId !== req.params.id) throw Object.assign(new Error('The selected VPS does not match this request.'), { code: 'TIMEZONE_TARGET', status: 409 });
+      }
+      if (req.params.id === 'local') {
+        if (!controller) throw Object.assign(new Error('The local host controller is unavailable.'), { code: feature === 'timezone' ? 'TIMEZONE_UNAVAILABLE' : 'NETWORK_UNAVAILABLE', status: 409 });
+        if (!mutating) return res.json({ nodeId: 'local', [feature]: await controller.read() });
+        const apply = () => controller.request(req.body, { user: req.session.user });
+        const value = feature === 'timezone' ? await nodes.manager.withHostOperation(apply) : await apply();
+        return res.json({ ...value, nodeId: 'local' });
+      }
+      const node = nodes.requireAvailable(req.params.id, { mutating });
+      const finish = mutating ? nodes.beginMutation(node.id) : () => {};
+      const map = value => ({ ...value, nodeId: node.id, ...(value[feature] ? { [feature]: { ...value[feature], nodeId: node.id } } : {}) });
+      try {
+        const body = mutating ? Buffer.from(JSON.stringify({ ...req.body, ...(feature === 'timezone' ? { nodeId: node.agentId } : {}) })) : undefined;
+        const headers = { 'X-Vortex-Actor': nodes.actorHeader(node, req.session.user), 'Accept-Language': req.panelLanguage || 'en',
+          ...(body ? { 'Content-Type': 'application/json', 'Content-Length': String(body.length) } : {}) };
+        const value = await nodes.call(node, { path: '/api/node/' + feature, method: req.method, headers, body, timeoutMs: 45000, maxBytes: 256 * 1024 });
+        return res.json(map(value));
+      } catch (error) {
+        if (error.status === 404) return res.status(409).json({ ...errorPayload({ code: feature === 'timezone' ? 'TIMEZONE_UPGRADE_REQUIRED' : 'NETWORK_UPGRADE_REQUIRED' }, req.panelLanguage), nodeId: node.id });
+        if (error.body) return res.status(error.status).json(map(error.body));
+        if (mutating) throw Object.assign(new Error('The host operation outcome is unknown.'), { code: feature === 'timezone' ? 'TIMEZONE_UNKNOWN' : 'NETWORK_UNKNOWN', status: error.status === 504 ? 504 : 502, outcomeUnknown: true });
+        throw error;
+      } finally { finish(); }
+    };
+    router.get(`/:id/${feature}`, operation);
+    router.post(`/:id/${feature}`, operation);
+  }
   router.get('/:id', async (req, res) => {
     if (req.params.id === 'local') return res.json({ node: (await nodes.publicNodes())[0] });
     res.json({ node: nodes.publicNode(nodes.get(req.params.id)) });

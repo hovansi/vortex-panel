@@ -14,6 +14,9 @@ import { PANEL_REMOVAL_MESSAGES } from './panel-removal.js';
 import { APPLICATION_MESSAGES } from './application-runtime.js';
 import { PORT_ALLOCATION_MESSAGES } from './port-allocation.js';
 import { WORLD_OPERATIONS_MESSAGES } from './world-experiments.js';
+import { TIMEZONE_MESSAGES } from './host-timezone.js';
+import { NETWORK_TUNING_MESSAGES } from './host-network-tuning.js';
+import { TLS_MESSAGES } from './host-tls.js';
 export const PANEL_MESSAGES = Object.freeze([
   { id: 'panel.host.maintenance', vi: 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.', en: 'System changes are being applied. Wait for completion.' },
   { id: 'panel.host.realadmin', vi: 'Thao tác hệ thống cần tài khoản quản trị thật.', en: 'System changes require a real administrator account.' },
@@ -29,6 +32,9 @@ export const PANEL_MESSAGES = Object.freeze([
   { id: 'panel.files.transition', vi: 'Chờ máy chủ hoàn tất khởi động hoặc dừng trước khi thao tác tệp.', en: 'Wait for the server to finish starting or stopping before changing files.' },
   ...POWER_MESSAGES,
   ...ZRAM_MESSAGES,
+  ...TIMEZONE_MESSAGES,
+  ...NETWORK_TUNING_MESSAGES,
+  ...TLS_MESSAGES,
   ...REMOVAL_MESSAGES,
   ...PANEL_REMOVAL_MESSAGES,
   ...APPLICATION_MESSAGES,

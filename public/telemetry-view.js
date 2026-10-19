@@ -1,13 +1,13 @@
 import {wireText,getLocale,plainUI} from './i18n.js';
 import {createMetricHistory,metricChart} from './metric-history.js';
+import {formatPanelDate} from './timezone.js';
 const text=(en,vi)=>wireText(en,{en,vi});
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const numeric=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 const mebibytes=value=>numeric(value)===null?null:value*1024**2;
 const measured=(object,key,fallback)=>object&&Object.hasOwn(object,key)?numeric(object[key]):fallback;
 const formatters=new Map();
-const dateFormatters=new Map();
-function metricTime(value,full=false){const key=`${getLocale()}:${full?'full':'clock'}`;if(!dateFormatters.has(key))dateFormatters.set(key,new Intl.DateTimeFormat(getLocale(),full?{dateStyle:'short',timeStyle:'short'}:{hour:'2-digit',minute:'2-digit',second:'2-digit'}));return dateFormatters.get(key).format(value);}
+function metricTime(value,full=false){return formatPanelDate(value,getLocale(),full?{dateStyle:'short',timeStyle:'short'}:{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 export function metricNumber(value,digits=1){if(numeric(value)===null)return'—';const key=`${getLocale()}:${digits}`;if(!formatters.has(key))formatters.set(key,new Intl.NumberFormat(getLocale(),{maximumFractionDigits:digits}));return formatters.get(key).format(value);}
 export function metricBytes(value,{rate=false}={}){if(numeric(value)===null)return'—';const index=value>0?Math.min(4,Math.max(0,Math.floor(Math.log(value)/Math.log(1024)))):0;return`${metricNumber(value/1024**index,index>1?1:0)} ${['B','KiB','MiB','GiB','TiB'][index]}${rate?'/s':''}`;}
 const ratio=(used,total)=>numeric(used)!==null&&numeric(total)!==null&&total>0?Math.max(0,used/total*100):null;

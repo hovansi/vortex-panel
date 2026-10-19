@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Vortex Panel. The legacy managed layout is migrated offline with a private recovery receipt.
-# Run from source: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--resume-ledger REVIEWED_CAPTURE_SHA256]
+# Run from source: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]
 # BEGIN installer options
 vortex_ipv4_shape() {
   local value=$1 part
@@ -18,6 +18,8 @@ parse_installer_options() {
   VORTEX_MODE_EXPLICIT=false
   VORTEX_ACCESS_MODE=auto
   VORTEX_PUBLIC_IP=
+  VORTEX_MANAGED_TLS=true
+  VORTEX_NETWORK_TUNING=true
   RESUME_LEDGER_SHA=
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -35,7 +37,13 @@ parse_installer_options() {
       --resume-ledger)
         [[ $# -ge 2 && $2 =~ ^[a-f0-9]{64}$ && -z $RESUME_LEDGER_SHA ]] || { echo '--resume-ledger requires one reviewed SHA-256 of the private preserved capture.' >&2; return 1; }
         RESUME_LEDGER_SHA=$2; shift 2;;
-      *) echo 'Usage: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; return 1;;
+      --self-signed)
+        [[ $VORTEX_MANAGED_TLS == true ]] || { echo 'Duplicate --self-signed option.' >&2; return 1; }
+        VORTEX_MANAGED_TLS=false; shift;;
+      --no-network-tuning)
+        [[ $VORTEX_NETWORK_TUNING == true ]] || { echo 'Duplicate --no-network-tuning option.' >&2; return 1; }
+        VORTEX_NETWORK_TUNING=false; shift;;
+      *) echo 'Usage: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; return 1;;
     esac
   done
 }
@@ -679,6 +687,19 @@ if [[ -f $MIGRATION_TRANSACTION ]]; then
 fi
 INSTALL_COMPLETED=true
 CHANGED_SERVICE=false
+# Commit core installation before optional host changes. A later receipt or
+# migration failure must not roll source back underneath a new renewal timer.
+# CA/kernel refusals preserve the healthy panel and its existing access.
+if [[ $VORTEX_NETWORK_TUNING == true && -f $INSTALL_ROOT/current/server/host-network-tuning.py ]]; then
+  if ! python3 -I -B "$INSTALL_ROOT/current/server/host-network-tuning.py" apply-auto --role panel; then
+    echo 'Network profile was preserved. Review its status in panel settings.' >&2
+  fi
+fi
+if [[ $VORTEX_MANAGED_TLS == true && $VORTEX_ACCESS_MODE != local && -f $INSTALL_ROOT/current/server/host-tls.py ]]; then
+  if ! python3 -I -B "$INSTALL_ROOT/current/server/host-tls.py" auto; then
+    echo 'Public certificate setup was not verified. Existing HTTPS is retained; review HTTPS settings and inbound TCP 80.' >&2
+  fi
+fi
 echo 'Vortex Panel installed and healthy.'
 if [[ $VORTEX_AUTO_ACCESS != true ]]; then
   PUBLIC_PANEL_URL=$(sed -n 's/^PUBLIC_URL=//p' /etc/vortex-panel.env | tail -n 1 | tr -d '"\r')

@@ -24,6 +24,8 @@ import { createSystemPowerController, sendPowerRequest, systemPowerErrorPayload 
 import { createHostZramController, sendZramRequest, hostZramErrorPayload } from './host-zram.js';
 import { createNodeRemovalAgent, nodeRemovalErrorPayload } from './node-removal.js';
 import { playerListErrorPayload } from './player-lists.js';
+import { createHostTimezoneController, timezoneErrorPayload } from './host-timezone.js';
+import { createHostNetworkTuningController, networkTuningErrorPayload } from './host-network-tuning.js';
 
 const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -53,7 +55,7 @@ function actorFromHeader(header) {
   return { ...actor, serverIds: [...new Set(actor.serverIds)] };
 }
 
-export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, removalController, emit: observer = () => {} } = {}) {
+export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, emit: observer = () => {} } = {}) {
   if (!uuid.test(nodeId || '') || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(token)) throw new Error('A UUID nodeId and strong node token are required.');
   if (!tls && !['127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error('Public node listeners require HTTPS. HTTP is limited to literal loopback.');
   if (tls && (!tls.cert || !tls.key)) throw new Error('Both TLS certificate and key are required.');
@@ -61,7 +63,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   if (fs.lstatSync(dataDir).isSymbolicLink()) throw new Error('Node dataDir must not be a symlink.');
   const releaseLock = injectedManager ? () => {} : acquireDataLock(dataDir);
-  let manager, store, closing = false, closePromise;
+  let manager, store, closing = false, closePromise, systemTimezone, systemNetwork, timezoneTimer, timezoneFlight;
   const clients = new Set();
   const expectedToken = createHash('sha256').update(token).digest();
   const app = express(); app.disable('x-powered-by');
@@ -83,11 +85,15 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
     manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
+    systemTimezone = timezoneController || createHostTimezoneController({ dataDir, store, nodeId, role: 'worker' });
+    systemNetwork = networkController || createHostNetworkTuningController({ role: 'worker', nodeId, store, manager });
+    // Establish the verified OS timezone before auto-starting managed children.
+    await systemTimezone.read({ includeZones: false });
     const updateIntentProbe=createPanelUpdateIntentProbe({manager,dataDir,role:'worker',nodeId,store});
     const restoreIntents=()=>{restoreFleetRemovalIntent({manager,dataDir,role:'worker',nodeId,store});updateIntentProbe();};
     manager.setMaintenanceProbe?.(restoreIntents);restoreIntents();
     await manager.initialize?.();
-  } catch (error) { await manager?.close?.(); releaseLock(); throw error; }
+  } catch (error) { await systemNetwork?.close?.(); await systemTimezone?.close?.(); await manager?.close?.(); releaseLock(); throw error; }
   const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager });
   let systemZram, removalAgent;
   try {
@@ -97,7 +103,16 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     removalAgent = removalController || createNodeRemovalAgent({ nodeId, dataDir, configFile, manager, instanceId: powerInfo.instanceId });
     await removalAgent.initialize?.();
   }
-  catch (error) { await removalAgent?.close?.(); await systemZram?.close?.(); await systemPower.close?.(); await manager.close?.(); releaseLock(); throw error; }
+  catch (error) { await removalAgent?.close?.(); await systemZram?.close?.(); await systemPower.close?.(); await systemNetwork?.close?.(); await systemTimezone?.close?.(); await manager.close?.(); releaseLock(); throw error; }
+  timezoneTimer = setInterval(() => {
+    if (closing || timezoneFlight) return;
+    timezoneFlight = Promise.resolve().then(() => systemTimezone.read({ includeZones: false })).catch(() => {}).finally(() => { timezoneFlight = null; });
+  }, 60000); timezoneTimer.unref?.();
+  const stopTimezoneRefresh = async () => { clearInterval(timezoneTimer); await timezoneFlight; };
+  const withTimezone = dashboard => {
+    const observed = systemTimezone.current?.();
+    return { ...dashboard, host: { ...dashboard.host, systemTimezone: observed?.timezone || null, ...(observed ? { systemTimezoneInfo: observed } : {}) } };
+  };
   app.use(localeMiddleware);
   app.use((req, res, next) => { res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' }); next(); });
   app.use('/api', (req, res, next) => {
@@ -128,6 +143,16 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   app.post('/api/node/power', requireAdmin, async (req, res) => sendPowerRequest(systemPower, req, res, nodeId));
   app.get('/api/node/zram', requireAdmin, async (_req, res) => res.json({ nodeId, zram: await systemZram.read() }));
   app.post('/api/node/zram', requireAdmin, async (req, res) => sendZramRequest(systemZram, req, res, nodeId));
+  app.get('/api/node/timezone', requireAdmin, async (_req, res) => res.json({ nodeId, timezone: await systemTimezone.read() }));
+  app.post('/api/node/timezone', requireAdmin, async (req, res) => {
+    const result = await manager.withHostOperation(() => systemTimezone.request(req.body, { user: req.session.user }));
+    emit({ type: 'update' }); res.json({ ...result, nodeId });
+  });
+  app.get('/api/node/network', requireAdmin, async (_req, res) => res.json({ nodeId, network: await systemNetwork.read() }));
+  app.post('/api/node/network', requireAdmin, async (req, res) => {
+    const result = await systemNetwork.request(req.body, { user: req.session.user });
+    emit({ type: 'update' }); res.json({ ...result, nodeId });
+  });
   app.get('/api/node/uninstall/plan', requireAdmin, async (_req, res) => res.json({ nodeId, plan: await removalAgent.plan() }));
   app.post('/api/node/uninstall/prepare', requireAdmin, async (req, res) => res.json(await removalAgent.prepare(req.body)));
   app.post('/api/node/uninstall/abort', requireAdmin, async (req, res) => res.json(await removalAgent.abort(req.body)));
@@ -138,7 +163,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   });
   app.get('/api/node/snapshot', async (req, res) => {
     if (req.session.user.role !== 'admin') return res.status(403).json({ error: 'Node inventory requires a control-plane administrator.' });
-    const dashboard = await manager.dashboard();
+    const dashboard = withTimezone(await manager.dashboard());
     res.json({ ...dashboard, capabilities: { ...dashboard.capabilities, hostTerminal: false }, schedules: manager.schedules(), ...identity() });
   });
   app.get('/api/node/events', (req, res) => {
@@ -150,18 +175,18 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   // No host router, web assets, cookie login, setup, password or MFA API is
   // mounted. The bearer links a trusted control plane, never a browser session.
   app.use(['/api/auth', '/api/host', '/api/node'], (_req, res) => res.status(404).json({ error: 'API is not exposed by the node agent.' }));
-  const exposedManager = new Proxy(manager, { get(target, key) { if (key === 'dashboard') return async () => { const data = await target.dashboard(); return { ...data, capabilities: { ...data.capabilities, hostTerminal: false } }; }; return Reflect.get(target, key); } });
-  app.use('/api', createRouter(exposedManager, { dataDir, store }));
+  const exposedManager = new Proxy(manager, { get(target, key) { if (key === 'dashboard') return async () => { const data = withTimezone(await target.dashboard()); return { ...data, capabilities: { ...data.capabilities, hostTerminal: false } }; }; return Reflect.get(target, key); } });
+  app.use('/api', createRouter(exposedManager, { dataDir, store, timezoneController: systemTimezone }));
   app.use((_req, res) => res.status(404).json({ error: 'Node API not found.' }));
   app.use((error, _req, res, _next) => {
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
-    if (!res.headersSent) res.status(status).json(appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
+    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
     else res.destroy();
   });
   let server;
   try { server = tls ? https.createServer({ cert: tls.cert, key: tls.key, minVersion: 'TLSv1.2' }, app) : http.createServer(app); }
-  catch (error) { try { await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { releaseLock(); } throw error; }
+  catch (error) { try { await stopTimezoneRefresh(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { releaseLock(); } throw error; }
   const listen = server.listen.bind(server);
   server.listen = (...args) => {
     if (typeof args[0] === 'object' && args[0]) { args[0] = { ...args[0], host: args[0].host || host }; if (!tls && !['127.0.0.1', '::1'].includes(args[0].host)) throw new Error('HTTP node listeners must use literal loopback.'); }
@@ -173,13 +198,13 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   const heartbeat = setInterval(() => { for (const client of clients) { if (client.res.writableLength + 32 > 1024 ** 2) client.res.destroy(); else client.res.write(': keepalive\n\n'); } }, 15000); heartbeat.unref();
   async function close() {
     if (closePromise) return closePromise;
-    closing = true; clearInterval(heartbeat);
+    closing = true; clearInterval(heartbeat); clearInterval(timezoneTimer);
     for (const client of clients) client.res.end(); clients.clear();
     const listenerClosed = server.listening ? new Promise(resolve => { server.close(resolve); server.closeIdleConnections(); server.closeAllConnections(); }) : Promise.resolve();
-    closePromise = (async () => { try { await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { await listenerClosed; releaseLock(); } })();
+    closePromise = (async () => { try { await stopTimezoneRefresh(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { await listenerClosed; releaseLock(); } })();
     return closePromise;
   }
-  return { app, server, manager, store, powerController: systemPower, zramController: systemZram, removalController: removalAgent, close, emit, host, identity: identity() };
+  return { app, server, manager, store, powerController: systemPower, zramController: systemZram, timezoneController: systemTimezone, networkController: systemNetwork, removalController: removalAgent, close, emit, host, identity: identity() };
 }
 
 // CLI lives separately so importing the agent never reads configuration,

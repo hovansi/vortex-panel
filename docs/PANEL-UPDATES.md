@@ -21,6 +21,18 @@ Older 0.19.x installations do not implement the durable source-update admission 
 
 Stop that VPS's workloads and finish its jobs, review the intended release, then perform a one-time maintenance upgrade with the matching main/worker installer. The [main installer](INSTALL.md) and [worker installer](NODE-AGENT.md) are separate entry points. Preserve the existing data directory, agent configuration/token and TLS identity; verify health, account/server definitions and the enrolled agent ID afterward. This installer path may change host prerequisites and restart its service, so it has a wider scope than the in-panel source updater. Once every member supports the admission protocol, subsequent routine updates can use the panel workflow.
 
+## Upgrade when there is no Update button
+
+Stop the managed workloads and finish pending jobs on the main VPS, then rerun the official installer:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
+```
+
+The installer detects the existing main panel, preserves accounts/data and upgrades the managed source/service. It has a wider scope than the source-only updater: it may install prerequisites and prepare optional owned host features. Review [installation options](INSTALL.md), including `--self-signed` and `--no-network-tuning`. Do not delete the data directory or create a replacement Admin.
+
+A linked worker uses the separate [worker installer](NODE-AGENT.md); do not run the main panel installer on it. Upgrade incompatible older workers during maintenance before the main panel, preserving their agent ID, token, configuration and TLS pin.
+
 ## What the update changes
 
 The updater prepares a separate versioned source directory and its locked production dependencies. Dependency installation disables lifecycle scripts and uses a private cache. It does not invoke the full installer, run APT upgrades, rewrite the service unit/environment/proxy/TLS settings or update the panel's Node interpreter.

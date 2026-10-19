@@ -26,7 +26,7 @@ On an **Ubuntu 22.04+ x86_64 VPS with systemd**, run:
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
 ```
 
-The release installer resolves the latest stable Vortex release, checks its source archive, installs dependencies and starts the systemd service. A fresh installation also prepares HTTPS access on the VPS's public IP. Follow the URL and first-Admin setup instructions printed at completion. IP HTTPS initially uses a self-signed certificate, so the browser will require you to trust that certificate; no account or shared default password is created for you.
+The release installer resolves the latest stable Vortex release, verifies its source archive, installs dependencies and starts the systemd service. On a fresh installation it prepares IP HTTPS and attempts a publicly trusted Let’s Encrypt IP certificate with automatic renewal. Inbound TCP 80/443 must be reachable. A failed CA request preserves the serving certificate and reports its actual status; use `--self-signed` to opt out. Follow the printed URL and private first-Admin setup instructions. Existing accounts and server data are preserved during maintenance upgrades. See [HTTPS](docs/HTTPS.md) for terms, renewal and ownership.
 
 The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel` and default data in `/var/lib/vortex-panel`. Legacy managed installs migrate offline with a private backup. The one-command path enables root host administration on a fresh installation. Node.js/Python application code runs under its own non-root account and sandbox. Existing installations retain their configuration. Read the [installation guide](docs/INSTALL.md) for requirements, certificate trust, updates and the local-only alternative.
 
@@ -41,6 +41,9 @@ The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel
 | **Resources & ports** | Live CPU, RAM, storage and RX/TX samples; shared or fixed CPU/RAM policy; fixed storage volumes; automatic available-port allocation |
 | **Multiple VPS nodes** | SSH-based worker installation, verified agent enrollment, per-node capabilities and server placement, connection/maintenance state and remote workspaces |
 | **Operations** | Schedules with optional commands before backup/restart, explicit command outcomes, bounded activity/task history, task progress, scoped firewall tools, power controls and Admin host terminal |
+| **Recovery** | Durable crash retry with bounded backoff, cancellation and visible recovery state; see [reliability](docs/RELIABILITY.md) |
+| **Host preferences** | Verified VPS timezones, panel clocks and conservative reversible network profiles |
+| **Trusted HTTPS** | Automatic public-IP certificates, immutable activation and renewal |
 | **Panel updates** | Verified official stable releases; linked workers first and main panel last; source-only activation, per-VPS verification and manual recovery of interrupted requests |
 | **Access & interface** | Admin/Operator/Viewer roles, per-server grants, TOTP and recovery codes, EN/VI, responsive navigation, saved themes and keyboard controls |
 
@@ -102,3 +105,6 @@ Back up panel data and encryption keys off the host. For routine updates use **S
 Application file operations/backups require a stopped application, while Bedrock supports its documented online snapshot workflow. Review each guide's size and format limits before importing large worlds or projects. Featured-server artwork in Minecraft's own partner list is separate from Vortex's private panel appearance; ordinary Bedrock listings expose the supported server text, not uploaded panel banners.
 
 Report reproducible problems through [GitHub Issues](https://github.com/hovansi/vortex-panel/issues), including the panel version, Ubuntu version and redacted logs. Keep passwords, setup tokens, node credentials, session cookies and private files out of public reports.
+
+
+Host operations: [process recovery](docs/RELIABILITY.md), [VPS timezone](docs/TIMEZONE.md), [reversible network tuning](docs/NETWORK-TUNING.md), and [trusted IP HTTPS / renewal](docs/HTTPS.md).

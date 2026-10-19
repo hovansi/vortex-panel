@@ -27,6 +27,10 @@ sys.dont_write_bytecode = True
 UUID = re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$', re.I)
 SHA = re.compile(r'^[a-f0-9]{64}$')
 MACHINE = re.compile(r'^[a-f0-9]{32}$')
+ZONE = re.compile(r'^(?:[A-Za-z0-9_+-]+/)*[A-Za-z0-9_+-]+$')
+NETWORK_KEYS = ('net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_congestion_control', 'net.core.default_qdisc')
+TLS_PATHS = ('/etc/vortex-panel/tls-management.json', '/etc/vortex-panel/acme', '/etc/vortex-panel/tls-managed', '/opt/vortex-panel/acme-runtime',
+             '/var/lib/vortex-panel-acme', '/var/log/vortex-panel-acme', '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer')
 WORK = '/run/vortex-fleet-removal'
 LOCK = '/run/vortex-os-maintenance.lock'
 NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
@@ -592,18 +596,94 @@ class Host:
         spec.loader.exec_module(module)
         return module.cleanup_owned(self.role, self.node_id, self.unit, lock_held=True) if cleanup else module.inspect_owned(self.role, self.node_id, self.unit)
 
-    def source_entries(self, ledger):
+    def maintenance_reference(self, name):
+        require(name in ['host-network-tuning', 'host-tls'], 'Unrecognized host maintenance reference.')
+        reference = SOURCE.with_name(name + '.reference.py')
+        if not reference.exists():
+            reference = SOURCE.with_name(name + '.py')
+        if not reference.exists():
+            reference = self.release / 'server' / (name + '.py')
+        self.read(reference, 1024 ** 2)
+        return reference
+
+    def maintenance_module(self, name):
+        reference = self.maintenance_reference(name)
+        spec = importlib.util.spec_from_file_location('vortex_removal_' + name.replace('-', '_'), reference)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, reference
+
+    def network_profile(self):
+        name = 'vortex-panel' if self.role == 'panel' else 'vortex-node'
+        state_path = self.config_root / 'network-tuning.json'
+        profile_path = self.path('/etc/sysctl.d/70-' + name + '-network.conf')
+        if not os.path.lexists(state_path) and not os.path.lexists(profile_path):
+            return None
+        module, reference = self.maintenance_module('host-network-tuning')
+        profile = module.NetworkProfile(self.role, self.root or Path('/'))
+        value = profile.inspect()
+        require(value.get('canRestore') is True or value.get('status') == 'restored' and not os.path.lexists(profile_path), 'Owned network profile cannot be restored without altering foreign configuration.')
+        return {'revision': value['revision'], 'state': self.stamp(state_path), 'profile': self.stamp(profile_path) if os.path.lexists(profile_path) else None,
+                'referenceSHA256': hashlib.sha256(self.read(reference)).hexdigest(), 'restoreRequired': value.get('canRestore') is True}
+
+    def host_timezone(self):
+        filename = self.data / 'timezone-operations.json'
+        if not os.path.lexists(filename):
+            return None
+        value = self.load(filename, 1024 ** 2, private=True, mutable=True)
+        def valid_zone(zone):
+            return isinstance(zone, str) and len(zone) <= 128 and ZONE.fullmatch(zone) and '..' not in zone
+        require(value.get('schema') == 1 and value.get('nodeId') == self.node_id and value.get('role') == self.role and valid_zone(value.get('originalTimezone'))
+                and isinstance(value.get('records'), list) and 0 < len(value['records']) <= 512, 'Timezone restoration journal does not match this installation.')
+        for row in value['records']:
+            require(isinstance(row, dict) and UUID.fullmatch(str(row.get('requestId', ''))) and valid_zone(row.get('timezone')) and valid_zone(row.get('previousTimezone'))
+                    and SHA.fullmatch(str(row.get('revision', ''))) and isinstance(row.get('instanceId'), str) and len(row['instanceId']) <= 128
+                    and row.get('status') == 'completed', 'An incomplete or invalid timezone operation must be reviewed before removal.')
+        current = self.run(['/usr/bin/timedatectl', 'show', '--property=Timezone', '--value'])
+        require(valid_zone(current), 'The actual OS timezone could not be verified.')
+        installed = self.run(['/usr/bin/timedatectl', 'list-timezones', '--no-pager']).splitlines()
+        require(len(installed) <= 4096 and all(valid_zone(zone) for zone in installed) and (value['originalTimezone'] in installed or value['originalTimezone'] in ['UTC', current]), 'The original timezone is no longer installed.')
+        return {'journal': self.stamp(filename, mutable=True), 'original': value['originalTimezone'], 'lastRequested': value['records'][-1]['timezone'], 'observed': current}
+
+    def tls_management(self):
+        if self.role != 'panel':
+            return None
+        runtime = self.path('/run/vortex-panel-tls')
+        if not any(os.path.lexists(self.path(name)) for name in TLS_PATHS) and not os.path.lexists(runtime):
+            return None
+        module, reference = self.maintenance_module('host-tls')
+        manager = module.TLSManager(root=str(self.root or '/'))
+        value = manager.removal_plan()
+        require(value.get('canCleanup') is True and SHA.fullmatch(str(value.get('revision', ''))), 'Managed HTTPS ownership or renewal state requires review before removal.')
+        require(isinstance(value.get('components'), list) and len(value['components']) <= len(TLS_PATHS) and all(name in TLS_PATHS for name in value['components']), 'HTTPS cleanup escaped its fixed ownership paths.')
+        if os.path.lexists(runtime):
+            info = self.safe(runtime)
+            require(stat.S_ISDIR(info.st_mode) and (not self.enforce_owner or not info.st_mode & 0o077) and all(path.name == 'operation.lock' for path in runtime.iterdir()), 'A foreign HTTPS runtime file must be preserved.')
+            if os.path.lexists(runtime / 'operation.lock'):
+                self.read(runtime / 'operation.lock', 4096, private=True)
+                require(not manager.operation_active(), 'An HTTPS operation is active.')
+        return {**value, 'referenceSHA256': hashlib.sha256(self.read(reference)).hexdigest()}
+
+    def source_entries(self, ledger, tls=None):
         rows, retained = [], []
+        profile = self.path('/etc/sysctl.d/70-' + ('vortex-panel' if self.role == 'panel' else 'vortex-node') + '-network.conf')
+        maintenance = {profile}
+        if self.role == 'panel':
+            maintenance.update(self.path('/etc/systemd/system/vortex-panel-tls-renew.' + suffix) for suffix in ['service', 'timer'])
         for row in (ledger or {}).get('components', []):
             path = Path(row.get('path', ''))
             shared = path in [self.path('/usr/local/libexec/vortex-host-zram.py'), self.path('/usr/local/libexec/vortex-application-isolation.py')]
-            extra = path == self.path('/etc/nginx/conf.d/vortex-panel.conf') and self.role == 'panel'
+            extra = path == self.path('/etc/nginx/conf.d/vortex-panel.conf') and self.role == 'panel' or path in maintenance
             fixed = path in [self.unit_file, self.config]
             require(path.is_absolute() and (any(path == parent or parent in path.parents for parent in [self.install, self.config_root]) or shared or extra or fixed), 'Installer evidence escaped the fixed removal roots.')
             # Explicit erasure covers the complete dedicated, service-verified
             # source/config roots, including mutable caches and old releases.
             # Installer hashes authorize only components outside those roots.
             if any(path == parent or parent in path.parents for parent in [self.install, self.config_root]):
+                continue
+            # Mutable sysctl/TLS components have stronger feature-specific
+            # ownership receipts and are restored by their copied helper.
+            if path in maintenance:
                 continue
             if not os.path.lexists(path):
                 continue
@@ -631,6 +711,10 @@ class Host:
                 if not any(row.get('path') == str(path) for row in retained):
                     retained.append({'kind': 'shared-helper', 'path': str(path), 'reason': 'Shared helper has no exact installer or active-release content proof.'})
         nginx = self.path('/etc/nginx/conf.d/vortex-panel.conf')
+        if self.role == 'panel' and tls and tls.get('owned') and nginx.exists() and not any(row['path'] == str(nginx) for row in rows):
+            require(SHA.fullmatch(str(tls.get('currentConfigSHA256', ''))) and hashlib.sha256(self.read(nginx, 65536)).hexdigest() == tls['currentConfigSHA256'], 'Managed HTTPS proxy changed after its removal review.')
+            rows.append(self.stamp(nginx))
+            retained = [row for row in retained if row.get('path') != str(nginx)]
         if self.role == 'panel' and nginx.exists() and not any(row['path'] == str(nginx) for row in rows):
             try:
                 receipt = self.load(self.config_root / 'access.json', 65536, private=True)
@@ -725,7 +809,17 @@ server {
         accounts = self.app_accounts()
         inventory = self.inventory()
         ledger = self.ledger()
-        entries, retained = self.source_entries(ledger)
+        host_components, host_blockers = {}, []
+        for key, inspect, code, message, vietnamese in [
+                ('networkProfile', self.network_profile, 'FLEET_NETWORK_PROFILE', 'The network profile is foreign, changed or cannot be restored safely.', 'Cấu hình mạng thuộc bên ngoài, đã bị sửa hoặc chưa thể khôi phục an toàn.'),
+                ('hostTimezone', self.host_timezone, 'FLEET_TIMEZONE', 'The timezone journal is invalid or an earlier OS timezone change still needs verification.', 'Nhật ký múi giờ không hợp lệ hoặc thay đổi múi giờ hệ điều hành trước đó chưa được xác minh.'),
+                ('managedTLS', self.tls_management, 'FLEET_TLS', 'Managed HTTPS or renewal ownership needs review before its certificate data can be erased.', 'Cần kiểm tra quyền quản lý HTTPS và dịch vụ gia hạn trước khi xóa dữ liệu chứng chỉ.')]:
+            try:
+                host_components[key] = inspect()
+            except Exception:
+                host_components[key] = None
+                host_blockers.append({'code': code, 'message': message, 'messageI18n': {'id': 'panel.removal.' + code.lower(), 'en': message, 'vi': vietnamese, 'params': []}})
+        entries, retained = self.source_entries(ledger, host_components['managedTLS'])
         package_preview = {'retained': [], 'removed': []}
         self.cleanup_packages(ledger, package_preview, dry_run=True)
         retained.extend(package_preview['retained'])
@@ -734,7 +828,7 @@ server {
         zram = self.zram()
         migration, backup_retained = self.migration_artifacts()
         retained.extend(backup_retained)
-        blockers = []
+        blockers = list(host_blockers)
         if self.active_job_count:
             blockers.append({'code': 'FLEET_JOBS', 'message': 'Wait for queued or running server/provisioning jobs to finish before erasing this VPS.'})
         if zram.get('canCleanup') is False:
@@ -756,7 +850,7 @@ server {
                         serviceAccount=service_account,
                         packageBaselineSHA256=package_digest(ledger['before']['packages']) if ledger and isinstance(ledger.get('before', {}).get('packages'), list) else None,
                         isolation=self.isolation_identity(), zramRevision=zram.get('revision'),
-                        migration=migration,
+                        migration=migration, **host_components,
                         network=self.load(self.data / '.network-metrics.json', 4096, private=True, mutable=True) if (self.data / '.network-metrics.json').exists() else None)
         if identity['network']:
             network = identity['network']
@@ -771,6 +865,12 @@ server {
         components += [{'kind': 'firewall', 'path': ' '.join(row), 'action': 'remove', 'reason': 'Exact Vortex-owned rule.'} for row in firewall]
         components += [{'kind': 'migration-backup', 'path': row['directory']['path'], 'action': 'erase', 'reason': 'Committed migration receipt and exact artifact content hashes match this installation.'} for row in migration]
         components += [{'kind': 'package', 'path': name, 'action': 'purge', 'reason': 'Exact installer origin, unused current state and bounded APT simulation match.'} for name in package_preview.get('packageCandidates', [])]
+        if host_components['networkProfile']:
+            components.append({'kind': 'network-profile', 'path': host_components['networkProfile']['profile']['path'] if host_components['networkProfile']['profile'] else str(self.config_root / 'network-tuning.json'), 'action': 'restore', 'reason': 'Restore only unchanged Vortex-applied kernel values and remove the exact owned profile.'})
+        if host_components['hostTimezone']:
+            components.append({'kind': 'host-timezone', 'path': host_components['hostTimezone']['original'], 'action': 'restore', 'reason': 'Restore the original OS timezone only while the last completed Vortex choice is still active.'})
+        if host_components['managedTLS']:
+            components += [{'kind': 'managed-https', 'path': name, 'action': 'remove', 'reason': 'Exact Vortex TLS markers, renewal unit templates and unchanged managed proxy verified.'} for name in host_components['managedTLS'].get('components', [])]
         baseline = bool(ledger and not ledger.get('baselineUnknown') and not ledger.get('baselineChangedPackages') and not ledger.get('unprovenNewPackages') and not ledger.get('unknownManualMarkChanges'))
         preexisting_removed = [row['path'] for row in entries if (ledger or {}).get('before', {}).get('paths', {}).get(row['path']) is not None]
         if preexisting_removed:
@@ -863,6 +963,11 @@ server {
             if not zram_reference.exists():
                 zram_reference = SOURCE.with_name('host-zram.py')
             self.copy(zram_reference, work / 'host-zram.reference.py')
+            for feature, name in [('networkProfile', 'host-network-tuning'), ('managedTLS', 'host-tls')]:
+                if plan['_identity'].get(feature):
+                    reference = self.maintenance_reference(name)
+                    require(hashlib.sha256(self.read(reference)).hexdigest() == plan['_identity'][feature]['referenceSHA256'], 'A host maintenance reference changed before detached staging.')
+                    self.copy(reference, work / (name + '.reference.py'))
             network = SOURCE.with_name('network-metrics.js')
             self.copy(network, work / 'network-metrics.mjs')
             self.copy(network.with_name('safety.js'), work / 'safety.js')
@@ -920,7 +1025,89 @@ server {
         if self.role == 'panel':
             allowed.add(str(self.path('/etc/nginx/conf.d/vortex-panel.conf')))
         require(all(row.get('path') in allowed for row in identity['entries']), 'Saved file cleanup escaped the fixed component allowlist.')
+        network_profile = identity.get('networkProfile')
+        if network_profile:
+            expected_profile = str(self.path('/etc/sysctl.d/70-' + ('vortex-panel' if self.role == 'panel' else 'vortex-node') + '-network.conf'))
+            require(network_profile.get('state', {}).get('path') == str(self.config_root / 'network-tuning.json') and (network_profile.get('profile') is None or network_profile['profile'].get('path') == expected_profile)
+                    and SHA.fullmatch(str(network_profile.get('referenceSHA256', ''))), 'Saved network restoration paths changed.')
+        timezone = identity.get('hostTimezone')
+        if timezone:
+            require(timezone.get('journal', {}).get('path') == str(self.data / 'timezone-operations.json') and all(isinstance(timezone.get(key), str) and len(timezone[key]) <= 128 and ZONE.fullmatch(timezone[key]) and '..' not in timezone[key] for key in ['original', 'lastRequested', 'observed']), 'Saved timezone restoration identity changed.')
+        tls = identity.get('managedTLS')
+        if tls:
+            require(self.role == 'panel' and SHA.fullmatch(str(tls.get('referenceSHA256', ''))) and isinstance(tls.get('components'), list) and all(name in TLS_PATHS for name in tls['components']), 'Saved HTTPS cleanup escaped its fixed paths.')
+            if tls.get('owned'):
+                require(tls.get('configPath') == '/etc/nginx/conf.d/vortex-panel.conf' and SHA.fullmatch(str(tls.get('currentConfigSHA256', ''))) and SHA.fullmatch(str(tls.get('restoredConfigSHA256', ''))), 'Saved HTTPS proxy proof changed.')
         self.allowed_uids = {0, identity['data']['uid']} | {row['uid'] for row in identity.get('accounts', []) if row.get('uid')}
+
+    def cleanup_timezone(self, identity, result):
+        proof = identity.get('hostTimezone')
+        if not proof:
+            result['hostTimezoneRestoration'] = {'outcome': 'not-managed'}
+            return
+        require(self.same(proof['journal'], True, True), 'Timezone ownership journal changed before restoration.')
+        current = self.run(['/usr/bin/timedatectl', 'show', '--property=Timezone', '--value'])
+        require(isinstance(current, str) and len(current) <= 128 and ZONE.fullmatch(current), 'The actual timezone is unavailable during restoration.')
+        if current != proof['lastRequested']:
+            result['hostTimezoneRestoration'] = {'outcome': 'preserved-external'}
+            result['retained'].append({'kind': 'baseline', 'path': 'administrator timezone', 'reason': 'The OS timezone changed after the last completed Vortex request; the administrator choice was preserved.'})
+            return
+        if current != proof['original']:
+            self.run(['/usr/bin/timedatectl', '--no-ask-password', 'set-timezone', proof['original']])
+        require(self.run(['/usr/bin/timedatectl', 'show', '--property=Timezone', '--value']) == proof['original'], 'Original OS timezone restoration was not verified.')
+        result['hostTimezoneRestoration'] = {'outcome': 'restored', 'timezone': proof['original']}
+
+    def cleanup_network_profile(self, identity, work, result):
+        proof = identity.get('networkProfile')
+        if not proof:
+            result['networkProfileRestoration'] = {'outcome': 'not-managed'}
+            return
+        require(self.same(proof['state']) and (not proof.get('profile') or self.same(proof['profile'])), 'Network ownership evidence changed before restoration.')
+        helper = work / 'host-network-tuning.reference.py'
+        require(hashlib.sha256(self.read(helper)).hexdigest() == proof['referenceSHA256'], 'Detached network helper changed.')
+        value = json.loads(self.run(['/usr/bin/python3', '-I', '-B', str(helper), 'restore-owned', '--role', self.role], timeout=45))
+        network = value.get('network') or {}
+        require(value.get('ok') is True and network.get('enabled') is False and network.get('status') == 'restored' and isinstance(network.get('restoredKeys'), list) and isinstance(network.get('preservedKeys'), list)
+                and set(network['restoredKeys'] + network['preservedKeys']).issubset(NETWORK_KEYS), 'Owned network profile restoration was not verified.')
+        expected = {key: network.get('current', {}).get(key) for key in network['restoredKeys']}
+        require(all(isinstance(value, str) and len(value) <= 128 for value in expected.values()), 'Restored network values are incomplete.')
+        profile = self.path('/etc/sysctl.d/70-' + ('vortex-panel' if self.role == 'panel' else 'vortex-node') + '-network.conf')
+        require(not os.path.lexists(profile), 'An owned persistent network profile remains.')
+        result['networkProfileRestoration'] = {'outcome': 'restored', 'values': expected, 'preservedKeys': network['preservedKeys']}
+        if network['preservedKeys']:
+            result['retained'].append({'kind': 'baseline', 'path': 'administrator network settings', 'reason': 'Later administrator network values were preserved instead of restoring the pre-Vortex values.'})
+
+    def cleanup_tls_management(self, identity, work, result):
+        proof = identity.get('managedTLS')
+        if not proof:
+            result['managedTLSRestoration'] = {'outcome': 'not-managed'}
+            return
+        helper = work / 'host-tls.reference.py'
+        require(hashlib.sha256(self.read(helper)).hexdigest() == proof['referenceSHA256'], 'Detached HTTPS helper changed.')
+        value = json.loads(self.run(['/usr/bin/python3', '-I', '-B', str(helper), 'restore-owned'], timeout=180,
+                                   input_text=json.dumps({'revision': proof['revision'], 'confirmed': True})))
+        restored = value.get('tlsRemoval') or {}
+        require(value.get('ok') is True and restored.get('restored') is True and isinstance(restored.get('removed'), list)
+                and set(restored['removed']) == set(proof['components']) and all(not os.path.lexists(self.path(name)) for name in proof['components']), 'Managed HTTPS cleanup was not independently observed.')
+        if proof.get('owned'):
+            require(restored.get('configSHA256') == proof['restoredConfigSHA256'] and hashlib.sha256(self.read(self.path('/etc/nginx/conf.d/vortex-panel.conf'), 65536)).hexdigest() == proof['restoredConfigSHA256'], 'Restored HTTPS proxy does not match its pinned original hash.')
+        runtime = self.path('/run/vortex-panel-tls')
+        if os.path.lexists(runtime):
+            info = self.safe(runtime)
+            require(stat.S_ISDIR(info.st_mode) and (not self.enforce_owner or not info.st_mode & 0o077) and all(path.name == 'operation.lock' for path in runtime.iterdir()), 'Foreign HTTPS runtime content appeared during cleanup.')
+            lock = runtime / 'operation.lock'
+            if os.path.lexists(lock):
+                import fcntl
+                self.read(lock, 4096, private=True)
+                fd = os.open(lock, os.O_RDONLY | NOFOLLOW)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    require(os.fstat(fd).st_ino == lock.lstat().st_ino, 'HTTPS runtime lock changed before cleanup.')
+                    lock.unlink()
+                finally:
+                    os.close(fd)
+            runtime.rmdir()
+        result['managedTLSRestoration'] = {'outcome': 'restored', 'removed': restored['removed'], 'configSHA256': restored.get('configSHA256'), 'runtimeRemoved': not os.path.lexists(runtime)}
 
     def tree_inventory(self, root, expected, mutable):
         require(self.same(expected, False, mutable), 'The dedicated root changed before erasure.')
@@ -1197,6 +1384,10 @@ server {
                 require(all(intent.get(key) == saved.get(key) for key in ['requestId', 'nodeId', 'machineId', 'panelId', 'revision', 'confirmedErase']), 'The admission freeze belongs to another operation.')
                 result.update(status='running', phase='stopping', effectStarted=True, startedAt=time.time())
                 self.save(work / 'result.json', result)
+                # Stop certificate renewal before the source process check:
+                # a timer must not start a new source-reading job mid-erasure.
+                self.cleanup_tls_management(identity, work, result)
+                self.save(work / 'result.json', result)
                 self.run(['systemctl', 'disable', self.unit])
                 self.run(['systemctl', 'stop', self.unit], timeout=270)
                 require(self.property('ActiveState') not in ['active', 'activating', 'deactivating'] and self.property('MainPID') in ['', '0'], 'The Vortex service did not stop gracefully.')
@@ -1218,6 +1409,8 @@ server {
                 self.save(work / 'result.json', result)
                 if identity['ownedZram']:
                     require(self.zram(cleanup=True).get('ok') is True, 'Owned compressed swap cleanup was not confirmed.')
+                self.cleanup_network_profile(identity, work, result)
+                self.cleanup_timezone(identity, result)
                 self.cleanup_network(identity, work)
                 for command in identity['firewall']:
                     self.run(['ufw', '--force', 'delete', *command[1:]])
@@ -1252,6 +1445,11 @@ server {
                 for row in [identity['unit'], identity['config'], identity.get('drop')]:
                     if row and not any(item['path'] == row['path'] for item in entries):
                         entries.append(row)
+                tls = identity.get('managedTLS')
+                if tls and tls.get('owned'):
+                    nginx = self.path('/etc/nginx/conf.d/vortex-panel.conf')
+                    require(result.get('managedTLSRestoration', {}).get('outcome') == 'restored' and hashlib.sha256(self.read(nginx, 65536)).hexdigest() == tls['restoredConfigSHA256'], 'Managed proxy changed after its verified restoration.')
+                    entries = [row for row in entries if row['path'] != str(nginx)] + [self.stamp(nginx)]
                 self.remove_entries(entries, result, work)
                 for migration in identity.get('migration', []):
                     directory = Path(migration['directory']['path'])
@@ -1310,7 +1508,7 @@ server {
                 # verifier on tmpfs. Original package/file inventories and
                 # executable references are needed only for failed recovery.
                 self.save(work / 'plan.json', {'schemaVersion': 1, '_identity': identity, 'baselineRestorable': plan['baselineRestorable']})
-                for name in ['host-zram.reference.py', 'network-metrics.mjs', 'safety.js', 'package.json', 'application-isolation.reference.py', 'isolation-transaction.json']:
+                for name in ['host-zram.reference.py', 'host-network-tuning.reference.py', 'host-tls.reference.py', 'network-metrics.mjs', 'safety.js', 'package.json', 'application-isolation.reference.py', 'isolation-transaction.json']:
                     reference = work / name
                     if reference.exists():
                         self.safe(reference)
@@ -1350,6 +1548,7 @@ server {
             require(isinstance(tables, list), 'Independent nftables verification is unavailable.')
             network_removed = not any(row.get('table', {}).get('family') == 'inet' and row.get('table', {}).get('name') == identity['network']['table'] for row in tables)
         zram_removed = not identity['ownedZram'] or not os.path.lexists(self.path('/etc/vortex-zram/owner.json')) and not os.path.lexists(self.path('/etc/systemd/system/vortex-zram.service')) and self.property('ActiveState', 'vortex-zram.service') not in ['active', 'activating', 'deactivating']
+        network_profile_restored, timezone_restored, managed_tls_removed = self.verify_host_maintenance(identity, result)
         isolation_removed = True
         if identity.get('isolation'):
             receipt = self.path('/var/lib/vortex-application-isolation/apparmor.json')
@@ -1365,7 +1564,7 @@ server {
         # A retained source file is honest partial cleanup, even if it no longer
         # runs. Never turn retained changed components into a full-success proof.
         owned_retained = [row for row in result.get('retained', []) if row.get('kind') not in ['baseline', 'package', 'packages', 'package-marks', 'shared-helper', 'shared-account', 'external-backup'] and row.get('path') != 'pre-install operating-system state']
-        files_verified = not remaining and not owned_retained and isolation_removed
+        files_verified = not remaining and not owned_retained and isolation_removed and network_profile_restored and timezone_restored and managed_tls_removed
         verified = service_removed and files_verified and process_free and mount_free and firewall_removed and network_removed and zram_removed and accounts_removed and result.get('effectStarted') is True and result.get('status') in ['removed', 'completed']
         baseline_restored = bool(verified and result.get('baselineRestored'))
         if baseline_restored:
@@ -1377,8 +1576,35 @@ server {
                 'inventoryEmpty': not os.path.lexists(self.data), 'serviceRemoved': service_removed, 'filesVerified': files_verified, 'processesAbsent': process_free, 'mountsAbsent': mount_free,
                 'firewallRemoved': firewall_removed, 'networkCountersRemoved': network_removed, 'zramRemoved': zram_removed, 'accountsRemoved': accounts_removed,
                 'applicationIsolationRemoved': isolation_removed,
+                'networkProfileRestored': network_profile_restored, 'timezoneRestorationVerified': timezone_restored, 'managedTLSRemoved': managed_tls_removed,
                 'remainingOwnedPaths': sorted(set(remaining)), 'retained': result.get('retained', []), 'outcomeStatus': result.get('status'), 'effectStarted': result.get('effectStarted', False),
                 'baselineRestored': baseline_restored, 'receiptPath': str(work / 'result.json')}
+
+    def verify_host_maintenance(self, identity, result):
+        network, timezone, tls = True, True, True
+        if identity.get('networkProfile'):
+            restored = result.get('networkProfileRestoration') or {}
+            profile = self.path('/etc/sysctl.d/70-' + ('vortex-panel' if self.role == 'panel' else 'vortex-node') + '-network.conf')
+            network = restored.get('outcome') == 'restored' and not os.path.lexists(profile) and isinstance(restored.get('values'), dict) and set(restored['values']).issubset(NETWORK_KEYS)
+            if network:
+                try:
+                    network = all(self.read(self.path('/proc/sys/' + key.replace('.', '/')), 4096).decode().strip() == value for key, value in restored['values'].items())
+                except (RemovalError, OSError, UnicodeError):
+                    network = False
+        if identity.get('hostTimezone'):
+            restored = result.get('hostTimezoneRestoration') or {}
+            timezone = restored.get('outcome') in ['restored', 'preserved-external']
+            if timezone and restored['outcome'] == 'restored':
+                try:
+                    timezone = self.run(['/usr/bin/timedatectl', 'show', '--property=Timezone', '--value']) == identity['hostTimezone']['original']
+                except (RemovalError, OSError, subprocess.SubprocessError):
+                    timezone = False
+        if identity.get('managedTLS'):
+            restored = result.get('managedTLSRestoration') or {}
+            tls = restored.get('outcome') == 'restored' and all(not os.path.lexists(self.path(name)) for name in TLS_PATHS) and not os.path.lexists(self.path('/run/vortex-panel-tls'))
+            if tls:
+                tls = all(self.property('ActiveState', 'vortex-panel-tls-renew.' + suffix) not in ['active', 'activating', 'deactivating'] and self.property('UnitFileState', 'vortex-panel-tls-renew.' + suffix) not in ['enabled', 'enabled-runtime', 'linked', 'linked-runtime'] for suffix in ['service', 'timer'])
+        return bool(network), bool(timezone), bool(tls)
 
     def status(self, request):
         work, _ = self.saved(request)

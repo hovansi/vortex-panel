@@ -408,6 +408,12 @@ NODE
 python3 "$SOURCE_DIR/deploy/install-ledger.py" finalize --role worker --data-dir /var/lib/vortex-node --source-dir "$INSTALL_ROOT" --service-user root
 INSTALL_COMPLETED=true
 CHANGED_SERVICE=false
+# Optional host tuning follows the committed service/source transaction.
+if [[ -f $INSTALL_ROOT/current/server/host-network-tuning.py ]]; then
+  if ! python3 -I -B "$INSTALL_ROOT/current/server/host-network-tuning.py" apply-auto --role worker; then
+    echo 'Network profile was preserved. Review its status from the main panel.' >&2
+  fi
+fi
 echo 'Vortex node installed. This agent runs as root; keep its credential private and restrict its configured TCP port to the central panel.'
 if [[ -z $ADVERTISE_ENDPOINT ]]; then
   ADVERTISE_IP=$(hostname -I | awk '{for(i=1;i<=NF;i++)if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/){print $i;exit}}')

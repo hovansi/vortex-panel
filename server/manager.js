@@ -38,6 +38,7 @@ import { applicationIssue } from './application-schema.js';
 import { publicRuntimePin, normalizeRuntimePin } from './application-runtime-catalog.js';
 import { createPortAllocator, creationPortMode, PORT_ALLOCATION_POLICY } from './port-allocation.js';
 import { validateSchedule, dispatchScheduledCommand } from './schedule-commands.js';
+import { RESTART_POLICY, restartRecoveryState, recordRestartFailure, publicRestartRecovery } from './restart-policy.js';
 
 const appKind = server => ['nodejs','python'].includes(server?.kind) ? server.kind : 'bedrock';
 const isApp = server => appKind(server) !== 'bedrock';
@@ -95,7 +96,6 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const gameplayRuns = new Set();
   let resourceControl = await resourceController.capabilities();
   const restartTimers = new Map();
-  const crashes = new Map();
   const runningJobs = new Set();
   const jobPromises = new Map();
   const lifecycle = new Map();
@@ -216,16 +216,18 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     maintenance = record;
     return record.release;
   }
-  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
+  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), restartRecovery: publicRestartRecovery(server.restartRecovery), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
   const persist = () => { store.save(); emit({ type: 'update' }); };
   const audit = (action, detail, user, detailI18n, serverId) => store.audit(action, detail, user || actorContext.getStore()?.username || 'system', detailI18n, serverId);
   const commitServerFields = (server, fields, action, detail = server.name) => {
+    if (fields.autoRestart === false && server.restartRecovery) fields = { ...fields, restartRecovery: { ...server.restartRecovery, nextAttemptAt: null } };
     const before = Object.fromEntries(Object.keys(fields).map(key => [key, { exists: Object.hasOwn(server, key), value: server[key] }]));
     const activity = store.data.activity;
     Object.assign(server, fields);
     store.data.activity = [{ id: randomUUID(), time: now(), action, detail, serverId: server.id, user: actorContext.getStore()?.username || 'system' }, ...activity];
     try { store.save(); }
     catch (error) { for (const [key, value] of Object.entries(before)) { if (value.exists) server[key] = value.value; else delete server[key]; } store.data.activity = activity; throw error; }
+    if (fields.autoRestart === false) cancelRestart(server);
   };
   const appearanceController = createServerAppearance({dataDir,getServer:get,commit:(server,appearance)=>commitServerFields(server,{appearance},'server.appearance',server.name),emit});
   const deletionAudit = (action, detail, quarantine, serverId) => ({ id: randomUUID(), time: now(), action, serverId, detail: `${detail}${quarantine ? ` [quarantine: ${quarantine.relative}]` : ''}`, user: actorContext.getStore()?.username || 'system' });
@@ -332,6 +334,49 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     try { persist(); return null; }
     catch (error) { server.error = `Không thể lưu trạng thái tiến trình: ${error.message}`; log(server, server.error, 'error'); emit({ type: 'update' }); return error; }
   };
+  function cancelRestart(server, { reset = false } = {}) {
+    const pending = restartTimers.get(server.id);
+    if (pending) { clearTimeout(pending.timer); restartTimers.delete(server.id); }
+    if (reset) delete server.restartRecovery;
+    else if (server.restartRecovery) server.restartRecovery.nextAttemptAt = null;
+  }
+  function recoveryEligible(server) {
+    return !closed && server.autoRestart && store.data.servers.includes(server) && !processes.has(server.id) && !server.restoreRecoveryRequired && !server.storageMountError;
+  }
+  function queueRestart(server, { failure = true } = {}) {
+    if (!recoveryEligible(server)) return;
+    const state = failure ? recordRestartFailure(server.restartRecovery) : restartRecoveryState(server.restartRecovery);
+    cancelRestart(server); server.restartRecovery = state;
+    if (state.paused) {
+      log(server, `Automatic recovery paused after ${RESTART_POLICY.maxAttempts} retries within ${RESTART_POLICY.windowMs / 60000} minutes. Fix the reported failure, then start the server manually.`, 'error');
+      persistRuntime(server); return;
+    }
+    const delay = Math.max(0, (Date.parse(state.nextAttemptAt) || Date.now()) - Date.now());
+    log(server, `Automatic recovery in ${Math.ceil(delay / 1000)}s (attempt ${Math.min(state.attempts.length, RESTART_POLICY.maxAttempts)}/${RESTART_POLICY.maxAttempts}).`, 'warn');
+    const pending = { timer: null };
+    const run = async () => {
+      if (restartTimers.get(server.id) !== pending) return;
+      if (!recoveryEligible(server)) { cancelRestart(server); persistRuntime(server); return; }
+      // Maintenance freezes admission without spending a retry or forgetting
+      // the pending recovery when a short system operation finishes.
+      if (maintenance || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || server.jobId || server.cloneJobId) { pending.timer = setTimeout(run, 2000); pending.timer.unref?.(); return; }
+      try { await manager.action(server.id, 'start', true); }
+      catch (error) {
+        // A stop, disabled recovery, deletion, replacement run or another exit
+        // owns newer state. An older launch must never revive/overwrite it.
+        if (restartTimers.get(server.id) !== pending || !recoveryEligible(server)) return;
+        server.status = 'error'; server.error = error.message; log(server, error.message, 'error');
+        queueRestart(server); return;
+      }
+      if (restartTimers.get(server.id) === pending) {
+        restartTimers.delete(server.id);
+        if (server.restartRecovery) server.restartRecovery.nextAttemptAt = null;
+        persistRuntime(server);
+      }
+    };
+    pending.timer = setTimeout(run, delay);
+    pending.timer.unref?.(); restartTimers.set(server.id, pending); persistRuntime(server);
+  }
   function deliverConsole(server, command, action = 'server.command', { allowStopping = false, gameplay = false, internal = false } = {}) {
     const runtime = processes.get(server.id);
     if (!gameplay && runtime?.gameplay?.busy) fail('Console đang đọc hoặc áp dụng thao tác gameplay. Hãy chờ hoàn tất.', 409);
@@ -491,6 +536,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       const network = validateNetwork(networkServers(), server.id, { ...server, transport, udpPorts, debugPort: debuggerPort(properties) });
       pendingNetworks.set(server.id, network);
       Object.assign(properties, updating ? { 'server-port': String(server.port), 'server-portv6': String(server.portV6), transport, 'enable-lan-visibility': 'false' } : defaultProperties({ ...server, ...network }));
+      if (!updating && Object.hasOwn(packageProperties, 'content-log-console-output-enabled')) properties['content-log-console-output-enabled'] = 'true';
       if (transport === 'nethernet') properties['server-udp-ports'] = udpPorts;
       await atomicWrite(path.join(staging, 'server.properties'), serializeProperties(properties));
       if (transport === 'nethernet') await ensureServerIdentity(staging);
@@ -587,9 +633,6 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     validateNetwork(networkServers(), server.id, server);
     assertMemoryHeadroom({ host: await capacityHostInfo(), servers: capacityServers(), reserveRatio, minimumMemoryMiB: resourceControl.memory?.minMiB ?? 256 });
     if (closed) fail('Panel đang tắt.', 503);
-    const restartTimer = restartTimers.get(server.id);
-    if (restartTimer) { clearTimeout(restartTimer); restartTimers.delete(server.id); }
-    if (!automatic) crashes.delete(server.id);
     if (!isApp(server) && (process.platform !== 'linux' || process.arch !== 'x64')) fail('Bedrock Linux yêu cầu Ubuntu 22.04+ x86-64. Hãy triển khai panel trên Ubuntu.', 409);
     const workingDirectory = runDirectory(server);
     let executable, plan, properties = {};
@@ -677,15 +720,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       if (!runtime.expected) server.error = server.error || `${isApp(server) ? appKind(server) : 'Bedrock'} exited (code ${code}, signal ${signal || 'none'}).`;
       if (lastExit?.reason === 'memory-limit') { const message = memoryLimitExitMessage(appKind(server)); if (!runtime.expected) server.error = message; log(server, message, 'error'); }
       log(server, `Tiến trình dừng: code ${code}, signal ${signal || 'none'}.`, runtime.expected ? 'info' : 'error'); persistRuntime(server);
-      if (!runtime.expected && server.autoRestart && !closed) {
-        const attempts = (crashes.get(server.id) || []).filter(time => Date.now() - time < 10 * 60 * 1000);
-        attempts.push(Date.now()); crashes.set(server.id, attempts);
-        if (attempts.length <= 5) {
-          const delay = Math.min(60000, 2000 * 2 ** (attempts.length - 1));
-          log(server, `Tự khởi động lại sau ${delay / 1000}s (lần ${attempts.length}/5).`, 'warn');
-          restartTimers.set(server.id, setTimeout(() => { restartTimers.delete(server.id); manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); }); }, delay));
-        } else log(server, 'Tạm ngừng tự khởi động lại: quá 5 lần lỗi trong 10 phút.', 'error');
-      }
+      if (!runtime.expected) queueRestart(server);
       resolve();
     }));
     runtime.readyTimer = setTimeout(() => { if (runtimeCurrent(server, runtime) && !runtime.ready && !runtime.expected) { server.error = isApp(server) ? 'Application did not become ready within 30 seconds.' : 'Bedrock không báo sẵn sàng sau 90 giây.'; runtimeLog(server, runtime, server.error, 'error'); child.kill('SIGKILL'); } }, isApp(server) ? 30000 : 90000);
@@ -725,8 +760,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   async function stop(server, force = false, shutdown = false, noticeReason = 'stop') {
     assertIdle(server);
     if (!shutdown && !closed) delete server.resumeOnPanelStart;
-    const timer = restartTimers.get(server.id);
-    if (timer) { clearTimeout(timer); restartTimers.delete(server.id); }
+    cancelRestart(server, { reset: !shutdown });
     const runtime = processes.get(server.id);
     if (!runtime) { server.status = 'stopped'; persist(); return publicServer(server); }
     const wasRunning = server.status === 'running' && runtime.ready;
@@ -1738,6 +1772,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         await networkMetrics.initialize();
         await fs.mkdir(root, { recursive: true, mode: 0o700 });
         for (const server of store.data.servers) {
+          // A forced panel exit skips close(). The last durable active state
+          // still records intent; explicit stop was persisted as stopping.
+          if (!updatingAtBoot && ['running', 'starting'].includes(server.status)) server.resumeOnPanelStart = true;
           if(!updatingAtBoot){server.status = server.restoreRecoveryRequired || server.status === 'installing' ? 'error' : 'stopped';
           server.players = 0; server.memoryMB = 0; server.cpuPercent = 0; delete server.jobId; delete server.cloneJobId;}
           try { await ensureStorage(server); if(!updatingAtBoot)delete server.storageMountError; }
@@ -1753,7 +1790,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         if(!updatingAtBoot){persist();versionService.refresh().catch(() => {});}
         releaseTimer = setInterval(() => versionService.refresh().catch(() => {}), 6 * 60 * 60 * 1000); releaseTimer.unref();
       }
-      for (const server of store.data.servers.filter(item => !updatingAtBoot && !item.restoreRecoveryRequired && !item.storageMountError && (item.autoStart || item.resumeOnPanelStart) && !['running', 'starting'].includes(item.status))) manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); });
+      for (const server of store.data.servers.filter(item => !updatingAtBoot && !item.restoreRecoveryRequired && !item.storageMountError && !['running', 'starting'].includes(item.status))) {
+        const recovery = restartRecoveryState(server.restartRecovery);
+        if (recovery.paused) { if (server.restartRecovery) server.restartRecovery = recovery; continue; }
+        if (server.autoRestart && recovery.nextAttemptAt) { queueRestart(server, { failure: false }); continue; }
+        if (server.autoStart || server.resumeOnPanelStart) manager.action(server.id, 'start', true).catch(error => { server.status = 'error'; server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); queueRestart(server); });
+      }
       if (closed) return;
       // Arm CPU/RAM sampling before awaiting disk/network maintenance. Those
       // operations can take longer than the freshness window on a busy VPS.
@@ -1850,9 +1892,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         await resumeStorageWrites(server).catch(() => {});
         throw error;
       }
-      const timer = restartTimers.get(id); if (timer) { clearTimeout(timer); restartTimers.delete(id); }
+      cancelRestart(server, { reset: true });
       await logWriters.get(id)?.close();
-      for (const values of [logBuffers, consoleRuns, logWriters, serverMetrics, storageMetrics, crashes, applicationProjects, applicationProjectInstallStates]) values.delete(id);
+      for (const values of [logBuffers, consoleRuns, logWriters, serverMetrics, storageMetrics, applicationProjects, applicationProjectInstallStates]) values.delete(id);
       storagePaused.delete(id); deferredLogs.delete(id);
       const result = await finishDeletion(quarantine);
       if (fixedStorage) {
@@ -1941,6 +1983,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       const server = get(id);
       assertIdle(server);
       if (lifecycle.has(id)) fail('Server đang chuyển trạng thái. Vui lòng đợi.', 409);
+      if (!['start', 'stop', 'kill', 'restart'].includes(action)) fail('Thao tác không hợp lệ.');
+      if (!automatic) cancelRestart(server, { reset: true });
       const promise = (async () => {
         // Yield once so the lock is registered before an async operation starts.
         await Promise.resolve();
@@ -2173,7 +2217,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await Promise.allSettled([collectingMetrics, ...processMetricSamples].filter(Boolean));
       await capacityGate.close();
       versionService.close();
-      for (const timer of restartTimers.values()) clearTimeout(timer); restartTimers.clear();
+      for (const pending of restartTimers.values()) clearTimeout(pending.timer); restartTimers.clear();
       await Promise.allSettled([...lifecycle.values()]);
       await Promise.allSettled([...hostOperations]);
       await Promise.allSettled([...operations.values()]);

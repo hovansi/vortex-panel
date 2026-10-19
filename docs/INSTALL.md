@@ -29,7 +29,7 @@ The final output includes the panel URL and first-Admin setup instructions. No s
 2. Download that release's source ZIP and checksums through verified HTTPS. Check the archive's SHA-256, paths, file types and size before extraction.
 3. On fresh public setup, detect a public IPv4 through agreeing HTTPS lookup services, or validate your explicit `--public-ip` override. Preflight rejects unknown existing web configurations and occupied public web ports before taking them over.
 4. Prepare system dependencies and the panel's Node.js runtime; install npm dependencies from the lockfile; configure and start systemd.
-5. Verify `/healthz` against the service's actual MainPID. Prepare NGINX, a self-signed certificate containing the selected IP and a localhost reverse proxy. HTTP redirects to HTTPS.
+5. Verify `/healthz` against the service’s actual MainPID. Prepare NGINX, initial IP TLS and the loopback reverse proxy. Attempt a trusted IP certificate and install its renewal timer; keep working access if the CA request fails. Apply only supported, conservative owned network settings.
 6. Print access/setup guidance and remove temporary bootstrap files.
 
 The panel binds to `127.0.0.1:3000`; NGINX terminates HTTPS on port 443. Public setup sets `PUBLIC_URL` and `TRUST_PROXY` appropriately. When UFW is already active, the helper adds only its missing web-port allowances. It does not enable/reset UFW or manage the VPS provider's firewall. Minecraft and application ports are configured separately in the panel's network tools.
@@ -38,13 +38,13 @@ The bootstrap's checksum detects a source archive that differs from its publishe
 
 ## HTTPS and first login
 
-Automatic IP setup uses a **self-signed TLS certificate**. Your browser will display a certificate trust warning on first access. Compare the certificate fingerprint printed by the installer before trusting it. This provides encryption once the intended certificate is trusted; it is not a publicly trusted certificate issued by a certificate authority.
+Automatic IP setup attempts a **publicly trusted Let’s Encrypt IP certificate**. IP certificates last six days; the owned timer checks renewal every six hours. Inbound TCP 80 and 443 must remain reachable. See [HTTPS lifecycle and verification](HTTPS.md). The installer creates a private ACME account without a contact email and accepts the CA subscriber agreement as part of this automatic setup; use `--self-signed` to opt out before installation.
 
-The generated certificate expires after **365 days**. Automatic renewal is not configured, and panel updates preserve the existing certificate. Replace it before expiry, update any explicit trust decision when the certificate changes, and verify the new endpoint. The [HTTPS operations guide](OPERATIONS.md#https-bằng-domain-hoặc-ip) covers configuring a publicly trusted certificate and checking its renewal.
+If public issuance fails, the initial self-signed certificate remains available and the installer prints a warning. A self-signed fallback lasts 365 days and remains untrusted until the administrator explicitly trusts it; it is not a substitute for verified public issuance. Existing custom proxies/certificates are preserved. Inspect the actual HTTPS status in **Settings → Panel administration**.
 
 Open the printed HTTPS URL, enter the private setup token and create the first Admin. Existing accounts are retained during updates. The setup token is used only while no administrator exists; the administrator password must be at least 12 characters.
 
-For a domain or a publicly trusted IP certificate, use the documented [HTTPS configuration](OPERATIONS.md#https-bằng-domain-hoặc-ip). The automatic installer does not create an ACME account or accept a certificate authority's terms for you. Renewal and public reachability must be verified for your deployment.
+Custom domains and proxies can still be configured manually using the [HTTPS operations guide](OPERATIONS.md#https-bằng-domain-hoặc-ip). Automatic IP certificate management applies only to the exact Vortex-owned IP proxy. A source-only panel update preserves host access configuration; enabling a new host feature remains an explicit administrator action.
 
 If you need the initial token again, inspect the service journal on the host:
 
@@ -62,6 +62,8 @@ Pass options after `bash -s --`. They are optional for the standard command.
 | --- | --- |
 | `--version X.Y.Z` | Install one exact stable Vortex release instead of latest stable |
 | `--public-ip IPV4` | Supply the globally routable IPv4 to use for a fresh public setup when automatic discovery is unsuitable |
+| `--self-signed` | Retain self-signed IP access; do not request a public CA certificate |
+| `--no-network-tuning` | Skip automatic host network profile changes |
 | `--local-only` | Keep a fresh installation local-only; do not prepare public NGINX/HTTPS access |
 | `--root-mode` | Explicitly select root service mode for host terminal and local storage administration |
 | `--service-user` | Select the dedicated service account and disable the host terminal |

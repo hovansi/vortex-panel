@@ -22,6 +22,11 @@ LAYOUT = {
     'worker': {'source': '/opt/vortex-node', 'data': '/var/lib/vortex-node', 'config': '/etc/vortex-node', 'unit': 'vortex-node.service', 'manifest': 'install-ledger.json'},
 }
 EXTRA = ['/usr/local/libexec/vortex-host-zram.py', '/usr/local/libexec/vortex-application-isolation.py', '/etc/nginx/conf.d/vortex-panel.conf']
+# These mutable components have feature-specific ownership journals and exact
+# template/marker proofs. Capture their prior presence without adopting a file
+# that a concurrent administrator may have created during installation.
+MAINTENANCE_CAPTURE = ['/etc/sysctl.d/70-vortex-panel-network.conf', '/etc/sysctl.d/70-vortex-node-network.conf',
+                       '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer']
 UUID = re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$', re.I)
 INSTALLER_PACKAGES = set('ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev nginx'.split())
 # Optional shared access packages lack an exact per-APT transaction receipt;
@@ -135,7 +140,7 @@ def capture(args):
         paths += ['/opt/bedrock-panel', '/var/lib/bedrock-panel', '/etc/bedrock-panel.env', '/etc/systemd/system/bedrock-panel.service', '/etc/vortex-panel.env']
     else:
         paths += ['/etc/vortex-node.json']
-    paths += EXTRA
+    paths += EXTRA + MAINTENANCE_CAPTURE
     before = {'paths': {path: identity(path) if os.path.lexists(path) else None for path in paths}, 'accounts': accounts(), 'services': {}}
     for unit in [layout['unit'], 'nginx.service']:
         before['services'][unit] = {key: subprocess.run(['systemctl', 'show', unit, '--property=' + key, '--value'], capture_output=True, text=True, timeout=15).stdout.strip() for key in ['LoadState', 'ActiveState', 'UnitFileState']}
@@ -153,7 +158,7 @@ def capture(args):
             require(set(row) >= {'name', 'version', 'manual'} and re.fullmatch('[a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?', row['name']) and isinstance(row['version'], str) and type(row['manual']) is bool, 'Invalid bootstrap package evidence.')
         before['packages'] = bootstrap['packages']
         unknown = bootstrap.get('baselineUnknown') is True
-    existing = any(before['paths'][path] is not None for path in paths if path not in EXTRA)
+    existing = any(before['paths'][path] is not None for path in paths if path not in EXTRA + MAINTENANCE_CAPTURE)
     value = {'schemaVersion': 1, 'role': args.role, 'machineId': machine(), 'capturedAt': time.time(), 'packageBaselineKnown': not unknown, 'baselineUnknown': unknown or existing, 'freshInstall': not existing, 'before': before}
     write(args.capture_file, value)
     return {'ok': True, 'captureFile': args.capture_file, 'baselineUnknown': value['baselineUnknown']}
@@ -239,7 +244,7 @@ def finalize(args):
                 record(release, 'installer-created-release')
             record(current, 'installer-release-link')
     for path in EXTRA + ['/etc/systemd/system/' + layout['unit'], '/etc/vortex-panel.env' if args.role == 'panel' else '/etc/vortex-node.json']:
-        if os.path.lexists(path) and (transaction['paths'].get(path) is None or path in rows):
+        if os.path.lexists(path) and (path in transaction['paths'] and transaction['paths'][path] is None or path in rows):
             record(path, 'installer-created-fixed-component')
     # The config directory can also hold its older worker manifest. Record only
     # files created in a fresh config root; an existing TLS/helper is not adopted.

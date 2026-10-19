@@ -334,3 +334,23 @@ Admin-only `GET /api/nodes/:id/zram` returns `{nodeId,zram}`; `local` identifies
 The request returns200 only after a terminal result is observed. A timeout/transport failure may return `outcomeUnknown:true` and safe observed `zram` metadata. Follow up with GET; never automatically repeat the POST. Duplicate UUIDs cannot execute the system operation twice. Changed payloads, stale revisions, foreign ownership, unresolved history or competing maintenance return a conflict. The first profile supports only enable/disable; it cannot resize an active device.
 
 Zram never contributes to server allocation capacity. Game memory swap remains disabled; the main/worker reserve policy remains10%/0%. Native changes require the root managed Linux service, exact installed helper, fixed tools and >=180s effective stop allowance (installer sets240s).
+
+
+## VPS timezone, network and HTTPS
+
+All routes below require Admin, the authenticated session and CSRF protection for mutations. Timezone and network operations work on the local VPS or a linked agent. Older agents return an explicit upgrade requirement. These actions do not stop managed servers.
+
+| Method / path | Body / response |
+| --- | --- |
+| GET `/api/host/timezone` or `/api/nodes/:id/timezone` | `{nodeId,timezone:{available,timezone,zones,revision,busy,lastOperation,observedAt,reasonI18n}}` |
+| POST `/api/host/timezone` or `/api/nodes/:id/timezone` | `{nodeId,timezone,revision,requestId,confirmed:true}`; returns verified state and operation |
+| GET `/api/host/network` or `/api/nodes/:id/network` | `{network}` with actual kernel values, reversible owned profile and revision |
+| POST `/api/host/network` or `/api/nodes/:id/network` | `{action:"apply"\|"restore",revision,confirmed:true}`; returns verified kernel/profile state |
+| GET `/api/host/tls` | `{tls}` with certificate, expiry, renewal timer, jobs, revision and recovery state |
+| POST `/api/host/tls` | `{requestId,revision,confirmed:true,termsAccepted:true,adminPassword}`; HTTP 202 with `{job}` |
+| GET `/api/host/tls/jobs/:id` | `{job}` with actual durable progress or an explicit unknown outcome |
+| POST `/api/host/tls/recover` | `{requestId,revision,confirmed:true,adminPassword}`; HTTP 202 with verified `{tls,job}` |
+
+`requestId` is a UUID; `revision` comes from the latest corresponding GET response. Recovery uses the original TLS request ID and a fresh revision. It reconciles an interrupted operation without issuing another certificate. The Admin password is verified and removed before dispatch; it is never a task field. Certificate private keys, saved proxy configurations and ACME account material are not exposed by these APIs.
+
+The dashboard includes `panelTimezone` for every authenticated role, even when `host` is hidden. Panel timestamp labels use this main VPS timezone; saved timestamps remain UTC. Server metadata includes `restartRecovery:{attempt,maxAttempts,windowSeconds,paused,nextAttemptAt}`; `nextAttemptAt` is an ISO timestamp or null. See [timezone](TIMEZONE.md), [network profile](NETWORK-TUNING.md), [HTTPS](HTTPS.md) and [process recovery](RELIABILITY.md).

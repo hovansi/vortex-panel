@@ -26,11 +26,11 @@ A clean shutdown records workloads that should resume. Intentionally stopped wor
 
 ## HTTPS bằng domain hoặc IP
 
-Automatic public-IP setup uses a self-signed IP certificate valid for 365 days, without automatic renewal. Compare the printed SHA-256 fingerprint before accepting browser trust. Monitor expiry and replace the certificate before it expires; updates preserve existing access configuration.
+The installer attempts a trusted Let’s Encrypt IP certificate after the managed IP proxy is healthy. Certificates use the six-day profile and the owned renewal timer checks every six hours. Failed issuance keeps the previously serving configuration; fallback self-signed access still displays a browser trust warning. See [managed HTTPS](HTTPS.md) for prerequisites, ownership, recovery and renewal checks.
 
 For a domain or publicly trusted IP certificate, keep the panel bound to `127.0.0.1` behind NGINX. Adapt `deploy/nginx.conf.example` to the actual certificate, hostname and local port. Set `PUBLIC_URL=https://YOUR_DOMAIN` or `https://YOUR_IP` and `TRUST_PROXY=1` in `/etc/vortex-panel.env`, then restart the panel. Backend upload limits still apply.
 
-Let’s Encrypt provides IP certificates through its short-lived profile. Follow its [Certbot instructions for IP certificates](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html) and [certificate lifetime policy](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability). Issuance requires a compatible ACME client and a reachable challenge path. CA terms, certificate issuance and renewal are administrator-managed; the Vortex installer does not perform them.
+Let’s Encrypt supports IP certificates through its short-lived profile. Vortex uses a separate pinned Certbot environment, private ACME account/configuration and an HTTP webroot challenge. It validates the CA chain, IP, expiry, key pair and actual served fingerprint before declaring activation complete. Existing administrator-managed Certbot installations and hooks are not adopted. References: [Certbot IP instructions](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html), [certificate policy](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability).
 
 Validate configuration with `nginx -t` before reload. Configure renewal and a deployment hook that validates/reloads NGINX, monitor expiry and verify the certificate served externally. A renewal dry-run does not prove which certificate clients currently receive. Keep private keys accessible only to their required service identity.
 

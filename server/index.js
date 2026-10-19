@@ -26,12 +26,15 @@ import { capacityErrorPayload } from './capacity.js';
 import { storageErrorPayload } from './storage-volumes.js';
 import { applicationErrorPayload } from './application-runtime.js';
 import { createHostnameController, hostnameErrorPayload } from './hostname.js';
+import { createHostTimezoneController, timezoneErrorPayload } from './host-timezone.js';
+import { createHostNetworkTuningController, networkTuningErrorPayload } from './host-network-tuning.js';
+import { createHostTLSController, tlsErrorPayload } from './host-tls.js';
 import { playerListErrorPayload } from './player-lists.js';
 import { localeMiddleware, requestLanguage, localizeWebSocketEvent, formatPanelMessage, translatePanelMessage } from './locale.js';
 
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageVersion = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')).version;
-export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, panelRemovalControllerFactory = createPanelRemovalController, panelUpdateControllerFactory = createPanelUpdateController, hostnameController, powerController, zramController } = {}) {
+export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, panelRemovalControllerFactory = createPanelRemovalController, panelUpdateControllerFactory = createPanelUpdateController, hostnameController, powerController, zramController, timezoneController, networkController, tlsController } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const releaseLock = acquireDataLock(dataDir);
   let store;
@@ -59,7 +62,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
   });
   let secretVault;
   try { secretVault = createSecretVault(dataDir); } catch (error) { releaseLock(); throw error; }
-  let manager, nodes, provisioner, removal, panelRemoval, panelUpdate, systemPower, powerInfo, systemZram;
+  let manager, nodes, provisioner, removal, panelRemoval, panelUpdate, systemPower, powerInfo, systemZram, systemTimezone, systemNetwork, systemTLS, timezoneTimer, timezoneFlight;
   const systemHostname = hostnameController || createHostnameController();
   const auth = createAuth({ store, secretVault, ...(setupToken ? { setupToken } : {}), publicUrl: process.env.PUBLIC_URL || '', serverExists: id => (manager?.listServers() || store.data.servers).some(server => server.id === id) });
   app.use('/api/auth',(req,res,next)=>{
@@ -83,6 +86,9 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
   };
   try {
     manager = await createManager({ store, dataDir, emit });
+    systemTimezone = timezoneController || createHostTimezoneController({ role: 'panel', nodeId: 'local', dataDir, store });
+    await systemTimezone.read({ includeZones: false });
+    timezoneTimer = setInterval(() => { timezoneFlight ||= systemTimezone.read({ includeZones: false }).catch(() => {}).finally(() => { timezoneFlight = null; }); }, 60000); timezoneTimer.unref();
     const updateIntentProbe=createPanelUpdateIntentProbe({manager,dataDir,role:'panel',nodeId:'local',store});
     const restoreIntents=()=>{restoreFleetRemovalIntent({manager,dataDir,role:'panel',nodeId:'local',store});updateIntentProbe();};
     manager.setMaintenanceProbe?.(restoreIntents);restoreIntents();
@@ -112,8 +118,10 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     powerInfo = await systemPower.read();
     systemZram = zramController || createHostZramController({ role: 'panel', nodeId: 'local', dataDir, store, manager: hostManager });
     await systemZram.read();
+    systemNetwork = networkController || createHostNetworkTuningController({ role: 'panel', nodeId: 'local', store, manager });
+    systemTLS = tlsController || createHostTLSController({ store, manager });
   }
-  catch (error) { await panelUpdate?.close?.(); await panelRemoval?.close?.(); await systemZram?.close?.(); await removal?.close?.(); await systemPower?.close?.(); await manager?.close(); releaseLock(); throw error; }
+  catch (error) { clearInterval(timezoneTimer); await timezoneFlight; await systemTLS?.close?.(); await systemNetwork?.close?.(); await systemTimezone?.close?.(); await panelUpdate?.close?.(); await panelRemoval?.close?.(); await systemZram?.close?.(); await removal?.close?.(); await systemPower?.close?.(); await manager?.close(); releaseLock(); throw error; }
   app.use('/api', auth.requireAuth);
   app.use('/api', (req, res, next) => {
     const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
@@ -129,10 +137,10 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     req.fileAccess = match ? auth.fileAccess(req, decodeURIComponent(match[1])) : null;
     next();
   });
-  app.use('/api/host', auth.requireAdmin, createHostRouter({ store, dataDir, powerController: systemPower, zramController: systemZram, panelRemovalController: panelRemoval, panelUpdateController: panelUpdate, reauthenticateAdmin: auth.reauthenticateAdmin, manager }));
-  app.use('/api/nodes', createNodeRouter(nodes, { projectDir, provisioner, removal, store, hostnameController: systemHostname, powerController: systemPower, zramController: systemZram, reauthenticateAdmin: auth.reauthenticateAdmin }));
+  app.use('/api/host', auth.requireAdmin, createHostRouter({ store, dataDir, powerController: systemPower, zramController: systemZram, panelRemovalController: panelRemoval, panelUpdateController: panelUpdate, timezoneController: systemTimezone, networkController: systemNetwork, tlsController: systemTLS, reauthenticateAdmin: auth.reauthenticateAdmin, manager }));
+  app.use('/api/nodes', createNodeRouter(nodes, { projectDir, provisioner, removal, store, hostnameController: systemHostname, powerController: systemPower, zramController: systemZram, timezoneController: systemTimezone, networkController: systemNetwork, reauthenticateAdmin: auth.reauthenticateAdmin }));
   app.use('/api', createRemoteServerProxy(nodes));
-  app.use('/api', createRouter(manager, { dataDir, store }));
+  app.use('/api', createRouter(manager, { dataDir, store, timezoneController: systemTimezone }));
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API không tồn tại.' }));
   app.get('/healthz', (_req, res) => res.status(closing ? 503 : 200).set('Cache-Control', 'no-store').json({ ok: !closing, service: 'vortex-panel', version: packageVersion, processId: process.pid, instanceId: powerInfo.instanceId, maintenance: manager.maintenanceStatus?.() || null }));
   app.use(express.static(path.join(projectDir, 'public'), { maxAge: 0, dotfiles: 'deny', index: 'index.html', setHeaders(res, filename) {
@@ -143,7 +151,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
     if (status >= 500) console.error(error);
-    if (!res.headersSent) res.status(status).json(appearanceErrorPayload(error, _req.panelLanguage) || panelUpdateErrorPayload(error, _req.panelLanguage) || panelRemovalErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || nodeProvisionErrorPayload(error, _req.panelLanguage) || nodeErrorPayload(error.message, _req.panelLanguage) || { error: status >= 500 ? 'Thao tác thất bại. Xem nhật ký dịch vụ panel.' : error.message });
+    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || tlsErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || panelUpdateErrorPayload(error, _req.panelLanguage) || panelRemovalErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || nodeProvisionErrorPayload(error, _req.panelLanguage) || nodeErrorPayload(error.message, _req.panelLanguage) || { error: status >= 500 ? 'Thao tác thất bại. Xem nhật ký dịch vụ panel.' : error.message });
   });
   server.on('upgrade', (req, socket, head) => {
     const session = auth.readSession(req);
@@ -156,9 +164,13 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
   async function close() {
     closing = true;
     clearInterval(heartbeat);
+    clearInterval(timezoneTimer); await timezoneFlight;
     try {
       await panelUpdate.close?.();
       await panelRemoval.close?.();
+      await systemTLS.close?.();
+      await systemNetwork.close?.();
+      await systemTimezone.close?.();
       await systemHostname.close?.();
       await systemZram.close?.();
       await manager.close();
@@ -168,7 +180,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
       if (server.listening) await new Promise(resolve => server.close(resolve));
     } finally { releaseLock(); }
   }
-  return { app, server, store, manager, nodes, provisioner, removalController: removal, panelRemovalController: panelRemoval, panelUpdateController: panelUpdate, auth, powerController: systemPower, zramController: systemZram, close };
+  return { app, server, store, manager, nodes, provisioner, removalController: removal, panelRemovalController: panelRemoval, panelUpdateController: panelUpdate, auth, powerController: systemPower, zramController: systemZram, timezoneController: systemTimezone, networkController: systemNetwork, tlsController: systemTLS, close };
 }
 
 // systemd starts through the current release symlink; ESM resolves its real path.

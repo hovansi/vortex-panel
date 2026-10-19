@@ -41,14 +41,35 @@ export function runHostTerminal(command, { cwd, spawnProcess = spawn, killGroup 
     child.on('close', code => finish(code ?? -1));
   });
 }
-export function createHostRouter({ store, dataDir, powerController, zramController, panelRemovalController, panelUpdateController, reauthenticateAdmin, manager }) {
+export function createHostRouter({ store, dataDir, powerController, zramController, panelRemovalController, panelUpdateController, timezoneController, networkController, tlsController, reauthenticateAdmin, manager }) {
   const router = express.Router();
   const enabled = process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true';
-  const info = () => getHostInfo(dataDir);
+  const info = async () => ({ ...await getHostInfo(dataDir), systemTimezone: timezoneController?.current?.()?.timezone || null });
   let running = false;
   let diagnosticsCache;
   let diagnosticsFlight;
   const scrubSSH = input => { for (const row of [...(Array.isArray(input?.ssh)?input.ssh:[input?.ssh]),...(Array.isArray(input?.connections)?input.connections.map(row=>row?.ssh):[])]) if (row && typeof row === 'object') for (const key of ['password', 'privateKey', 'passphrase']) delete row[key]; };
+  if (timezoneController) {
+    router.get('/timezone', async (_req, res) => res.json({ nodeId: 'local', timezone: await timezoneController.read() }));
+    router.post('/timezone', async (req, res) => {
+      const perform = () => timezoneController.request(req.body, { user: req.session.user });
+      res.json(await (manager?.withHostOperation ? manager.withHostOperation(perform) : perform()));
+    });
+  }
+  if (networkController) {
+    router.get('/network', async (_req, res) => res.json({ network: await networkController.read() }));
+    router.post('/network', async (req, res) => res.json(await networkController.request(req.body, { user: req.session.user })));
+  }
+  if (tlsController) {
+    router.get('/tls', async (_req, res) => res.json({ tls: await tlsController.read() }));
+    router.get('/tls/jobs/:id', async (req, res) => res.json({ job: await tlsController.job(req.params.id) }));
+    for (const action of ['start', 'recover']) router.post(action === 'start' ? '/tls' : '/tls/recover', async (req, res) => {
+      const input = { ...(req.body || {}) }, password = input.adminPassword; delete input.adminPassword;
+      if (req.body && typeof req.body === 'object') delete req.body.adminPassword;
+      await reauthenticateAdmin(req, password);
+      res.status(202).json(await tlsController[action](input, req.session.user));
+    });
+  }
   if(panelUpdateController){
     router.get('/update',async(req,res)=>res.json(await panelUpdateController.plan({refresh:req.query.refresh==='true'})));
     router.get('/update/jobs',(_req,res)=>res.json({jobs:panelUpdateController.jobs()}));
