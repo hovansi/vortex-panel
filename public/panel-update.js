@@ -36,8 +36,12 @@ export function panelUpdateSummary(plan){
  if(count)return text(`${count} linked VPS need a one-time worker maintenance upgrade. Open the plan for details.`,`${count} VPS liên kết cần nâng cấp worker một lần bằng bộ cài bảo trì. Mở kế hoạch để xem chi tiết.`);
  if(plan.availableReason==='fleet')return text('The main panel is current. Linked workers have updates available.','Panel chính đã mới nhất. Có bản cập nhật cho VPS liên kết.');
  if(plan.available)return text('A newer stable release is available. Review the fleet before updating.','Đã có bản ổn định mới. Kiểm tra cụm VPS trước khi cập nhật.');
- if(plan.blockers?.length)return text('Some VPS could not be verified for updates. Review the fleet status.','Chưa xác minh được cập nhật cho một số VPS. Kiểm tra trạng thái cụm VPS.');
- return plan.latestVersion?text('The panel and observed linked VPS are current.','Panel và các VPS liên kết đã xác minh đang dùng bản mới nhất.'):text('Release information is unavailable. Check again to see details.','Chưa lấy được thông tin phát hành. Kiểm tra lại để xem chi tiết.');
+ const blockers=plan.blockers||[];
+ const current=plan.release?.verified===true&&plan.release.version===plan.latestVersion&&VERSION.test(plan.latestVersion||'')&&plan.currentVersion===plan.latestVersion&&plan.mainUpdateRequired!==true&&!plan.laggingNodeIds?.length&&plan.nodes?.length&&plan.nodes.every(row=>row.version===plan.latestVersion&&row.needsUpdate!==true&&(row.local||row.versionStale===false));
+ // Running workloads block applying an update, not verifying an already-current fleet.
+ if(current&&blockers.every(row=>row?.code==='UPDATE_SERVERS_RUNNING'))return text('The panel and observed linked VPS are current.','Panel và các VPS liên kết đã xác minh đang dùng bản mới nhất.');
+ if(blockers.length||plan.release?.verified===true&&plan.latestVersion)return text('Some VPS could not be verified for updates. Review the fleet status.','Chưa xác minh được cập nhật cho một số VPS. Kiểm tra trạng thái cụm VPS.');
+ return text('Release information is unavailable. Check again to see details.','Chưa lấy được thông tin phát hành. Kiểm tra lại để xem chi tiết.');
 }
 export async function syncPanelUpdateSettings(root,context){
  const card=root.querySelector('[data-panel-update-settings]');if(!card)return;
