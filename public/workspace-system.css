@@ -142,6 +142,13 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
 .server-view-options{display:flex;align-items:center;gap:3px;padding:3px;border:1px solid var(--line);border-radius:11px;background:var(--field)}
 .server-view-options>button{min-width:36px;min-height:34px;padding:7px 10px;border-radius:8px;color:var(--muted)}
 .server-view-options>button[aria-pressed=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px #0000000d}
+@media(min-width:1001px){
+  .server-library-toolbar{gap:12px;flex-wrap:wrap}
+  .server-library-toolbar>:is(.select-control,.server-node-filter){flex:0 1 220px;width:220px;min-width:160px}
+  .server-library-toolbar>.version-search{flex:1 1 240px;min-width:200px;max-width:none}
+  .server-library-toolbar>:is(.version-channel,.server-view-options){flex:0 0 auto}
+  .server-library-toolbar .version-channel>button{flex:0 0 auto;white-space:nowrap}
+}
 .server-grid[data-layout=list],.server-list-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:9px}
 .server-row{
   display:grid;grid-template-columns:minmax(190px,1fr) minmax(85px,.5fr) max-content max-content auto;
@@ -256,6 +263,7 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
 @media(max-width:420px){
   .toolbar{padding-inline:12px}.workspace{padding-inline:14px}.workspace>.page-heading h1{font-size:25px}
   .page-heading>.btn{font-size:11px}.page-heading{gap:12px}.usage-tile{border-radius:12px;padding:13px}
+  .server-library-toolbar .version-channel>button{flex:1 0 auto;white-space:nowrap;padding-inline:8px}
   .server-row{padding:13px}.server-row-open{gap:9px}.server-row-node{padding-left:45px}
   .mobile-nav>a,.mobile-nav>button{font-size:9px}.auth-card{padding:26px 23px;border-radius:18px}
 }

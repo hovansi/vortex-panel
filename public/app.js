@@ -236,8 +236,8 @@ function fleetAudience(){
  return {label:nodeText('Enabled schedules','Lịch đang bật'),value:(schedules||[]).filter(schedule=>schedule.enabled===true).length,total:schedules?.length||0,unknown:!Array.isArray(schedules)||schedules.some(serverNodeUnavailable)||state.servers.some(serverNodeUnavailable)||(state.nodes||[]).some(node=>node.online!==true),foot:nodeText('Scheduled automation','Tự động hóa theo lịch'),glyph:'clock'};
 }
 function overviewSummaryValues(){
- const audience=fleetAudience(),nodes=state.nodes||[],unknown=state.servers.some(serverNodeUnavailable),running=state.servers.filter(server=>server.status==='running'&&!serverNodeUnavailable(server)).length;
- return {running:`${unknown?'—':running}<small>/ ${state.servers.length}</small>`,schedules:audience.unknown?'—':`${audience.value}<small>/ ${audience.total}</small>`,nodes:`${nodes.filter(node=>node.online===true).length}<small>/ ${nodes.length}</small>`,tasks:audience.unknown||(state.data?.jobs||[]).some(serverNodeUnavailable)?'—':(state.data?.jobs||[]).filter(job=>['running','pending','queued'].includes(job.status)).length};
+ const audience=fleetAudience(),nodes=state.nodes||[],unknown=state.servers.some(serverNodeUnavailable),running=state.servers.filter(server=>server.status==='running'&&!serverNodeUnavailable(server)).length,activeJobs=(state.data?.jobs||[]).filter(job=>['running','pending','queued'].includes(job.status));
+ return {running:`${unknown?'—':running}<small>/ ${state.servers.length}</small>`,schedules:audience.unknown?'—':`${audience.value}<small>/ ${audience.total}</small>`,nodes:`${nodes.filter(node=>node.online===true).length}<small>/ ${nodes.length}</small>`,tasks:audience.unknown||activeJobs.some(job=>job.nodeOnline===false)?'—':activeJobs.length};
 }
 function overviewSummaryMarkup(){
  const values=overviewSummaryValues();
