@@ -24,6 +24,7 @@ CONFIG = '/etc/nginx/conf.d/vortex-panel.conf'
 STATE = '/etc/vortex-panel/tls-management.json'
 ACME = '/etc/vortex-panel/acme'
 WORK = '/var/lib/vortex-panel-acme'
+LOGS = '/var/lib/vortex-panel-acme-logs'
 RUNTIME = '/opt/vortex-panel/acme-runtime'
 MANAGED = '/etc/vortex-panel/tls-managed'
 UNIT = 'vortex-panel-tls-renew'
@@ -358,8 +359,28 @@ class TLSManager:
         filename = WORK + '/challenges/.well-known/acme-challenge/' + name
         self.write(filename, name.encode(), mode=0o644)
         try:
-            result = self.runner(['curl', '--noproxy', '*', '--fail', '--silent', '--max-time', '5', '--resolve', address + ':80:127.0.0.1', 'http://' + address + '/.well-known/acme-challenge/' + name], check=False)
-            need(result.returncode == 0 and result.stdout == name, 'TLS_CHALLENGE')
+            # Panel and renewal services use UMask=0077. This random public
+            # readiness token must be readable by nginx's unprivileged workers.
+            self.path(filename).chmod(0o644)
+            # systemctl reload acknowledges nginx's reload signal. The old
+            # workers can still answer a fresh connection with their redirect
+            # before the new challenge location becomes ready. Keep the token
+            # available and retry only this local, exact-content readiness test.
+            deadline = time.monotonic() + 8
+            while True:
+                remaining = deadline - time.monotonic()
+                milliseconds = min(2000, int(remaining * 1000))
+                need(milliseconds >= 1, 'TLS_CHALLENGE')
+                duration = '%.3f' % (milliseconds / 1000)
+                connect = '%.3f' % (min(milliseconds, 1000) / 1000)
+                try:
+                    result = self.runner(['curl', '--noproxy', '*', '--fail', '--silent', '--connect-timeout', connect, '--max-time', duration, '--resolve', address + ':80:127.0.0.1', 'http://' + address + '/.well-known/acme-challenge/' + name], timeout=remaining, check=False)
+                except subprocess.TimeoutExpired:
+                    raise TLSError('TLS_CHALLENGE') from None
+                if result.returncode == 0 and result.stdout == name:
+                    return
+                need(time.monotonic() < deadline, 'TLS_CHALLENGE')
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
         finally:
             self.path(filename).unlink(missing_ok=True)
 
@@ -522,13 +543,13 @@ class TLSManager:
             self.owned_directory(ACME, 'certbot-private-lineage')
             self.owned_directory(WORK, 'acme-webroot-and-workspace')
             self.directory(WORK + '/work', create=True)
-            self.owned_directory('/var/log/vortex-panel-acme', 'acme-private-logs')
+            self.owned_directory(LOGS, 'acme-private-logs')
             if raw == original:
                 self.write(CONFIG, challenge, mode=0o644, expected=raw)
                 self.nginx_reload()
             self.probe_challenge(address)
             progress('issuing', 55)
-            args = [executable, 'certonly', '--config', '/dev/null', '--no-directory-hooks', '--non-interactive', '--agree-tos', '--register-unsafely-without-email', '--no-eff-email', '--required-profile', 'shortlived', '--webroot', '--webroot-path', str(self.path(WORK + '/challenges')), '--ip-address', address, '--cert-name', 'vortex-panel-ip', '--server', CA, '--config-dir', str(self.path(ACME)), '--work-dir', str(self.path(WORK + '/work')), '--logs-dir', str(self.path('/var/log/vortex-panel-acme')), '--max-log-backups', '3']
+            args = [executable, 'certonly', '--config', '/dev/null', '--no-directory-hooks', '--non-interactive', '--agree-tos', '--register-unsafely-without-email', '--no-eff-email', '--required-profile', 'shortlived', '--webroot', '--webroot-path', str(self.path(WORK + '/challenges')), '--ip-address', address, '--cert-name', 'vortex-panel-ip', '--server', CA, '--config-dir', str(self.path(ACME)), '--work-dir', str(self.path(WORK + '/work')), '--logs-dir', str(self.path(LOGS)), '--max-log-backups', '3']
             result = self.runner(args, timeout=240, check=False)
             need(result.returncode == 0, 'TLS_ISSUANCE')
             identity, cert = self.stage_candidate(address)
@@ -566,7 +587,8 @@ class TLSManager:
         self.save(state)
         try:
             executable = self.runtime()
-            args = [executable, 'renew', '--config', '/dev/null', '--no-directory-hooks', '--non-interactive', '--cert-name', 'vortex-panel-ip', '--config-dir', str(self.path(ACME)), '--work-dir', str(self.path(WORK + '/work')), '--logs-dir', str(self.path('/var/log/vortex-panel-acme')), '--max-log-backups', '3']
+            self.owned_directory(LOGS, 'acme-private-logs')
+            args = [executable, 'renew', '--config', '/dev/null', '--no-directory-hooks', '--non-interactive', '--cert-name', 'vortex-panel-ip', '--config-dir', str(self.path(ACME)), '--work-dir', str(self.path(WORK + '/work')), '--logs-dir', str(self.path(LOGS)), '--max-log-backups', '3']
             need(self.runner(args, timeout=240, check=False).returncode == 0, 'TLS_RENEW')
             identity, certificate = self.stage_candidate(address)
             self.activate(identity, certificate, state['renewal'], state, address, port)
@@ -588,6 +610,7 @@ class TLSManager:
         return {ACME: ('vortex-owner.json', {'schema': 1, 'owner': 'vortex-panel', 'purpose': 'certbot-private-lineage'}),
                 MANAGED: ('vortex-owner.json', {'schema': 1, 'owner': 'vortex-panel', 'purpose': 'validated-certificate-generations'}),
                 WORK: ('vortex-owner.json', {'schema': 1, 'owner': 'vortex-panel', 'purpose': 'acme-webroot-and-workspace'}),
+                LOGS: ('vortex-owner.json', {'schema': 1, 'owner': 'vortex-panel', 'purpose': 'acme-private-logs'}),
                 '/var/log/vortex-panel-acme': ('vortex-owner.json', {'schema': 1, 'owner': 'vortex-panel', 'purpose': 'acme-private-logs'}),
                 RUNTIME: ('vortex-runtime.json', {'certbot': CERTBOT_VERSION})}
 

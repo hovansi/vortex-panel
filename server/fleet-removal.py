@@ -30,7 +30,7 @@ MACHINE = re.compile(r'^[a-f0-9]{32}$')
 ZONE = re.compile(r'^(?:[A-Za-z0-9_+-]+/)*[A-Za-z0-9_+-]+$')
 NETWORK_KEYS = ('net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_congestion_control', 'net.core.default_qdisc')
 TLS_PATHS = ('/etc/vortex-panel/tls-management.json', '/etc/vortex-panel/acme', '/etc/vortex-panel/tls-managed', '/opt/vortex-panel/acme-runtime',
-             '/var/lib/vortex-panel-acme', '/var/log/vortex-panel-acme', '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer')
+             '/var/lib/vortex-panel-acme', '/var/lib/vortex-panel-acme-logs', '/var/log/vortex-panel-acme', '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer')
 WORK = '/run/vortex-fleet-removal'
 LOCK = '/run/vortex-os-maintenance.lock'
 NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)

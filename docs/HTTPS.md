@@ -25,3 +25,6 @@ Certificate expiry, automatic renewal state and recent request progress appear i
 Uninstall disables the owned renewal timer before removing its verified private artifacts. Changed or externally managed configurations require review and are preserved. Worker agent certificates continue using their existing pinned TLS identity; this feature manages browser access to the main panel.
 
 Implementation references: [Let’s Encrypt IP certificates with Certbot](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html), [Certbot renewal documentation](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates).
+
+
+ACME logs use the root-private `/var/lib/vortex-panel-acme-logs` directory. Ubuntu can make `/var/log` writable by the syslog group; Vortex preserves that OS configuration and keeps its strict ownership checks. Version 0.22.1 corrects automatic certificate setup on those hosts. Verified legacy Vortex log directories from 0.22.0 remain covered by owned uninstall cleanup. Before contacting the certificate authority, a bounded local check waits for NGINX to serve the exact random challenge token after reload. Only the public probe token is made readable by NGINX, including under a restrictive service umask; private keys and account files retain their permissions.
