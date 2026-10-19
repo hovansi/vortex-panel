@@ -5,7 +5,7 @@
   const root = document.documentElement;
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
-  root.style.backgroundColor = theme === 'dark' ? '#161422' : '#eeedf8';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#232133' : '#eeedf8');
+  root.style.backgroundColor = theme === 'dark' ? '#1b1c20' : '#f5f5f7';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#1b1c20' : '#f5f5f7');
   document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', theme);
 })();

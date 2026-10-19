@@ -8,7 +8,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.22.4'
+        default: 'v0.23.0'
         type: string
 
 permissions:

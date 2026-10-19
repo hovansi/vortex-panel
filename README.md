@@ -14,7 +14,7 @@
 
 **Servers. Applications. Your own infrastructure.**
 
-Vortex Panel is a Node.js control panel for **Minecraft Bedrock, Node.js and Python** on Ubuntu. Manage local servers and linked VPS nodes through one responsive workspace: live console, files, backups, resource limits and everyday administration. The interface combines soft glass surfaces, abstract artwork and purposeful motion, with light/dark themes and **English / Tiếng Việt**. English is the default.
+Vortex Panel is a Node.js control panel for **Minecraft Bedrock, Node.js and Python** on Ubuntu. Manage local servers and linked VPS nodes through one responsive workspace: live console, files, backups, resource limits and everyday administration. The interface uses a full-window workspace, compact server lists and grouped settings, with light/dark themes and **English / Tiếng Việt**. English is the default.
 
 Created by **@hovansi** · Maintained at [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel).
 
@@ -75,6 +75,7 @@ Use a fresh VPS for the automatic public setup. An existing web server or occupi
 | [Worlds & recovery](docs/WORLDS.md) · [Online backups](docs/ONLINE-BACKUPS.md) | Protect, transfer and restore Minecraft data |
 | [Operations](docs/OPERATIONS.md) | Whole-panel snapshots, service maintenance and recovery |
 | [Panel updates](docs/PANEL-UPDATES.md) | Prepare a safe fleet update, understand progress and recover the existing request |
+| [Workspace design](docs/DESIGN.md) | Navigation, keyboard controls, saved appearance and browser installation |
 | [Server appearance](docs/SERVER-APPEARANCE.md) | Covers, icons, descriptions, accents and actual Bedrock listing text |
 | [API](docs/API.md) | Management endpoints and authorization |
 | [Release process](docs/publication.md) | Public source inventory, checksums and GitHub Actions |
