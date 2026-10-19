@@ -2,6 +2,7 @@ name: Release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -14,15 +15,14 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
   verify:
     name: Verify tag / Node 22 / ${{ matrix.os }}
+    if: ${{ github.event_name != 'push' || github.ref_type == 'tag' || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release v')) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -42,25 +42,39 @@ jobs:
       - name: Require an exact stable version tag
         id: version
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
+          import { readFileSync, appendFileSync } from 'node:fs';
           import { execFileSync } from 'node:child_process';
           const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
           const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-          const tag = process.env.RELEASE_TAG;
-          if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const automatic = process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'branch'
+            && process.env.GITHUB_REF === 'refs/heads/main';
+          const tag = automatic ? `v${pkg.version}` : process.env.RELEASE_TAG;
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version)
+              || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
               || tag !== `v${pkg.version}` || lock.version !== pkg.version
               || lock.packages?.['']?.version !== pkg.version) throw new Error('Tag and package versions must match exactly.');
+          if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(process.env.GITHUB_REPOSITORY)
+              || process.env.GITHUB_SERVER_URL !== 'https://github.com' || event.repository?.private !== false
+              || event.repository?.full_name !== process.env.GITHUB_REPOSITORY) throw new Error('Exact public GitHub release scope required.');
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
           if (head !== process.env.GITHUB_SHA) throw new Error('The checkout must resolve to the validated commit.');
-          if (process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag') {
+          if (automatic) {
+            if (event.ref !== 'refs/heads/main' || event.head_commit?.id !== process.env.GITHUB_SHA
+                || typeof event.head_commit?.message !== 'string'
+                || event.head_commit.message.split(/\r?\n/, 1)[0] !== `Release v${pkg.version}`) throw new Error('Automatic publication requires the exact release commit on main.');
+          } else if (process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag'
+              && process.env.GITHUB_REF === `refs/tags/${tag}` && event.ref === process.env.GITHUB_REF) {
             const tagged = execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { encoding: 'utf8' }).trim();
             if (head !== tagged) throw new Error('The tag must resolve to the validated commit.');
-          } else if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF_TYPE !== 'branch') {
-            throw new Error('Use a tag push or a maintainer dispatch from a branch.');
+          } else if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF_TYPE !== 'branch'
+              || !process.env.GITHUB_REF?.startsWith('refs/heads/')) {
+            throw new Error('Use an exact release commit on main, a tag push or a maintainer branch dispatch.');
           }
+          appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
           NODE
       - name: Install locked dependencies
         run: npm ci
@@ -76,8 +90,11 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ needs.verify.outputs.tag }}
+      cancel-in-progress: false
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ needs.verify.outputs.tag }}
     steps:
       - name: Check out validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -111,15 +128,28 @@ jobs:
           import { spawnSync, execFileSync } from 'node:child_process';
           const need = (value, message) => { if (!value) throw new Error(message); };
           const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
           const tag = process.env.RELEASE_TAG;
           const repo = process.env.GH_REPO;
-          const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.GITHUB_REF_TYPE === 'branch';
-          need(/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
-            && tag === `v${pkg.version}` && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)
+          const manual = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.GITHUB_REF_TYPE === 'branch'
+            && process.env.GITHUB_REF?.startsWith('refs/heads/');
+          const automatic = process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'branch'
+            && process.env.GITHUB_REF === 'refs/heads/main';
+          const tagged = process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag'
+            && process.env.GITHUB_REF === `refs/tags/${tag}` && event.ref === process.env.GITHUB_REF;
+          need(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version)
+            && /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)
+            && tag === `v${pkg.version}` && lock.version === pkg.version && lock.packages?.['']?.version === pkg.version
+            && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(repo)
             && repo === process.env.GITHUB_REPOSITORY && process.env.GITHUB_SERVER_URL === 'https://github.com'
-            && (manual || process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF_TYPE === 'tag'), 'Exact public GitHub release scope required.');
+            && event.repository?.full_name === repo && event.repository?.private === false
+            && (manual || automatic || tagged), 'Exact public GitHub release scope required.');
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
           need(head === process.env.GITHUB_SHA, 'The build must use the validated commit.');
+          if (automatic) need(event.ref === 'refs/heads/main' && event.head_commit?.id === process.env.GITHUB_SHA
+            && typeof event.head_commit?.message === 'string'
+            && event.head_commit.message.split(/\r?\n/, 1)[0] === `Release v${pkg.version}`, 'Automatic publication requires the exact release commit on main.');
           const directory = join('output', 'release', tag);
           const names = [`vortex-panel-${pkg.version}.zip`, 'SHA256SUMS', 'install.sh', 'release-manifest.json'];
           need(JSON.stringify(readdirSync(directory).sort()) === JSON.stringify([...names].sort()), 'Only the four reviewed release assets may be uploaded.');
@@ -165,7 +195,7 @@ jobs:
           need(!allReleases().some(row => row.tag_name === tag), 'A draft or published release already exists for this tag; inspect it instead of replaying creation.');
           const checkTag = () => need(api(`repos/${repo}/commits/${tag}`).sha === head, 'Remote tag changed; refusing publication.');
           if (gh(['api', '--include', '--silent', `repos/${repo}/git/ref/tags/${tag}`], true) === null) {
-            need(manual, 'Only a maintainer dispatch can create a missing release tag.');
+            need(manual || automatic, 'Only a maintainer dispatch or exact release commit on main can create a missing release tag.');
             // One explicit creation after tests and absence checks. A timeout or
             // lost acknowledgement stops; never retry a possibly completed write.
             gh(['api', '--method', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${tag}`, '-f', `sha=${head}`]);
