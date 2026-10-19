@@ -5,6 +5,7 @@ const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 const names={backup:['Backup','Sao lưu'],restart:['Restart','Khởi động lại'],command:['Console command','Lệnh console']};
 const statuses={idle:['Waiting','Chờ chạy'],running:['Running','Đang chạy'],completed:['Completed','Hoàn tất'],failed:['Failed','Thất bại']};
 const renderedCells=new WeakMap();
+const pendingControls=new WeakMap();
 const label=(map,key)=>map[key]?text(...map[key]):key;
 const button=(action,id,title,icon,disabled,extra='')=>`<button type="button" class="icon-button" data-action="${action}" data-id="${escape(id)}" ${disabled?'disabled':''} ${extra} aria-label="${escape(title)}" title="${escape(title)}">${icon}</button>`;
 
@@ -50,8 +51,16 @@ export function syncSchedules(root,data,context){
   let cursor=body.firstElementChild;
   for(const schedule of schedules){
     const model=scheduleRowModel(schedule,context);let row=existing.get(model.id);
+    const pending=new Set([...(pendingControls.get(row)||[]),...(row?.querySelectorAll('button[data-action]')||[])].filter(button=>button.dataset.pending==='true'));
     if(!row){const template=body.ownerDocument.createElement('template');uiHTML(template,rowMarkup(model));row=template.content.firstElementChild;}
     else for(let index=0;index<model.cells.length;index++){const cell=row.children[index];if(renderedCells.get(row)?.[index]!==model.cells[index]&&cell.innerHTML!==model.cells[index])uiHTML(cell,model.cells[index]);}
+    // Click handlers temporarily disable their control. A fast job may finish
+    // before a running snapshot is observed, leaving unchanged action markup.
+    // Reconcile properties without remounting the cell or discarding focus.
+    // Keep an original pending owner across cell replacement; its release
+    // clears the marker even when detached. Never copy a stale busy flag.
+    for(const button of row.querySelectorAll('button[data-action]'))button.disabled=schedule.status==='running'||[...pending].some(owner=>owner.dataset.action===button.dataset.action&&owner.dataset.id===button.dataset.id);
+    if(pending.size)pendingControls.set(row,pending);else pendingControls.delete(row);
     renderedCells.set(row,model.cells);
     if(row!==cursor)body.insertBefore(row,cursor);cursor=row.nextElementSibling;existing.delete(model.id);
   }
