@@ -1,6 +1,6 @@
 {
   "name": "vortex-panel",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "private": true,
   "type": "module",
   "description": "Vortex Panel — Minecraft, Node.js and Python server management for Ubuntu",

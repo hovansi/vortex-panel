@@ -1,7 +1,9 @@
 # Vortex Panel artwork
 
-`public/assets/vortex-world.webp` delivers the original generated voxel landscape artwork for the Vortex Panel interface. It is not an official Mojang or Apple asset. Created with the built-in ImageGen tool on 2026-10-12, then copied into the project so the interface can run without an external image service.
+`public/assets/vortex-infrastructure.webp` is the original abstract infrastructure artwork used by the login scene and default workspace covers. It represents a shared workspace for game servers, Node.js services, and Python applications. No third-party game or programming-language logo is included.
 
-The bundled WebP is 2172 × 724 pixels and 312,138 bytes. It is served locally, with SHA-256 `38b991ecc1950e6d675824e4acc6e264ffc6bd9eed04b1aa1341663bd1ddbf76`.
+Created with the built-in ImageGen tool on 2026-10-19 and bundled locally. The WebP keeps the generated composition and dimensions at 1774 × 887 pixels, encoded to 101,770 bytes. SHA-256: `e35081dc12ab5b69955d95b687e8e69e5f521958ed660fcfd68c2f50873140aa`.
 
-Generation prompt: Wide original panoramic voxel world for an iOS-style Minecraft Bedrock dashboard; floating lush grassy terraces, turquoise river and stepped waterfall, cubic trees, snowy block mountains, a subtle violet portal on the right, pastel lilac sunrise and atmospheric mist. Keep the left area calmer for a UI overlay. Crisp block geometry, cinematic depth, emerald/aqua/indigo palette. Landscape artwork only, no text, UI, logo, watermark, or characters.
+The login preloads and decodes this local image before revealing the form and scene together. A bounded local fallback handles failed or slow downloads without swapping artwork behind a form that is already visible.
+
+Generation prompt: Wide cinematic abstract 3D artwork for Vortex Panel, a server and infrastructure management workspace. Translucent satin-glass ribbons and softly rounded metallic forms trace a vortex around a calm center, with small luminous network nodes and subtle light trails. Restrained lavender, deep plum, slate blue and soft cyan, diffuse studio lighting and smooth physical materials. Flowing forms around the outer edges, uncluttered center for the login card and mobile cropping. No text, code, logos, game terrain, Minecraft references, characters, interface panels or watermark.

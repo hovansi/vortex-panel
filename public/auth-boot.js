@@ -1,8 +1,8 @@
 /* Decode the local scene before revealing authentication; never replace a fallback mid-session. */
 const root=document.documentElement;
-const artwork=new Image(2172,724);
+const artwork=new Image(1774,887);
 artwork.className='auth-art';artwork.alt='';artwork.setAttribute('aria-hidden','true');
-artwork.decoding='async';artwork.fetchPriority='high';artwork.src='/assets/vortex-world.webp';
+artwork.decoding='async';artwork.fetchPriority='high';artwork.src='/assets/vortex-infrastructure.webp';
 let scene=null,settle,deadline,epoch=0;
 const ready=new Promise(resolve=>{settle=value=>{if(scene!==null)return;scene=value;clearTimeout(deadline);resolve(value);};});
 deadline=setTimeout(()=>settle('fallback'),2400);

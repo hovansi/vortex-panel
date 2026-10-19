@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readZramTelemetry, unavailableZramTelemetry } from './zram-telemetry.js';
 
 const units = Object.freeze({ panel: 'vortex-panel.service', worker: 'vortex-node.service' });
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -98,10 +99,12 @@ function nativeHelper(helperPath, action, value) {
 
 export function createHostZramController({ role = 'panel', nodeId = 'local', dataDir, store, manager,
   helperPath = '/usr/local/libexec/vortex-host-zram.py', platform = process.platform, uid = process.getuid?.(), processId = process.pid,
-  instanceId = randomUUID(), execFile = promisify(nodeExecFile), inspect, apply, now = Date.now } = {}) {
+  instanceId = randomUUID(), execFile = promisify(nodeExecFile), inspect, apply, now = Date.now,
+  telemetryReader = () => readZramTelemetry({ platform, now }) } = {}) {
   if (!units[role] || !dataDir || typeof nodeId !== 'string' || !nodeId) throw new Error('Managed role, node identity and data directory are required.');
   const filename = path.join(dataDir, 'zram-operations.json');
   let records = [], initialized = false, closed = false, locked = false, storageFailure = false, releaseMaintenance, active, flight;
+  let telemetry = unavailableZramTelemetry(now);
   const time = () => new Date(now()).toISOString();
   const copy = value => value == null ? value : structuredClone(value);
   function save() {
@@ -134,6 +137,10 @@ export function createHostZramController({ role = 'panel', nodeId = 'local', dat
     await capability();
     return nativeHelper(helperPath, 'inspect', { role, nodeId });
   }
+  async function measureTelemetry() {
+    try { telemetry = await telemetryReader(); }
+    catch { telemetry = unavailableZramTelemetry(now); }
+  }
   function publicValue(value) {
     const reasonCode = storageFailure ? 'ZRAM_RECOVERY' : closed ? 'ZRAM_CLOSED' : value.reasonCode;
     return { nodeId, available: value.available === true && !storageFailure && !closed, reason: reasonCode ? messages[reasonCode]?.[0] || messages.ZRAM_UNAVAILABLE[0] : null,
@@ -141,6 +148,7 @@ export function createHostZramController({ role = 'panel', nodeId = 'local', dat
       physicalMemoryBytes: value.physicalMemoryBytes, configured: value.configured || { enabled: false, profile: 'auto' },
       effective: copy(value.effective) || { enabled: false, logicalSizeBytes: 0, swapUsedBytes: 0, originalDataBytes: null, compressedDataBytes: null, residentBytes: 0 },
       swapSummary: copy(value.swapSummary) || null,
+      telemetry: copy(telemetry),
       observedAt: typeof value.observedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value.observedAt) ? value.observedAt : null,
       recommended: value.recommended,
       revision: hash([nodeId, role, instanceId, value.revision]), busy: !!active || locked || manager?.maintenanceStatus?.()?.active === true, lastOperation: copy(records.at(-1) || null) };
@@ -151,9 +159,9 @@ export function createHostZramController({ role = 'panel', nodeId = 'local', dat
     // A damaged intent journal can hide an OS operation that outlived the
     // process. Keep the same host exclusion as an observed unknown operation.
     if (storageFailure && !active) active = { requestId: randomUUID(), status: 'unknown', errorCode: 'ZRAM_RECOVERY' };
-    let observed;
-    try { observed = await observe(); }
-    catch (error) { observed = { available: false, reasonCode: messages[error.code] ? error.code : 'ZRAM_UNAVAILABLE', physicalMemoryBytes: os.totalmem(), revision: 'unavailable' }; }
+    const [observation] = await Promise.allSettled([observe(), measureTelemetry()]);
+    let observed = observation.status === 'fulfilled' ? observation.value : { available: false,
+      reasonCode: messages[observation.reason?.code] ? observation.reason.code : 'ZRAM_UNAVAILABLE', physicalMemoryBytes: os.totalmem(), revision: 'unavailable' };
     if (!active && ['running', 'unknown'].includes(observed.operation?.status) && uuid.test(observed.operation.requestId || '') && typeof observed.operation.enabled === 'boolean') {
       active = { requestId: observed.operation.requestId, enabled: observed.operation.enabled, status: 'unknown', requestedAt: time(),
         revision: hash([nodeId, role, instanceId, observed.revision]), instanceId, actor: 'recovered-host-operation', errorCode: 'ZRAM_UNKNOWN' };
@@ -190,6 +198,7 @@ export function createHostZramController({ role = 'panel', nodeId = 'local', dat
       row.status = 'completed'; row.completedAt = time(); save();
       store.audit('host.zram.completed', JSON.stringify({ nodeId, requestId: row.requestId, enabled: row.enabled }), row.actor);
       release();
+      await measureTelemetry();
       return { nodeId, replayed: false, operation: copy(row), zram: { ...publicValue(result), busy: manager?.maintenanceStatus?.()?.active === true } };
     } catch (cause) {
       const unknown = cause.outcomeUnknown === true || !messages[cause.code];

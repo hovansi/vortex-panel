@@ -12,9 +12,9 @@
 
 # Vortex Panel
 
-**Minecraft worlds. Application runtimes. Your own infrastructure.**
+**Servers. Applications. Your own infrastructure.**
 
-Vortex Panel is a Node.js control panel for **Minecraft Bedrock, Node.js and Python** on Ubuntu. Manage local servers and linked VPS nodes through one responsive workspace: live console, files, backups, resource limits and everyday administration. The interface combines soft glass surfaces, voxel artwork and purposeful motion, with light/dark themes and **English / Tiếng Việt**. English is the default.
+Vortex Panel is a Node.js control panel for **Minecraft Bedrock, Node.js and Python** on Ubuntu. Manage local servers and linked VPS nodes through one responsive workspace: live console, files, backups, resource limits and everyday administration. The interface combines soft glass surfaces, abstract artwork and purposeful motion, with light/dark themes and **English / Tiếng Việt**. English is the default.
 
 Created by **@hovansi** · Maintained at [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel).
 

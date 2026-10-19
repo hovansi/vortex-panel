@@ -12,7 +12,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/panel-update.js', 'server/fleet-update.py',
   'server/panel-removal.js', 'server/panel-layout.js', 'server/fleet-removal.py',
   'server/host-location.js', 'server/host-telemetry.js', 'server/host.js',
-  'server/hostname.js', 'server/host-zram.js', 'server/host-zram.py', 'server/job-progress.js', 'server/locale-catalog.js',
+  'server/hostname.js', 'server/host-zram.js', 'server/host-zram.py', 'server/zram-telemetry.js', 'server/job-progress.js', 'server/locale-catalog.js',
   'server/host-timezone.js', 'server/host-network-tuning.js', 'server/host-network-tuning.py', 'server/host-tls.js', 'server/restart-policy.js',
   'server/locale.js', 'server/live-backup.js', 'server/lock.js', 'server/log-retention.js',
   'server/server-appearance.js', 'server/schedule-commands.js',
