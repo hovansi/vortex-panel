@@ -6,9 +6,11 @@ Vortex Panel manages Bedrock, Node.js and Python workloads on their assigned Ubu
 
 ## Updates and service maintenance
 
-Take an off-host snapshot before an important update. Run the [release installer](INSTALL.md) again for the latest stable panel version. For a reviewed source checkout, run `sudo bash deploy/install.sh`. Existing service mode and access configuration are preserved unless explicitly changed.
+Take an off-host snapshot before an important update. On a compatible managed root installation, use **Settings → Panel administration → Check for updates**. Stop all servers and finish pending work first. The updater verifies official release assets, stages source/dependencies on every VPS, activates linked workers in order and verifies them through fresh pinned SSH connections before restarting the main panel. It does not upgrade operating-system packages, change server runtime pins or stop workloads automatically. Read [Panel updates](PANEL-UPDATES.md) for prerequisites, receipts, source rollback limits and the recovery workflow.
 
-The installer prepares dependencies before stopping the service, activates a separate release directory and verifies `/healthz` against the systemd MainPID. A failed activation attempts to restore the previous source link, environment, unit and ownership. Preserve any reported recovery path or rollback error. Source rollback does not undo changes to worlds, applications or databases.
+The [full release installer](INSTALL.md) is a separate maintenance path for prerequisites, legacy layout migration and the first compatibility upgrade of older agents. For a reviewed checkout its entry point is `sudo bash deploy/install.sh`. Stop workloads deliberately; installer maintenance may restart local workloads. Existing service mode and access configuration are preserved unless explicitly changed.
+
+The full installer prepares dependencies before stopping the service, activates a separate release directory and verifies `/healthz` against the systemd MainPID. Its failed activation attempts to restore the previous source link, environment, unit and ownership. The in-panel updater only rolls its source link back and verifies service/configuration/data identity; it does not overwrite `panel.json` or customer data to hide an incompatible migration. Preserve any reported recovery path or unknown outcome. Source rollback does not undo world, application or database changes.
 
 The managed service and data directory use the canonical `vortex-panel` name. The installer migrates verified legacy layouts before starting the new service:
 
@@ -53,6 +55,20 @@ To restore, stop the service, retain the damaged tree separately and restore int
 Bedrock supports [online snapshots](ONLINE-BACKUPS.md) through native `save hold/query/resume`. Snapshot preparation failure reports an error; it does not silently stop/restart the server. Restore and runtime replacement require a stopped server. Node.js/Python backup creation, restoration and file access require a stopped application.
 
 Keep important backups outside the workload’s VPS. ZIP integrity does not guarantee application behavior or world compatibility. Review native logs and data after recovery. See [world formats and limits](WORLDS.md).
+
+## Schedules and command results
+
+A schedule performs a backup, restart or console command at an interval of 1–525600 minutes. Backup/restart may also have one optional command that runs first. For example, a Bedrock backup every 360 minutes can use `say §bA backup is about to begin.§r`. This sends the notice immediately before the backup workflow; it does not create a countdown delay. Omit the command for a backup that does not need a running console. Node.js/Python backups still require a stopped application, so a running-application stdin pre-command is not a way around that requirement.
+
+The command is saved for all three action types and is shown again when editing. PATCH without `command` preserves it; an explicit blank removes it. A command dropped from stored metadata by an older release cannot be recovered from an empty field: re-enter and save it once. Commands are one line, at most 2048 characters; use the restart action instead of embedding `stop` or `restart` in the command.
+
+Inspect the task ID and command result separately from backup/restart outcome. Bedrock uses serialized console boundaries to establish ordering and identify native rejection. A matching native `say` acknowledgement confirms the server processed that broadcast, not that a particular client displayed it. A silent generic command can be **dispatched** in the correct order without proving its gameplay effect. Application stdin can confirm only enqueueing. If the command is rejected, not sent or its ordering is uncertain, the following backup/restart does not run; the schedule records the failure without automatically repeating that command.
+
+Run-now and timed runs share a lock for the server. Overlapping work is deferred/rejected rather than creating duplicate operations. Scheduled backups use the same consistency and stopped-state requirements as manual backups. The schedule workspace updates changing rows and countdowns while keeping the current search, focus and scroll stable.
+
+## Server appearance
+
+Use the server workspace's **Appearance** button to change its private cover, icon, description and accent, or remove an uploaded image. Assigned managers can edit; assigned readers can see the resulting artwork. Images remain on that server's VPS, outside its process-writable runtime directory. Bedrock listing text is a separate save of `server-name` while stopped. See [Server appearance](SERVER-APPEARANCE.md) for formats, limits and the distinction from Minecraft partner-server artwork.
 
 ### Restore lỗi và rollback cũng không thành công
 

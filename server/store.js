@@ -49,7 +49,7 @@ function pendingHistoryRecovery(dataDir) {
 export function createStore(dataDir, { maxLoadBytes = STORE_MAX_LOAD_BYTES } = {}) {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const filename = path.join(dataDir, 'panel.json');
-  const defaults = { schemaVersion: 1, users: [], servers: [], nodes: [], nodeProvisionJobs: [], panelRemovalJobs: [], versions: [], jobs: [], schedules: [], activity: [], settings: {} };
+  const defaults = { schemaVersion: 1, users: [], servers: [], nodes: [], nodeProvisionJobs: [], panelRemovalJobs: [], panelUpdateJobs: [], versions: [], jobs: [], schedules: [], activity: [], settings: {} };
   let loaded = defaults;
   if (fs.existsSync(filename)) {
     const stat = fs.lstatSync(filename);
@@ -58,7 +58,7 @@ export function createStore(dataDir, { maxLoadBytes = STORE_MAX_LOAD_BYTES } = {
     loaded = { ...defaults, ...JSON.parse(fs.readFileSync(filename, 'utf8')) };
   }
   const data = loaded;
-  for (const key of ['users', 'servers', 'nodes', 'nodeProvisionJobs', 'panelRemovalJobs', 'versions', 'jobs', 'schedules', 'activity']) if (!Array.isArray(data[key])) throw new Error(`Corrupt panel store: ${key} must be an array.`);
+  for (const key of ['users', 'servers', 'nodes', 'nodeProvisionJobs', 'panelRemovalJobs', 'panelUpdateJobs', 'versions', 'jobs', 'schedules', 'activity']) if (!Array.isArray(data[key])) throw new Error(`Corrupt panel store: ${key} must be an array.`);
   for (const user of data.users) {
     user.id ||= randomUUID(); user.role ||= 'admin'; user.serverIds ||= [];
     user.allServers = user.role === 'admin' || user.allServers === true;

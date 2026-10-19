@@ -37,9 +37,11 @@ The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel
 | **Minecraft Bedrock** | Official stable/preview discovery, searchable version history, console, world settings and gamerules, coordinates, players, permissions, allowlist, add-ons and world import/export |
 | **Node.js & Python** | Latest official stable runtime pinned at creation, entry file/npm script/Python module startup, dependency tasks, project inspection and secret environment variables |
 | **Files & recovery** | Upload, download, edit with conflict detection, copy, move, rename, ZIP/extract, per-server backups, retention and restore |
+| **Server identity** | Private cover image, icon, description and accent color for cards/workspaces; separate Bedrock listing text with Minecraft color codes |
 | **Resources & ports** | Live CPU, RAM, storage and RX/TX samples; shared or fixed CPU/RAM policy; fixed storage volumes; automatic available-port allocation |
 | **Multiple VPS nodes** | SSH-based worker installation, verified agent enrollment, per-node capabilities and server placement, connection/maintenance state and remote workspaces |
-| **Operations** | Schedules, bounded activity/task history, progress dialogs with task IDs and output, scoped firewall tools, service power controls and Admin host terminal |
+| **Operations** | Schedules with optional commands before backup/restart, explicit command outcomes, bounded activity/task history, task progress, scoped firewall tools, power controls and Admin host terminal |
+| **Panel updates** | Verified official stable releases; linked workers first and main panel last; source-only activation, per-VPS verification and manual recovery of interrupted requests |
 | **Access & interface** | Admin/Operator/Viewer roles, per-server grants, TOTP and recovery codes, EN/VI, responsive navigation, saved themes and keyboard controls |
 
 New Node.js/Python applications resolve the latest final stable runtime directly from the official project, then keep that exact pin. Creating another application never upgrades existing ones. The Node.js interpreter running the panel is managed separately. See [application behavior and limits](docs/applications.md).
@@ -67,6 +69,8 @@ Use a fresh VPS for the automatic public setup. An existing web server or occupi
 | [Nodes](docs/NODES.md) · [SSH provisioning](docs/NODE-PROVISIONING.md) | Add VPS capacity from the panel |
 | [Worlds & recovery](docs/WORLDS.md) · [Online backups](docs/ONLINE-BACKUPS.md) | Protect, transfer and restore Minecraft data |
 | [Operations](docs/OPERATIONS.md) | Whole-panel snapshots, service maintenance and recovery |
+| [Panel updates](docs/PANEL-UPDATES.md) | Prepare a safe fleet update, understand progress and recover the existing request |
+| [Server appearance](docs/SERVER-APPEARANCE.md) | Covers, icons, descriptions, accents and actual Bedrock listing text |
 | [API](docs/API.md) | Management endpoints and authorization |
 | [Release process](docs/publication.md) | Public source inventory, checksums and GitHub Actions |
 | [Third-party attribution](docs/THIRD_PARTY.md) | Artwork, dependencies and upstream projects |
@@ -91,6 +95,8 @@ Maintainers can publish through **Actions → Release → Run workflow** on `mai
 
 CI validates production source and package integrity on Ubuntu 22.04 and 24.04. These checks do not replace verifying a fresh installation, an upgrade, network reachability and your actual workloads on their target VPS.
 
-Back up panel data and encryption keys off the host. Source updates can restart the service and local workloads; a source rollback does not undo world or application data changes. Application file operations/backups require a stopped application, while Bedrock supports its documented online snapshot workflow. Review each guide's size and format limits before importing large worlds or projects.
+Back up panel data and encryption keys off the host. For routine updates use **Settings → Panel administration → Check for updates**. Every managed server must be stopped and conflicting jobs finished; the updater does not stop workloads for you. It updates panel/agent source and dependencies, verifies workers before restarting the main panel, and keeps runtime pins and customer data. A source rollback cannot undo world/application changes or repair an incompatible metadata migration. Legacy agents without the update admission protocol need a one-time maintenance upgrade through their installer. The full installer remains a separate maintenance operation and may restart local workloads. See the [update guide](docs/PANEL-UPDATES.md).
+
+Application file operations/backups require a stopped application, while Bedrock supports its documented online snapshot workflow. Review each guide's size and format limits before importing large worlds or projects. Featured-server artwork in Minecraft's own partner list is separate from Vortex's private panel appearance; ordinary Bedrock listings expose the supported server text, not uploaded panel banners.
 
 Report reproducible problems through [GitHub Issues](https://github.com/hovansi/vortex-panel/issues), including the panel version, Ubuntu version and redacted logs. Keep passwords, setup tokens, node credentials, session cookies and private files out of public reports.

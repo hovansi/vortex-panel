@@ -1,3 +1,4 @@
+import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -34,6 +35,7 @@ import { createApplicationRuntime, normalizeApplication, publicApplication } fro
 import { applicationIssue } from './application-schema.js';
 import { publicRuntimePin, normalizeRuntimePin } from './application-runtime-catalog.js';
 import { createPortAllocator, creationPortMode, PORT_ALLOCATION_POLICY } from './port-allocation.js';
+import { validateSchedule, dispatchScheduledCommand } from './schedule-commands.js';
 
 const appKind = server => ['nodejs','python'].includes(server?.kind) ? server.kind : 'bedrock';
 const isApp = server => appKind(server) !== 'bedrock';
@@ -183,7 +185,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       storage: storagePaused.has(server.id) ? { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: null, hardEnforced: false, sampledAt: now(), reason: 'Storage maintenance is in progress.', maintenance: true } : storageMetrics.get(server.id) || { usedBytes: null, totalBytes: null, availableBytes: null, limitBytes: storagePolicy(server).diskGiB === null ? null : storagePolicy(server).diskGiB * GIB, hardEnforced: false, sampledAt: null, reason: 'Storage has not been sampled.' },
       network: network || { available: false, rxBytes: null, txBytes: null, rxBytesPerSecond: null, txBytesPerSecond: null, sampledAt: null, scope: 'server-game-ports', reason: active ? 'Network counters are warming up.' : 'Server is stopped.' } };
   };
-  const maintenanceMessage = () => ['zram', 'uninstall'].includes(maintenance?.action)
+  const maintenanceMessage = () => ['zram', 'uninstall', 'update'].includes(maintenance?.action)
     ? 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.'
     : 'Hệ thống đang chuẩn bị khởi động lại; vui lòng chờ kết nối trở lại.';
   const assertOpen = () => { maintenanceProbe?.(); if (closed) fail('Panel đang tắt; không nhận thao tác mới.', 503); if (maintenance) fail(maintenanceMessage(), 409); };
@@ -196,7 +198,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     return promise.finally(() => { hostOperations.delete(promise); });
   }
   function beginMaintenance(input) {
-    if (!input || !['restart-service', 'reboot', 'zram', 'uninstall'].includes(input.action) || typeof input.requestId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.requestId)) fail('Yêu cầu khởi động lại không hợp lệ.', 400);
+    if (!input || !['restart-service', 'reboot', 'zram', 'uninstall', 'update'].includes(input.action) || typeof input.requestId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.requestId)) fail('Yêu cầu khởi động lại không hợp lệ.', 400);
     if (closed) fail('Panel đang tắt; không nhận thao tác mới.', 503);
     if (maintenance) { if (maintenance.requestId === input.requestId && maintenance.action === input.action) return maintenance.release; fail(maintenanceMessage(), 409); }
     if (input.restore !== true && (hostOperations.size || operations.size || lifecycle.size || runningJobs.size || scheduleRuns.size || scheduleLocks.size || gameplayRuns.size || resourceCleanup.size || pendingDisk.size || packageWorkspaces.size || storagePaused.size || store.data.servers.some(server => server.jobId || server.cloneJobId || ['starting', 'stopping', 'installing'].includes(server.status) || processes.get(server.id)?.gameplay?.busy))) fail('Đang có tác vụ chưa hoàn tất. Chờ hoàn tất trước khi khởi động lại hệ thống.', 409);
@@ -206,7 +208,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     maintenance = record;
     return record.release;
   }
-  const publicServer = server => ({ id: server.id, kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
+  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
   const persist = () => { store.save(); emit({ type: 'update' }); };
   const audit = (action, detail, user, detailI18n, serverId) => store.audit(action, detail, user || actorContext.getStore()?.username || 'system', detailI18n, serverId);
   const commitServerFields = (server, fields, action, detail = server.name) => {
@@ -217,6 +219,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     try { store.save(); }
     catch (error) { for (const [key, value] of Object.entries(before)) { if (value.exists) server[key] = value.value; else delete server[key]; } store.data.activity = activity; throw error; }
   };
+  const appearanceController = createServerAppearance({dataDir,getServer:get,commit:(server,appearance)=>commitServerFields(server,{appearance},'server.appearance',server.name),emit});
   const deletionAudit = (action, detail, quarantine, serverId) => ({ id: randomUUID(), time: now(), action, serverId, detail: `${detail}${quarantine ? ` [quarantine: ${quarantine.relative}]` : ''}`, user: actorContext.getStore()?.username || 'system' });
   async function quarantineDeletion(relative, type, { optional = false } = {}) {
     // Resolve from DATA_DIR, not from a server root which could itself be a link.
@@ -1538,18 +1541,6 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     catch (error) { host.capacity = { available: false, reason: error.message, sampledAt: now(), reserveRatio }; }
     return host;
   }
-  function validateSchedule(input, previous = {}) {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['serverId', 'action', 'intervalMinutes', 'enabled', 'command'].includes(key))) fail('Thiết lập lịch tác vụ không hợp lệ.');
-    const action = input.action === undefined ? previous.action : input.action;
-    if (!['backup', 'restart', 'command'].includes(action)) fail('Tác vụ lịch không hợp lệ.');
-    const intervalMinutes = Number(input.intervalMinutes ?? previous.intervalMinutes);
-    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 525600) fail('Chu kỳ phải từ 1 phút đến 1 năm.');
-    const enabled = input.enabled === undefined ? previous.enabled ?? true : input.enabled;
-    if (typeof enabled !== 'boolean') fail('Trạng thái lịch phải là boolean.');
-    const command = action === 'command' ? input.command === undefined ? previous.command : input.command : null;
-    if (action === 'command' && (typeof command !== 'string' || !command.trim() || command.length > 2048 || /[\r\n\0]/.test(command) || ['stop', 'restart'].includes(command.trim().toLowerCase()))) fail('Lệnh lịch không hợp lệ; dùng tác vụ restart để điều khiển vòng đời.');
-    return { action, intervalMinutes, enabled, command: action === 'command' ? command.trim() : null };
-  }
   function commitSchedules(action, detail, mutate, serverId) {
     const schedules = store.data.schedules, activity = store.data.activity;
     const before = schedules.map(record => [record, structuredClone(record)]);
@@ -1565,33 +1556,49 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   }
   function runSchedule(schedule, automatic = false) {
     assertOpen();
+    const fields = validateSchedule({ action: schedule.action, intervalMinutes: schedule.intervalMinutes, enabled: schedule.enabled, command: schedule.command });
     const server = get(schedule.serverId);
     if (scheduleRuns.has(schedule.id) || scheduleLocks.has(server.id)) fail('Một lịch của server đang chạy. Vui lòng đợi hoàn tất.', 409);
     assertIdle(server);
     if (lifecycle.has(server.id)) fail('Server đang chuyển trạng thái. Vui lòng đợi.', 409);
     const previous = structuredClone(schedule);
     const previousJobs = store.data.jobs;
-    const record = { id: randomUUID(), type: 'schedule', scheduleId: schedule.id, action: schedule.action, serverId: server.id, status: 'queued', progress: 0, message: 'Đã đưa lịch vào hàng đợi', createdAt: now(), finishedAt: null };
-    Object.assign(schedule, { status: 'running', lastRun: now(), lastFinishedAt: null, lastJobId: record.id, error: null, nextRun: new Date(Date.now() + schedule.intervalMinutes * 60000).toISOString() });
+    const record = { id: randomUUID(), type: 'schedule', scheduleId: schedule.id, action: fields.action, serverId: server.id, status: 'queued', progress: 0, message: 'Đã đưa lịch vào hàng đợi', createdAt: now(), finishedAt: null, commandResult: null, actionStatus: 'not-started' };
+    Object.assign(schedule, { status: 'running', lastRun: now(), lastFinishedAt: null, lastJobId: record.id, lastCommandResult: null, error: null, nextRun: new Date(Date.now() + fields.intervalMinutes * 60000).toISOString() });
     store.data.jobs = [record, ...previousJobs];
     try { persist(); }
-    catch (error) { Object.assign(schedule, previous); store.data.jobs = previousJobs; throw error; }
+    catch (error) { for (const key of Object.keys(schedule)) delete schedule[key]; Object.assign(schedule, previous); store.data.jobs = previousJobs; throw error; }
     scheduleLocks.set(server.id, schedule.id);
     const promise = scheduleContext.run(schedule.id, async () => {
       await Promise.resolve();
       try {
         assertOpen(); record.status = 'running'; record.message = `Đang chạy lịch ${schedule.action}`; persist();
-        if (schedule.action === 'backup') {
+        if (fields.command) {
+          record.message = fields.action === 'command' ? 'Đang gửi lệnh theo lịch' : 'Đang gửi lệnh trước tác vụ'; record.progress = 5; persist();
+          const runtime = processes.get(server.id);
+          record.commandResult = { status: 'not-sent', acceptedToConsole: false, confirmedApplied: false, clientReceiptConfirmed: false };
+          try {
+            if (!isApp(server) && !runtime?.gameplay) fail('Server phải đang chạy để gửi lệnh.', 409);
+            record.commandResult = await dispatchScheduledCommand({ command: fields.command, console: isApp(server) ? null : runtime.gameplay, send: command => manager.command(server.id, command) });
+          } catch (error) { record.commandResult.message = error.message; throw error; }
+          finally { schedule.lastCommandResult = { ...record.commandResult }; }
+          persist();
+          if (!record.commandResult.acceptedToConsole || !['confirmed', 'dispatched'].includes(record.commandResult.status)) throw new Error(record.commandResult.message || (record.commandResult.status === 'rejected' ? `Tiến trình từ chối lệnh lịch: ${record.commandResult.nativeFeedback || 'Không có phản hồi chi tiết.'}` : 'Chưa xác nhận được thứ tự xử lý lệnh lịch. Tác vụ tiếp theo chưa chạy; không tự gửi lại lệnh.'));
+          runtime?.gameRules.clear();
+        }
+        assertOpen(); record.actionStatus = 'running'; record.actionStartedAt = now();
+        if (fields.action === 'backup') {
           const backupJob = await backup(server);
           record.backupJobId = backupJob.id; record.progress = 30; record.message = 'Đang sao lưu dữ liệu'; persist();
           await jobPromises.get(backupJob.id);
           const outcome = store.data.jobs.find(item => item.id === backupJob.id);
           if (outcome?.status !== 'completed') throw new Error(outcome?.message || 'Không xác định được kết quả sao lưu.');
-        } else if (schedule.action === 'restart') await manager.action(server.id, 'restart', true);
-        else manager.command(server.id, schedule.command);
-        schedule.status = 'completed'; record.status = 'completed'; record.progress = 100; record.message = 'Lịch đã hoàn tất';
+        } else if (fields.action === 'restart') await manager.action(server.id, 'restart', true);
+        record.actionStatus = 'completed'; record.actionFinishedAt = now();
+        schedule.status = 'completed'; record.status = 'completed'; record.progress = 100; record.message = fields.action === 'command' && record.commandResult?.status === 'dispatched' ? 'Đã gửi lệnh theo lịch; tiến trình không cung cấp xác nhận kết quả tác động.' : 'Lịch đã hoàn tất';
         audit('schedule.run', `${server.name}: ${schedule.action}${automatic ? ' (tự động)' : ' (thủ công)'}`, undefined, { id: automatic ? 'panel.audit.schedule.automatic' : 'panel.audit.schedule.manual', params: [server.name, schedule.action] }, server.id);
       } catch (error) {
+        if (record.actionStatus === 'running') record.actionStatus = 'failed';
         schedule.status = 'failed'; schedule.error = error.message; record.status = 'failed'; record.message = error.message;
         try { audit('schedule.failed', `${server.name}: ${error.message}`, undefined, { id: 'panel.audit.operation.failed', params: [server.name, error.message] }, server.id); } catch {}
       } finally {
@@ -1622,6 +1629,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const manager = {
     async initialize() {
       if (initialized) return; initialized = true;
+      const updatingAtBoot = maintenance?.action === 'update';
       // An acknowledged erase intent is an admission freeze, not permission to
       // recreate mounts, users or counters after an interrupted uninstall.
       if (maintenance?.action === 'uninstall') return;
@@ -1633,23 +1641,22 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         await networkMetrics.initialize();
         await fs.mkdir(root, { recursive: true, mode: 0o700 });
         for (const server of store.data.servers) {
-          server.status = server.restoreRecoveryRequired || server.status === 'installing' ? 'error' : 'stopped';
-          server.players = 0; server.memoryMB = 0; server.cpuPercent = 0; delete server.jobId; delete server.cloneJobId;
-          try { await ensureStorage(server); delete server.storageMountError; }
-          catch (error) { server.status = 'error'; server.storageMountError = error.message; server.error = error.message; continue; }
-          try { server.debugPort = isApp(server) ? null : debuggerPort(await properties(server)); } catch {}
+          if(!updatingAtBoot){server.status = server.restoreRecoveryRequired || server.status === 'installing' ? 'error' : 'stopped';
+          server.players = 0; server.memoryMB = 0; server.cpuPercent = 0; delete server.jobId; delete server.cloneJobId;}
+          try { await ensureStorage(server); if(!updatingAtBoot)delete server.storageMountError; }
+          catch (error) { if(updatingAtBoot)throw error;server.status = 'error'; server.storageMountError = error.message; server.error = error.message; continue; }
+          if(!updatingAtBoot)try { server.debugPort = isApp(server) ? null : debuggerPort(await properties(server)); } catch {}
           // Disk history is diagnostic history. A new manager process must not
           // repopulate a customer's current console with a previous run.
           resetConsole(server);
           try { await writer(server).maintain(); } catch (error) { console.warn(`[Vortex Panel] Console retention startup ${server.id}: ${error.code || 'LOG_READ_FAILED'}`); }
         }
-        for (const record of store.data.jobs) if (['running', 'queued'].includes(record.status)) { record.status = 'failed'; record.message = 'Panel khởi động lại khi tác vụ chưa hoàn tất.'; record.finishedAt = now(); }
-        for (const record of store.data.schedules) if (record.status === 'running') { record.status = 'failed'; record.error = 'Panel khởi động lại khi lịch chưa hoàn tất.'; record.lastFinishedAt = now(); }
-        persist();
-        versionService.refresh().catch(() => {});
+        if(!updatingAtBoot)for (const record of store.data.jobs) if (['running', 'queued'].includes(record.status)) { record.status = 'failed'; record.message = 'Panel khởi động lại khi tác vụ chưa hoàn tất.'; record.finishedAt = now(); }
+        if(!updatingAtBoot)for (const record of store.data.schedules) if (record.status === 'running') { record.status = 'failed'; record.error = 'Panel khởi động lại khi lịch chưa hoàn tất.'; record.lastFinishedAt = now(); }
+        if(!updatingAtBoot){persist();versionService.refresh().catch(() => {});}
         releaseTimer = setInterval(() => versionService.refresh().catch(() => {}), 6 * 60 * 60 * 1000); releaseTimer.unref();
       }
-      for (const server of store.data.servers.filter(item => !item.restoreRecoveryRequired && !item.storageMountError && (item.autoStart || item.resumeOnPanelStart) && !['running', 'starting'].includes(item.status))) manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); });
+      for (const server of store.data.servers.filter(item => !updatingAtBoot && !item.restoreRecoveryRequired && !item.storageMountError && (item.autoStart || item.resumeOnPanelStart) && !['running', 'starting'].includes(item.status))) manager.action(server.id, 'start', true).catch(error => { server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); });
       await collectMetrics();
       metricsTimer = setInterval(() => collectMetrics().catch(() => {}), 5000); metricsTimer.unref();
       scheduler = setInterval(() => tickSchedules().catch(() => {}), 15000); scheduler.unref();
@@ -1660,6 +1667,11 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     listServers: () => store.data.servers.map(publicServer),
     getServer: id => publicServer(get(id)),
+    appearance: id => appearanceController.read(id),
+    appearanceMedia: (id,slot) => appearanceController.media(id,slot),
+    saveAppearance: async (id,input) => ({...await appearanceController.update(id,input),server:publicServer(get(id))}),
+    uploadAppearance: async (id,slot,buffer,mime,input) => ({...await appearanceController.upload(id,slot,buffer,mime,input),server:publicServer(get(id))}),
+    removeAppearance: async (id,slot,input) => ({...await appearanceController.remove(id,slot,input),server:publicServer(get(id))}),
     withActor: (user, callback) => actorContext.run(user, callback),
     beginMaintenance,
     setMaintenanceProbe(probe) { if (maintenanceProbe || typeof probe !== 'function') throw new Error('Invalid maintenance probe.'); maintenanceProbe = probe; },
@@ -1999,7 +2011,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     verifyVersion: (version, channel) => { assertOpen(); return versionService.verify(version, channel); },
     importVersion: (file, version, channel) => { assertOpen(); return versionService.importPackage(file, version, channel); },
     jobs: () => store.data.jobs.map(record => ({ ...record })),
-    schedules: () => store.data.schedules.map(record => ({ status: 'idle', error: null, lastFinishedAt: null, lastJobId: null, ...record })),
+    schedules: () => store.data.schedules.map(record => ({ status: 'idle', error: null, command: null, lastCommandResult: null, lastFinishedAt: null, lastJobId: null, ...record })),
     createSchedule(input) {
       assertOpen();
       const fields = validateSchedule(input);
@@ -2025,7 +2037,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     async close() {
       if (closed) return;
       closed = true;
-      for (const server of store.data.servers) {
+      for (const server of maintenance?.action==='update'?[]:store.data.servers) {
         const intent = lifecycleIntents.get(server.id);
         if (!['stop', 'kill'].includes(intent) && (server.resumeOnPanelStart || ['running', 'starting'].includes(server.status) || ['start', 'restart'].includes(intent))) server.resumeOnPanelStart = true;
         else delete server.resumeOnPanelStart;
@@ -2065,7 +2077,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const promise = operationContext.run(id, async () => { await Promise.resolve(); return applicationRead(id, { inspect: true }); }); operations.set(id, promise);
     try { const result = await promise; result.server.busy = false; return result; } finally { operations.delete(id); }
   };
-  for (const name of ['saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo']) {
+  for (const name of ['saveAppearance', 'uploadAppearance', 'removeAppearance', 'saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo']) {
     const method = manager[name];
     manager[name] = async (id, ...args) => {
       assertOpen();

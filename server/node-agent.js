@@ -1,3 +1,5 @@
+import {appearanceErrorPayload} from './server-appearance.js';
+import {createPanelUpdateIntentProbe} from './panel-update.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -64,7 +66,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   const expectedToken = createHash('sha256').update(token).digest();
   const app = express(); app.disable('x-powered-by');
   const systemHostname = hostnameController || createHostnameController();
-  const identity = () => ({ service: 'vortex-node', protocol: 1, nodeId, version, processId: process.pid });
+  const identity = () => ({ service: 'vortex-node', protocol: 1, nodeId, version, processId: process.pid, maintenance: manager?.maintenanceStatus?.() || null });
   const send = (client, event) => {
     if (client.res.destroyed || client.res.writableLength > 1024 ** 2) { client.res.destroy(); clients.delete(client); return; }
     if (event.serverId && !canAccessServer(client.actor, event.serverId)) return;
@@ -81,8 +83,9 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
     manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
-    manager.setMaintenanceProbe?.(() => restoreFleetRemovalIntent({ manager, dataDir, role: 'worker', nodeId: nodeId, store }));
-    restoreFleetRemovalIntent({ manager, dataDir, role: 'worker', nodeId, store });
+    const updateIntentProbe=createPanelUpdateIntentProbe({manager,dataDir,role:'worker',nodeId,store});
+    const restoreIntents=()=>{restoreFleetRemovalIntent({manager,dataDir,role:'worker',nodeId,store});updateIntentProbe();};
+    manager.setMaintenanceProbe?.(restoreIntents);restoreIntents();
     await manager.initialize?.();
   } catch (error) { await manager?.close?.(); releaseLock(); throw error; }
   const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager });
@@ -151,8 +154,9 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   app.use('/api', createRouter(exposedManager, { dataDir, store }));
   app.use((_req, res) => res.status(404).json({ error: 'Node API not found.' }));
   app.use((error, _req, res, _next) => {
-    const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : 500);
-    if (!res.headersSent) res.status(status).json(playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
+    if(_req.aborted||res.destroyed)return;
+    const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
+    if (!res.headersSent) res.status(status).json(appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
     else res.destroy();
   });
   let server;

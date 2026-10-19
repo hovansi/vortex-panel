@@ -29,15 +29,23 @@ Lệnh mặc định bật quyền quản trị host root cho bản cài mới. 
 | Minecraft Bedrock | Catalog Stable/Preview và bản cũ có tìm kiếm; console; world/gamerule gồm tọa độ; người chơi, quyền, allowlist; add-on; nhập/xuất world |
 | Node.js/Python | Tự tra bản ổn định mới nhất khi tạo rồi ghim phiên bản; entry file/npm script/module; cài thư viện; xem project; biến môi trường bí mật |
 | Tệp và sao lưu | Upload/download, editor chống ghi đè xung đột, copy/move/rename, nén/giải nén, backup, retention và restore |
+| Nhận diện máy chủ | Ảnh bìa, biểu tượng, miêu tả và màu chủ đạo cho thẻ/workspace; nội dung danh sách Bedrock hỗ trợ mã màu § được lưu riêng |
 | Tài nguyên | CPU/RAM dùng chung hoặc giới hạn riêng; volume lưu trữ; số liệu CPU/RAM/đĩa/RX-TX; cấp cổng trống tự động theo VPS |
 | Nhiều VPS | Nhập SSH trong panel để cài worker, xác minh agent, chọn VPS khi tạo server, theo dõi kết nối và bảo trì |
-| Vận hành | Lịch, hoạt động/tác vụ có giới hạn lịch sử, popup tiến trình và ID, firewall theo server, quyền Admin/Operator/Viewer, TOTP và mã khôi phục |
+| Vận hành | Lịch có lệnh tùy chọn trước backup/restart, kết quả gửi lệnh rõ ràng, lịch sử có giới hạn, popup tiến trình và ID, firewall theo server, quyền Admin/Operator/Viewer, TOTP và mã khôi phục |
+| Cập nhật panel | Xác minh release ổn định chính thức, cập nhật VPS phụ trước và panel chính cuối cùng, chỉ thay source/dependency của panel và agent, có kiểm chứng từng VPS và khôi phục yêu cầu bị gián đoạn |
 
 Runtime của server cũ giữ nguyên; tạo ứng dụng mới không tự nâng cấp ứng dụng đang có. CPU/RAM là mức trần sử dụng, không phải cam kết tài nguyên vật lý. VPS chạy panel giữ lại 10% ngân sách; worker dùng dung lượng hiệu dụng, vẫn phải qua kiểm tra RAM/đĩa và năng lực thực tế.
 
 ## Dữ liệu và nâng cấp
 
-Chạy lại lệnh cài để cập nhật release ổn định mới nhất. Cập nhật có thể khởi động lại panel và workload cục bộ, nên chọn thời gian bảo trì. Sao lưu dữ liệu, khóa mã hóa, environment và chứng chỉ ra ngoài VPS trước khi nâng cấp. Rollback source không khôi phục thay đổi world/dữ liệu ứng dụng.
+Cập nhật thường xuyên tại **Cài đặt → Quản trị panel → Kiểm tra cập nhật**. Dừng mọi server và chờ tác vụ đang chạy hoàn tất trước; updater không tự dừng server của bạn. Hệ thống xác minh source và dependency của release chính thức, cập nhật từng VPS phụ, kiểm chứng qua SSH mới đã ghim khóa, rồi mới khởi động lại panel chính. Tài khoản, dữ liệu server/world/backup, cổng, giới hạn tài nguyên và phiên bản Minecraft/Node.js/Python đã ghim được giữ nguyên; không chạy nâng cấp package hệ điều hành.
+
+Agent 0.19.x chưa có giao thức khóa tác vụ cho updater cần nâng cấp bảo trì một lần bằng installer tương ứng trước khi dùng cập nhật trong panel. Installer đầy đủ vẫn là luồng bảo trì riêng và có thể khởi động lại workload cục bộ. Sao lưu dữ liệu, khóa mã hóa, environment và chứng chỉ ra ngoài VPS trước khi nâng cấp. Rollback source không khôi phục world/dữ liệu ứng dụng; thay đổi metadata không tương thích giữ trạng thái chưa xác minh cùng bản chụp riêng để xử lý, không ghi đè database mù quáng. Xem [quy trình cập nhật và khôi phục](PANEL-UPDATES.md).
+
+Mở server → **Giao diện** để tải hoặc bỏ ảnh bìa/biểu tượng, sửa miêu tả và màu chủ đạo. Đây là giao diện trong Vortex. Ảnh server đối tác trong danh sách Minecraft do Minecraft quản lý; upload ảnh vào panel không thêm ảnh vào mục server Bedrock thông thường. Với Bedrock, mục nội dung danh sách sửa `server-name` thực tế, hỗ trợ mã màu § và áp dụng khi khởi động server lần sau. Xem [giới hạn và lưu ảnh](SERVER-APPEARANCE.md).
+
+Lịch backup/restart có thể lưu một lệnh chạy trước tác vụ, ví dụ `say §bA backup is about to begin.§r`. Ô lệnh giữ nguyên khi mở lại chỉnh sửa; lệnh cũ đã bị bản trước bỏ khỏi dữ liệu cần nhập lại một lần. Kết quả phân biệt đã gửi, native xác nhận, bị từ chối và chưa xác minh; không suy diễn rằng mọi người chơi đã nhận thông báo. Xem [lịch và kết quả lệnh](OPERATIONS.md#schedules-and-command-results).
 
 Thao tác tệp và backup của Node.js/Python yêu cầu dừng ứng dụng. Bedrock có quy trình snapshot online riêng. Giới hạn dung lượng/định dạng nằm trong từng tài liệu; không nên dùng source ZIP thay cho bản sao lưu dữ liệu.
 
@@ -46,6 +54,8 @@ Thao tác tệp và backup của Node.js/Python yêu cầu dừng ứng dụng. 
 - [Nodes và SSH tự cài](NODE-PROVISIONING.md)
 - [World và khôi phục](WORLDS.md)
 - [Vận hành và snapshot toàn panel](OPERATIONS.md)
+- [Cập nhật panel và VPS liên kết](PANEL-UPDATES.md)
+- [Ảnh bìa, biểu tượng và nội dung Bedrock](SERVER-APPEARANCE.md)
 - [API](API.md)
 - [Nguồn và giấy phép bên thứ ba](THIRD_PARTY.md)
 

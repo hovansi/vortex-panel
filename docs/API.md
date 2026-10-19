@@ -50,7 +50,7 @@ These paths start with `/api`. Assigned Operator may manage; assigned Viewer may
 | GET `/dashboard` | — | `{host,servers,jobs,activity,versions,capabilities,history}` |
 | GET `/servers` | — | `{servers:[...]}` |
 | POST `/servers` | `{name,version,channel,portAllocation:"auto",maxPlayers,eula:true}` | `{server,job}` |
-| GET `/servers/:id` | — | `{server}` |
+| GET `/servers/:id` | — | `{server}` including panel appearance metadata |
 | PATCH `/servers/:id` | `{name?,autoRestart?,autoStart?,backupRetention?,messageLanguage?,worldVoiceEnabled?}` | `{server}` |
 | DELETE `/servers/:id` | — | `{ok:true,warnings?,cleanupPending?}`, stopped only |
 | POST `/servers/:id/clone` | `{name,portAllocation:"auto",eula:true}` | `{server,job}`, stopped source; inherits source maxPlayers |
@@ -72,6 +72,20 @@ These paths start with `/api`. Assigned Operator may manage; assigned Viewer may
 | POST `/servers/:id/update` | `{version,channel}` | `{job}`, stopped only |
 
 Server fields include `id,name,version,channel,port,portV6,transport,udpPorts,maxPlayers,players,status,createdAt,autoRestart,autoStart,backupRetention,messageLanguage,worldVoiceEnabled,memoryMB,cpuPercent,uptime,pid,error,busy,permissions,consoleRunId`. Metrics retain ten minutes in memory and reset on panel restart. Non-admin dashboard has `host:null`, `history:[]`, `activity:[]`.
+
+### Server appearance
+
+| Method / path | Body / response | Permission |
+| --- | --- | --- |
+| GET `/api/servers/:id/appearance` | `{appearance,limits,server}` | Assigned read |
+| PATCH `/api/servers/:id/appearance` | `{revision,description?,accent?}` → `{appearance,server}` | Assigned manage |
+| GET `/api/servers/:id/appearance/media/:slot` | Authenticated PNG/JPEG/WebP bytes; `slot` is `icon` or `cover` | Assigned read |
+| POST `/api/servers/:id/appearance/media/:slot` | Multipart one `file` plus `revision` → `{appearance,server,warnings?}` | Assigned manage |
+| DELETE `/api/servers/:id/appearance/media/:slot` | `{revision}` → `{appearance,server,warnings?}` | Assigned manage |
+
+`appearance` contains `{schema:1,description,accent,icon,cover,revision}`. Media metadata contains `{sha256,extension,mimeType,bytes,width,height}`; absent media is `null`. Description is one plain-text line, at most 320 JavaScript string code units; accent is six-digit hexadecimal `#RRGGBB`. All writes require the current appearance revision and share a per-server lock. A stale revision returns 409/`APPEARANCE_CONFLICT`. Metadata/audit are committed before the old owned image is removed; cleanup warnings preserve the successful new appearance and identify review needs.
+
+Only non-animated PNG/JPEG/WebP uploads are accepted after structural inspection. Icons are at most 2 MiB / 2048 px per side; covers at most 6 MiB / 4096 px per side; the total pixel bound is 16,777,216 pixels. Remote image URLs/SVG/HTML are not accepted. Media routes retain normal server ACLs and return `Cache-Control: private, no-cache`, `nosniff` and a content-hash ETag. Remote node IDs use the normal proxy mapping. See [appearance behavior and Bedrock listing limits](SERVER-APPEARANCE.md).
 
 Creation/clone persist the new instance, actor audit, queued job and clone source lock together before accepting work. A failed initial write restores the prior registration and reservations; a failure after accepted queueing remains a visible failed job/error instance. Clone releases its source lock when the job finishes, including failure before copying starts.
 
@@ -195,7 +209,13 @@ The supported subset is manifest v2, data/resources modules and acyclic UUID dep
 | DELETE `/schedules/:id` | — | Operator/Admin; `{ok:true}` |
 | GET `/activity` | — | Admin; `{activity:[{id,time,action,detail,user}]}` |
 
-Schedule action is `backup`, `restart` or `command`; interval is 1–525600 minutes. Editing an interval/action or re-enabling resets `nextRun`. Only editable fields are accepted; a schedule cannot be moved to another server. Create/update/delete commit state and actor audit in one durable write; an observed write failure restores the prior array and record identities. Records expose `status,error,lastRun,lastFinishedAt,lastJobId`. Run-now and timer execution share a per-server lock, so overlapping lifecycle/data work is rejected. Scheduled backup stops, awaits exit, archives and resumes a previously running server. Jobs expose `id,type,serverId,status,progress,message,createdAt,finishedAt,warnings?`; a scheduled backup job can also expose `backupJobId`. A completed job may have maintenance warnings; they survive scoped GET jobs/dashboard and normal WebSocket-triggered refresh. Observed/imported version history persists. GET activity projects only the most recent 100 audit rows.
+Schedule action is `backup`, `restart` or `command`; interval is 1–525600 minutes. `command` is required for action `command` and optional for backup/restart, where it runs first. Missing PATCH `command` preserves its prior value; an explicit blank removes it. Commands must be one line, at most 2048 characters; embedded `stop`/`restart` lifecycle commands are rejected. Older releases that discarded an optional command cannot reconstruct it; enter it again once.
+
+Editing an interval/action or re-enabling resets `nextRun`. Only editable fields are accepted; a schedule cannot be moved to another server. Create/update/delete commit state and actor audit in one durable write; an observed write failure restores prior arrays and record identities. Records expose `status,error,lastRun,lastFinishedAt,lastJobId,lastCommandResult`. Run-now and timer execution share a per-server lock. Scheduled backup follows the normal backup policy: Bedrock online snapshot when supported/ready; stopped-only Node.js/Python backup.
+
+Schedule jobs add `commandResult`, `actionStatus`, `actionStartedAt?`, `actionFinishedAt?` and `backupJobId?`. Command results distinguish `confirmed`, `dispatched`, `rejected`, `unconfirmed` and `not-sent`, with `acceptedToConsole`, `confirmedApplied`, `clientReceiptConfirmed:false`, `reasonCode`, bounded native feedback and correlation metadata. Bedrock's matching `say` acknowledgement confirms native processing; silent generic commands can establish dispatch/order without proving gameplay effects. Application stdin only proves enqueueing. A rejected, unsent or unordered/unconfirmed pre-command prevents the following action, and the command is never automatically replayed. See [operational examples](OPERATIONS.md#schedules-and-command-results).
+
+Jobs expose `id,type,serverId,status,progress,message,createdAt,finishedAt,warnings?`. Completed jobs may retain maintenance warnings across scoped GET jobs/dashboard and WebSocket-triggered refresh. Observed/imported version history persists. GET activity projects only the most recent 100 audit rows.
 
 Historical versions additionally expose `historical,source,displayVersion,historyKey,catalogKeys,sha256,sha1,checksumSource,metadataStatus,metadataError,availability,availabilityCheckedAt,verificationError`; optional fields depend on source. Cached records remain installable offline. `history` includes per-source URLs/status/errors, indexed/loaded/remaining counts and stable/preview coverage. Ready history means the source registry was synchronized; it does not prove every package URL or runtime. BDS-Versions exact identifiers, including padded build numbers, appear from its bounded registry before optional metadata loads. Candidate URLs follow its declared official CDN root and known IDs; candidates remain unchecked until lazy exact-version Linux metadata and HEAD succeed. Endstone records add SHA-256; legacy BDS metadata can supply SHA-1 or no hash. Present hashes are checked during download before package activation, and absent hashes are not represented as checksum proof.
 
@@ -209,7 +229,24 @@ Admin-only routes:
 - GET `/api/host/diagnostics`: capability checks, interface addresses/listeners, panel/Bedrock processes, systemd and storage. Cached ten seconds; no argv/environment exposure.
 - POST `/api/host/terminal` with `{command}`: `{stdout,stderr,exitCode,timedOut,truncated}`. Linux opt-in, service-user permission, 15-second deadline, 1 MiB output limit, audited.
 
-Public GET `/healthz`: `{ok,service:"vortex-mc",version,processId,instanceId}`; 503 during shutdown. `processId` is the serving Node PID, used to bind installer readiness to systemd MainPID; it is not a Bedrock PID and exposes no credentials/account metadata. A matching service label alone does not prove the intended release is serving a port.
+Public GET `/healthz`: `{ok,service:"vortex-panel",version,processId,instanceId,maintenance}`; 503 during shutdown. `maintenance` is `null` or `{active:true,action,requestId}`. It exposes the admission freeze, without credentials or account data. `processId` is the serving Node PID, used to bind readiness to systemd MainPID, rather than a Bedrock PID. A matching service label alone does not prove the intended release is serving a port.
+
+### Fleet source updates
+
+All paths require Admin. Mutations require normal Origin/CSRF checks; final start/recovery also reauthenticate the current Admin password.
+
+| Method / path | Body / result |
+| --- | --- |
+| GET `/api/host/update?refresh=true` | `{update}`: current/latest version, verified release metadata, revision, ordered nodes, blockers, policy and last job ID; refreshing only checks metadata |
+| POST `/api/host/update/check` | `{nodeId,ssh:{host,port?}}` discovers a fingerprint without sending credentials; repeat with pinned root SSH credentials to authenticate and bind installation identity |
+| POST `/api/host/update` | `{revision,version,requestId,confirmedUpdate:true,adminPassword,connections:[{nodeId,ssh}]}` → 202 `{job}` after durable admission |
+| GET `/api/host/update/jobs` | `{jobs}`; bounded administrative history |
+| GET `/api/host/update/jobs/:id` | `{job}`; reads/reconciles the existing request without activating it again |
+| POST `/api/host/update/recover` | `{requestId,cancelPrepared:true,adminPassword,connections:[{nodeId,ssh}]}` → 202 `{job}`; inspect the existing UUID and safely cancel verified unactivated stages |
+
+`ssh` accepts `host,port,username:"root",hostFingerprint` and exactly one of `password` or `privateKey` (optional key `passphrase`). SSH checks expire after ten minutes and are bound to the Admin, release, fleet revision and exact host/port/pin. Secrets remain in memory for the operation and are excluded from jobs, commands, audit and stored node records. Recovery accepts only the nonsecret original targets saved as `job.nodes[].sshTarget`; it requires fresh credentials and never replays prepare/activation.
+
+Jobs use `type:"panel-update",scope:"host",adminOnly:true,serverId:null`, an idempotent UUID `id/requestId`, `version,release,status,phase,progress,nodes,verified,outcomeUnknown`. Per-node details include original identity, progress, proof and fixed recovery paths. Only `completed` with verified proofs for every member is success. Known partial updates can leave some workers on the new source while the main panel stays usable; a new reviewed update attests already-current workers rather than downgrading/reinstalling them. Unknown outcomes keep admission frozen until the existing request is verified. Read [source-update safety and receipts](PANEL-UPDATES.md) before implementing a client.
 
 WebSocket `/ws` needs an authenticated cookie and valid Origin. Events: `{type:"log",serverId,runId,log}`, `{type:"console-reset",serverId,runId}` or `{type:"update"}`. Server metadata contains `consoleRunId`; a new admitted start retires the previous run. Console clients must reject events and late GET responses for retired runs. Explicit stops clear the current console; crash output remains until the next start. Managed disk history is retained separately and is never replayed into a new current console. Delivery revalidates session and server ACL. Revoked/expired sessions close with 1008; clients with over 1 MiB buffered output close with 1013. Frontend reconnects with polling fallback.
 

@@ -174,3 +174,6 @@ export async function handlePanelUninstallAction(action,target,context){
  if(!root){await showPanelUninstallJob(id,context);return true;}
  try{const job=panelUninstallJob(await context.api(jobPath(id)),id);if(!root.isConnected)return true;updateJob(root,job,accepted?.plan);root.querySelector('[data-fleet-observation]').hidden=true;}catch(error){if(root.isConnected)lostObservation(root,accepted?.job||{id});}return true;
 }
+
+// Shared pinned-SSH fields for fleet administration dialogs.
+export {sshMarkup as fleetSSHMarkup,readSsh as readFleetSSH,clearSecrets as clearFleetSecrets};

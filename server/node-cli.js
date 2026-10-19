@@ -73,7 +73,7 @@ export async function runNodeCli(args = process.argv.slice(2)) {
     const config = readNodeConfig(configFile), localHost = config.host === '::' || config.host === '::1' ? '[::1]' : config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
     const connection = nodeConnection(config, `${config.tls ? 'https' : 'http'}://${localHost}:${config.port}`), identity = await requestNode(connection, { timeoutMs: 2500 });
     if (identity?.service !== 'vortex-node' || identity.protocol !== 1 || identity.nodeId !== config.nodeId || !Number.isSafeInteger(identity.processId) || identity.processId < 1) throw new Error('Unexpected node service identity.');
-    console.log(JSON.stringify({ ok: true, processId: identity.processId, nodeId: identity.nodeId })); return;
+    console.log(JSON.stringify({ ok: true, processId: identity.processId, nodeId: identity.nodeId, maintenance: identity.maintenance || null })); return;
   }
   if (command !== 'serve') throw new Error('Commands: initialize, show-connection, rotate-token, check, serve.');
   const config = readNodeConfig(configFile);

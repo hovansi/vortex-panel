@@ -96,7 +96,11 @@ The release asset `install.sh` is the repository-bound downloader. In source, `d
 
 ## Updates and backups
 
-Run the same one-command installer to update to the latest stable release. It preserves existing accounts, application data, runtime pins, service mode and external-access settings. Updates can restart the panel and local workloads; plan a maintenance window. Remote node workloads are managed by their own service and require their own compatible agent update when a release changes agent behavior.
+For routine updates on a compatible managed root installation, use **Settings → Panel administration → Check for updates**. The source updater verifies the official stable release, prepares isolated dependencies, updates and independently verifies linked workers first, then restarts the main panel. All servers must already be stopped and jobs idle; it never stops workloads automatically. It does not upgrade OS packages or Minecraft/Node.js/Python server runtimes, replace customer files, or rewrite service/TLS/access configuration. See [the full update and interrupted-request recovery guide](PANEL-UPDATES.md).
+
+The one-command installer remains available for initial setup, host-level prerequisites, layout migration and planned maintenance upgrades. It preserves existing accounts, application data, runtime pins, service mode and external-access settings, but can restart the panel and local workloads. Stop workloads deliberately and back them up before this separate maintenance path. Running the main installer does not automatically upgrade every remote agent.
+
+An older 0.19.x agent cannot acknowledge the new durable update admission freeze. The panel blocks its one-click activation rather than risking a scheduled workload starting during the update. Stop its workloads, review the matching release and run that release's worker installer on the existing VPS as described in [Node Agent](NODE-AGENT.md), retaining its configuration, token, TLS files and data directory. Verify its identity, health and server definitions before using fleet updates. A service-user/custom installation also needs deliberate administrator maintenance; the source updater does not silently switch it to root mode.
 
 Before an update, take an off-host backup of panel data, service environment, proxy configuration and TLS keys/certificates. For the panel's data snapshot helper:
 

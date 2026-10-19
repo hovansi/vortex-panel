@@ -76,6 +76,33 @@ export function createRouter(manager, { dataDir, store } = {}) {
   router.get('/application-runtimes', requireAdmin, async (_req, res) => res.json({ applicationRuntime: await manager.applicationCapabilities({ refresh: true }) }));
   router.post('/servers', requireAdmin, async (req, res) => { const data = await manager.createServer(req.body); data.server = describe(req.session.user, data.server); res.status(201).json(data); });
   router.get('/servers/:id', (req, res) => res.json({ server: describe(req.session.user, manager.getServer(req.params.id)) }));
+  const appearanceUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:6*1024**2,files:1,fields:1,fieldSize:128,parts:2}}).single('file');
+  const appearanceUploads=new Set();let appearanceUploadCount=0;
+  const parseAppearanceUpload=(req,res,next)=>{
+    manager.getServer(req.params.id);
+    if(!['icon','cover'].includes(req.params.slot))fail('Unknown appearance image slot.',400);
+    if(appearanceUploadCount>=2||appearanceUploads.has(req.params.id))fail('An image upload is already in progress. Try again shortly.',409);
+    appearanceUploadCount++;appearanceUploads.add(req.params.id);let released=false,processing=false;
+    const release=()=>{if(released)return;released=true;appearanceUploadCount--;appearanceUploads.delete(req.params.id);};
+    req.releaseAppearanceUpload=release;
+    res.once('close',()=>{if(!processing)release();});
+    appearanceUpload(req,res,error=>{if(error){release();return next(error);}processing=true;next();});
+  };
+  const appearanceResult=(req,data)=>({...data,server:describe(req.session.user,data.server||manager.getServer(req.params.id))});
+  router.get('/servers/:id/appearance',async(req,res)=>res.json(appearanceResult(req,await manager.appearance(req.params.id))));
+  router.patch('/servers/:id/appearance',async(req,res)=>res.json(appearanceResult(req,await manager.saveAppearance(req.params.id,req.body))));
+  router.get('/servers/:id/appearance/media/:slot',async(req,res)=>{
+    const media=await manager.appearanceMedia(req.params.id,req.params.slot);
+    res.set({'Cache-Control':'private, no-cache','X-Content-Type-Options':'nosniff','ETag':`"${media.revision}"`}).type(media.mimeType).send(media.content);
+  });
+  router.post('/servers/:id/appearance/media/:slot',parseAppearanceUpload,async(req,res)=>{
+    try{
+      if(req.aborted||res.destroyed)fail('Image upload was interrupted.',409);
+      if(!req.file||Object.keys(req.body||{}).some(key=>key!=='revision'))fail('Choose one image and its appearance revision.',400);
+      res.json(appearanceResult(req,await manager.uploadAppearance(req.params.id,req.params.slot,req.file.buffer,req.file.mimetype,req.body)));
+    }finally{req.releaseAppearanceUpload?.();}
+  });
+  router.delete('/servers/:id/appearance/media/:slot',async(req,res)=>res.json(appearanceResult(req,await manager.removeAppearance(req.params.id,req.params.slot,req.body))));
   router.get('/servers/:id/versions', (req, res) => { manager.getServer(req.params.id); res.json(manager.versions()); });
   router.patch('/servers/:id', async (req, res) => res.json(await manager.updateServer(req.params.id, req.body)));
   router.delete('/servers/:id', requireAdmin, async (req, res) => res.json(await manager.deleteServer(req.params.id)));

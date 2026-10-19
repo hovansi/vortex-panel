@@ -41,14 +41,28 @@ export function runHostTerminal(command, { cwd, spawnProcess = spawn, killGroup 
     child.on('close', code => finish(code ?? -1));
   });
 }
-export function createHostRouter({ store, dataDir, powerController, zramController, panelRemovalController, reauthenticateAdmin, manager }) {
+export function createHostRouter({ store, dataDir, powerController, zramController, panelRemovalController, panelUpdateController, reauthenticateAdmin, manager }) {
   const router = express.Router();
   const enabled = process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true';
   const info = () => getHostInfo(dataDir);
   let running = false;
   let diagnosticsCache;
   let diagnosticsFlight;
-  const scrubSSH = input => { for (const row of Array.isArray(input?.ssh) ? input.ssh : [input?.ssh]) if (row && typeof row === 'object') for (const key of ['password', 'privateKey', 'passphrase']) delete row[key]; };
+  const scrubSSH = input => { for (const row of [...(Array.isArray(input?.ssh)?input.ssh:[input?.ssh]),...(Array.isArray(input?.connections)?input.connections.map(row=>row?.ssh):[])]) if (row && typeof row === 'object') for (const key of ['password', 'privateKey', 'passphrase']) delete row[key]; };
+  if(panelUpdateController){
+    router.get('/update',async(req,res)=>res.json(await panelUpdateController.plan({refresh:req.query.refresh==='true'})));
+    router.get('/update/jobs',(_req,res)=>res.json({jobs:panelUpdateController.jobs()}));
+    router.get('/update/jobs/:id',async(req,res)=>res.json({job:await panelUpdateController.job(req.params.id)}));
+    router.post('/update/check',async(req,res)=>{try{res.json(await panelUpdateController.check(req.body,req.session.user));}finally{scrubSSH(req.body);}});
+    router.post('/update',async(req,res)=>{
+      const input=req.body||{},adminPassword=input.adminPassword;delete input.adminPassword;
+      try{await reauthenticateAdmin(req,adminPassword);res.status(202).json({job:await panelUpdateController.start(input,req.session.user)});}finally{scrubSSH(input);}
+    });
+    router.post('/update/recover',async(req,res)=>{
+      const input=req.body||{},adminPassword=input.adminPassword;delete input.adminPassword;
+      try{await reauthenticateAdmin(req,adminPassword);res.status(202).json({job:await panelUpdateController.recover(input,req.session.user)});}finally{scrubSSH(input);}
+    });
+  }
   router.get('/uninstall', async (_req, res) => res.json(await panelRemovalController.plan()));
   router.get('/uninstall/jobs', (_req, res) => res.json({ jobs: panelRemovalController.jobs() }));
   router.get('/uninstall/jobs/:id', (req, res) => {
