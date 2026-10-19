@@ -70,6 +70,7 @@ export function createRouter(manager, { dataDir, store, timezoneController } = {
     data.panelTimezone = systemTimezone;
     if (data.host) data.host = { ...data.host, systemTimezone };
     data.servers = scoped(user, data.servers).map(server => describe(user, server)); data.jobs = scoped(user, data.jobs);
+    data.schedules = scoped(user, manager.schedules());
     data.activity = admin ? data.activity : []; if (!admin) { data.host = null; data.history = []; }
     if (Array.isArray(data.nodes) && !admin) data.nodes = data.nodes.filter(node => data.servers.some(server => server.nodeId === node.id)).map(node => ({ id: node.id, name: node.name, publicAddress: node.publicAddress, local: node.local, online: node.online, status: node.status, stale: node.stale, lastSeen: node.lastSeen }));
     data.capabilities = { ...data.capabilities, admin, canCreate: admin, root: admin && data.capabilities.root, hostTerminal: admin && data.capabilities.hostTerminal, linux: admin && data.capabilities.linux };

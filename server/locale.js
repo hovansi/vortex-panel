@@ -212,7 +212,7 @@ export function localizeApiResponse(requestPath, body, locale = DEFAULT_LANGUAGE
   if (serverRoute && body.server) result = { ...result, server: server(body.server, locale) };
   if ((dashboard || requestPath === '/api/jobs' || nodesRoute) && Array.isArray(body.jobs)) result = { ...result, jobs: body.jobs.map(value => job(value, locale)) };
   if ((serverRoute || nodesRoute || /^\/api\/(?:schedules|jobs)(?:\/|$)/.test(requestPath)) && body.job) result = { ...result, job: job(body.job, locale) };
-  if (/^\/api\/schedules(?:\/|$)/.test(requestPath)) {
+  if (dashboard || /^\/api\/schedules(?:\/|$)/.test(requestPath)) {
     if (Array.isArray(body.schedules)) result = { ...result, schedules: body.schedules.map(value => schedule(value, locale)) };
     if (body.schedule) result = { ...result, schedule: schedule(body.schedule, locale) };
   }

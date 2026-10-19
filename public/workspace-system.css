@@ -36,15 +36,18 @@ body{background:var(--content)}
 .sidebar-search{min-height:40px;padding:9px 11px;margin:0 4px 22px;border:1px solid var(--line);border-radius:10px;background:var(--glass);box-shadow:none}
 .nav-label{font-size:10px;letter-spacing:.07em;font-weight:600;padding:0 12px;margin-bottom:8px}
 .navigation{gap:3px}
-#navigation::before{display:none}
+#navigation::before{display:block;border-radius:10px;background:var(--system-selection);border:0;box-shadow:inset 0 1px 0 color-mix(in srgb,var(--surface) 35%,transparent);transition:top .32s cubic-bezier(.22,.8,.3,1),height .2s ease}
+#navigation:not(:has(.active))::before{display:none}
 .sidebar .nav-item,.sidebar .nav-item.active{min-height:43px;padding:11px 12px;border:0;border-radius:10px;box-shadow:none;font-size:13px}
-.sidebar .nav-item.active{background:var(--system-selection);color:var(--ink);font-weight:600}
+.sidebar .nav-item.active{background:transparent;color:var(--ink);font-weight:600}
 .sidebar .nav-item.active>.icon{color:var(--accent)}
 .sidebar .nav-item.active::after{display:none}
 .sidebar .nav-item:not(.active):hover{background:var(--glass);color:var(--ink)}
 .nav-separator{margin:10px 12px}
-.host-mini{padding:9px 8px;border:0;border-radius:10px;background:none;box-shadow:none}
-.host-mini strong{font-size:11px}.host-mini small{font-size:10px}
+.host-mini{padding:12px;border:1px solid var(--line);border-radius:13px;background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 94%,var(--accent)),var(--surface));box-shadow:0 4px 14px #14151c14,inset 0 1px 0 #ffffffa3}
+:root[data-theme=dark] .host-mini{box-shadow:0 5px 16px #00000038,inset 0 1px 0 #ffffff0f}
+.host-mini>.icon{flex:none}.host-mini>div{min-width:0}
+.host-mini strong{font-size:11px;line-height:1.5;max-width:none;white-space:nowrap}.host-mini small{font-size:10px}
 .sidebar-meta{font-size:10px;padding:12px 8px 0}
 .toolbar{
   min-height:68px;padding:12px 26px;background:var(--system-material);
@@ -141,7 +144,7 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
 .server-view-options>button[aria-pressed=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px #0000000d}
 .server-grid[data-layout=list],.server-list-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:9px}
 .server-row{
-  display:grid;grid-template-columns:minmax(190px,1.4fr) minmax(100px,.65fr) minmax(80px,auto) minmax(180px,1fr) auto;
+  display:grid;grid-template-columns:minmax(190px,1fr) minmax(85px,.5fr) max-content max-content auto;
   gap:18px;align-items:center;min-height:102px;padding:16px 18px;border:1px solid var(--line);
   border-radius:14px;background:var(--surface);min-width:0;
 }
@@ -153,10 +156,10 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
 .server-row-description{font-size:11px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .server-row-error{grid-column:1/-1;margin:0;padding-top:10px;border-top:1px solid var(--line);color:var(--danger);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
 .server-row-node{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
-.server-row-node>.icon{width:15px;height:15px;flex:none}.server-row-state{min-width:0}.server-row-state .badge{font-size:10px}
-.server-row-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin:0;min-width:0}
+.server-row-node>.icon{width:15px;height:15px;flex:none}.server-row-state{min-width:0;max-width:160px}.server-row-state .badge{font-size:10px;white-space:normal;max-width:100%}
+.server-row-metrics{display:grid;grid-template-columns:repeat(2,max-content);gap:24px;margin:0;min-width:0}
 .server-row-metrics>div{min-width:0}.server-row-metrics dt{font-size:10px;color:var(--muted);margin-bottom:5px}
-.server-row-metrics dd{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;margin:0;overflow-wrap:anywhere}
+.server-row-metrics dd{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;margin:0;white-space:nowrap}
 .server-row-metrics dd small{font-size:10px;font-weight:450;color:var(--muted)}
 .server-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;flex-wrap:wrap}
 .server-row-actions .server-address{font-size:11px;min-height:36px;max-width:170px;overflow-wrap:anywhere}
@@ -189,8 +192,14 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
   .overview-workbench>.overview-host-section .allocation-figures strong{text-align:left}
 }
 @media(max-width:1200px){
-  .server-row{grid-template-columns:minmax(180px,1.2fr) minmax(85px,.6fr) auto minmax(160px,1fr);gap:13px}
+  .server-row{grid-template-columns:minmax(160px,1fr) minmax(85px,.5fr) max-content max-content;gap:13px}
   .server-row-actions{grid-column:1/-1;justify-content:flex-end;padding-top:11px;border-top:1px solid var(--line)}
+}
+@media(max-width:1100px) and (min-width:721px){
+  .server-row{grid-template-columns:minmax(0,1fr) max-content;gap:12px 18px}
+  .server-row-open{grid-column:1;grid-row:1}.server-row-state{grid-column:2;grid-row:1;justify-self:end}
+  .server-row-node{grid-column:1;grid-row:2}.server-row-metrics{grid-column:2;grid-row:2}
+  .server-row-actions{grid-column:1/-1;grid-row:3}
 }
 @media(max-width:950px) and (min-width:721px){
   .app-shell{grid-template-columns:74px minmax(0,1fr)}.sidebar{padding:20px 10px}
@@ -272,6 +281,7 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
   .sidebar,.toolbar,.mobile-nav,.modal,.confirmation,.palette,.drawer,.server-picker,.language-menu,.select-control-popup{backdrop-filter:none;-webkit-backdrop-filter:none}
   .sidebar .nav-item.active,.mobile-nav>a.active,.mobile-nav>button.active,.settings-navigation>button[aria-current=page]{background:Highlight;color:HighlightText;outline:1px solid Highlight}
   .sidebar .nav-item.active>.icon{color:HighlightText}
+  #navigation::before{background:Highlight;box-shadow:none}.host-mini,:root[data-theme=dark] .host-mini{background:Canvas;border-color:ButtonBorder;box-shadow:none}
   .panel,.server-row,.node-card,.settings-navigation,.btn{border:1px solid ButtonBorder}
   input[type=checkbox]:not(.toggle input){appearance:auto;-webkit-appearance:checkbox;background:Canvas;border-color:ButtonBorder}
   input[type=checkbox]:not(.toggle input)::before{display:none}
