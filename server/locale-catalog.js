@@ -13,6 +13,7 @@ import { REMOVAL_MESSAGES } from './node-removal.js';
 import { PANEL_REMOVAL_MESSAGES } from './panel-removal.js';
 import { APPLICATION_MESSAGES } from './application-runtime.js';
 import { PORT_ALLOCATION_MESSAGES } from './port-allocation.js';
+import { WORLD_OPERATIONS_MESSAGES } from './world-experiments.js';
 export const PANEL_MESSAGES = Object.freeze([
   { id: 'panel.host.maintenance', vi: 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.', en: 'System changes are being applied. Wait for completion.' },
   { id: 'panel.host.realadmin', vi: 'Thao tác hệ thống cần tài khoản quản trị thật.', en: 'System changes require a real administrator account.' },
@@ -35,6 +36,7 @@ export const PANEL_MESSAGES = Object.freeze([
   { id: 'panel.application.runtime.prepare', vi: 'Đang chuẩn bị runtime đã ghim', en: 'Preparing the exact managed runtime' },
   { id: 'panel.application.runtime.build', vi: 'Đang biên dịch mã nguồn Python chính thức; có thể mất vài phút', en: 'Building official Python source; this may take several minutes' },
   ...PORT_ALLOCATION_MESSAGES,
+  ...WORLD_OPERATIONS_MESSAGES,
   ...RESOURCE_EXIT_MESSAGES,
   {"id": "panel.application.manager.native", "en": "Application servers require a native Linux node.", "vi": "Server ứng dụng cần node Linux thực."},
   {"id": "panel.application.manager.startup-kind", "en": "Application startup settings are available for Python and Node.js servers only.", "vi": "Thiết lập khởi chạy ứng dụng chỉ dành cho server Python và Node.js."},

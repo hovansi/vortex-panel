@@ -24,7 +24,7 @@ export function createRouter(manager, { dataDir, store } = {}) {
     if (!canAccessServer(req.session.user, req.params.id, !['GET', 'HEAD', 'OPTIONS'].includes(req.method))) return res.status(403).json({ error: 'Bạn không có quyền truy cập server này.' });
     // Reject Minecraft-only APIs before their handlers or multipart parsers.
     // Generic files, console, configuration and backups remain shared tools.
-    if (/^\/(?:properties|players|worlds|packs|gameplay|gamerules|announcement(?:s)?|player-actions|update|versions|clone)(?:\/|$)/i.test(req.path) && ['nodejs', 'python'].includes(manager.getServer(req.params.id).kind)) {
+    if (/^\/(?:properties|players|worlds|packs|experiments|gameplay|gamerules|announcement(?:s)?|player-actions|update|versions|clone)(?:\/|$)/i.test(req.path) && ['nodejs', 'python'].includes(manager.getServer(req.params.id).kind)) {
       const errorI18n = { id: 'panel.application.bedrock-only', en: 'This operation is only available for Minecraft Bedrock servers.', vi: 'Thao tác này chỉ dành cho server Minecraft Bedrock.', params: [] };
       return res.status(409).json({ code: 'APPLICATION_KIND', error: errorI18n[req.panelLanguage === 'vi' ? 'vi' : 'en'], errorI18n });
     }
@@ -179,6 +179,9 @@ export function createRouter(manager, { dataDir, store } = {}) {
   router.get('/servers/:id/players', async (req, res) => res.json(await manager.players(req.params.id)));
   router.put('/servers/:id/players', async (req, res) => res.json(await manager.savePlayers(req.params.id, req.body)));
   router.get('/servers/:id/packs', async (req, res) => res.json(await manager.packs(req.params.id)));
+  router.patch('/servers/:id/packs/order/:kind', async (req, res) => res.json(await manager.reorderPacks(req.params.id, req.params.kind, req.body)));
+  router.get('/servers/:id/experiments', async (req, res) => res.json(await manager.experiments(req.params.id)));
+  router.patch('/servers/:id/experiments', async (req, res) => res.status(202).json(await manager.changeExperiments(req.params.id, req.body)));
   router.post('/servers/:id/packs/import', multipart(packUpload), async (req, res) => {
     if (!req.file) fail('Hãy chọn .mcpack hoặc .mcaddon.');
     try { res.status(201).json(await manager.importPacks(req.params.id, req.file.path, req.file.originalname)); }
@@ -199,7 +202,12 @@ export function createRouter(manager, { dataDir, store } = {}) {
   router.post('/servers/:id/worlds/create', async (req, res) => res.status(201).json(await manager.createWorld(req.params.id, req.body)));
   const requireWorldExport = (req, res, next) => { if (!canAccessServer(req.session.user, req.params.id, true)) fail('Xuất world chứa dữ liệu người chơi cần quyền quản lý server.', 403); next(); };
   router.head('/servers/:id/worlds/:name/export', requireWorldExport, async (req, res) => { const result = await manager.exportWorldInfo(req.params.id, req.params.name); res.attachment(result.name).type('application/octet-stream').end(); });
-  router.get('/servers/:id/worlds/:name/export', requireWorldExport, async (req, res, next) => download(req, res, await manager.exportWorld(req.params.id, req.params.name), next));
+  router.get('/servers/:id/worlds/:name/export', requireWorldExport, async (req, res, next) => {
+    const controller = new AbortController(), cancel = () => controller.abort();
+    req.once('aborted', cancel); res.once('close', cancel);
+    try { return await download(req, res, await manager.exportWorld(req.params.id, req.params.name, { signal: controller.signal }), next); }
+    finally { req.removeListener('aborted', cancel); res.removeListener('close', cancel); }
+  });
   router.delete('/servers/:id/worlds/:name', async (req, res) => res.json(await manager.deleteWorld(req.params.id, req.params.name, req.body)));
   router.get('/servers/:id/backups', (req, res) => res.json({ backups: manager.backups(req.params.id), limits: manager.backupLimits() }));
   router.post('/servers/:id/backups', async (req, res) => res.status(202).json({ job: await manager.backup(req.params.id) }));

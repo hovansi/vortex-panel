@@ -13,7 +13,7 @@ const metadataTypes = new Map([['LevelName', 8], ['StorageVersion', 3], ['Random
 const invalidNbt = () => fail('level.dat chứa dữ liệu NBT không hợp lệ, bị cắt ngắn hoặc chưa được hỗ trợ.');
 const worldChanged = () => { throw Object.assign(new Error('Dữ liệu thế giới đã thay đổi trong lúc kiểm tra; hãy dừng server và thử lại.'), { status: 409, code: 'WORLD_METADATA_CHANGED' }); };
 
-function inspectLevelDat(bytes) {
+export function inspectLevelDat(bytes) {
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) fail('Đây là dữ liệu thế giới Java; công cụ Worlds chỉ nhận thế giới Minecraft Bedrock.');
   if (bytes.length < 12 || bytes.length > BEDROCK_WORLD_LIMITS.levelBytes) fail('level.dat không có header Bedrock hợp lệ hoặc vượt giới hạn 16 MiB.');
   const formatVersion = bytes.readUInt32LE(0), declaredLength = bytes.readUInt32LE(4);
@@ -97,7 +97,7 @@ async function regularStat(filename, missingMessage) {
   return stat;
 }
 
-async function readBounded(filename, maxBytes, missingMessage, limitMessage) {
+export async function readBounded(filename, maxBytes, missingMessage, limitMessage) {
   const before = await regularStat(filename, missingMessage);
   if (before.size > maxBytes) fail(limitMessage);
   // Explicit buffers keep reads bounded even if another process grows a file

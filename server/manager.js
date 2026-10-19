@@ -10,17 +10,19 @@ import { createReadStream } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createVersionService } from './versions.js';
 import { extractZip, verifyZip, zipDirectory, validateBedrockPackage } from './archives.js';
-import { inspectPacks, importPacks, setPackEnabled, removePack } from './packs.js';
+import { inspectPacks, importPacks, setPackEnabled, removePack, reorderPacks } from './packs.js';
+import { inspectWorldExperiments, saveWorldExperiments, parseLevelDatTags } from './world-experiments.js';
+import { readBounded, BEDROCK_WORLD_LIMITS } from './bedrock-world-format.js';
 import { validateServerSettings, validateBedrockProperties, debuggerPort } from './configuration.js';
 import { fail, safePath, cleanRelative, atomicWrite, walkFiles, parseProperties, serializeProperties, validateProperties, validateNetwork, parseUdpPorts, defaultUdpPorts } from './safety.js';
 import { validatePlayerLists, playerListFiles, commitPlayerListFiles, playerListsRevision, assertPlayerListRevision } from './player-lists.js';
 import { createFileOperations, readTextFile, fileRevision, filePath, FILE_LIMITS } from './file-operations.js';
 import { bedrockLogLevel } from './bedrock-log.js';
-import { WORLD_LIMITS, validateWorldName, validateWorldSeed, existingWorldNames, worldTarget, unpackWorld, inspectSupportedWorld } from './worlds.js';
+import { WORLD_LIMITS, validateWorldName, validateWorldSeed, existingWorldNames, worldTarget, unpackWorld, inspectSupportedWorld, createWorldExport } from './worlds.js';
 import { buildWorldVoice, WorldVoiceValidationError, worldVoiceErrorText } from '../public/world-voice.js';
 import { serverMessageLanguage, serverWorldVoiceEnabled, createNativeWorldVoice, announceGracefulWorldPause, dispatchConsoleLine } from './server-voice.js';
 import { updateJobProgress } from './job-progress.js';
-import { GAME_RULES, GAME_ITEMS, PLAYER_ACTIONS, validateRuleQuery, validateRuleChanges, buildPlayerAction, parseNativeRuleResponse, executePlayerAction, createGameplayConsole, nativeGameplayBody, trackGameplayPlayer, connectedGameplayPlayers, assertGameplayPlayer, applyGameRuleChanges } from './gameplay.js';
+import { GAME_RULES, GAME_ITEMS, PLAYER_ACTIONS, validateRuleQuery, validateRuleChanges, buildPlayerAction, parseNativeRuleResponse, executePlayerAction, createGameplayConsole, nativeGameplayBody, trackGameplayPlayer, connectedGameplayPlayers, assertGameplayPlayer, applyGameRuleChanges, createGameRuleRefresh, savedGameRulesFromTags } from './gameplay.js';
 import { createResourceController, normalizeResourcePolicy } from './resource-control.js';
 import { LOG_RETENTION_DEFAULTS, createBoundedConsoleRing, createBoundedConsoleWriter, createUtf8LineConsumer } from './log-retention.js';
 import { canonicalOperationsError } from './gameplay-messages.js';
@@ -45,6 +47,10 @@ const appRevision = server => createHash('sha256').update(JSON.stringify([server
 const MUTABLE = ['worlds/', 'config/', 'keys/', 'server.properties', 'allowlist.json', 'permissions.json', 'valid_known_packs.json', 'server_identity_key.pem'];
 const mutable = name => MUTABLE.some(prefix => name === prefix || (prefix.endsWith('/') && name.startsWith(prefix)));
 const now = () => new Date().toISOString();
+function invalidateConsoleRules(runtime, command) {
+  if (!runtime?.gameRules || !/^\/?(?:gamerule\s+\S+\s+\S+|(?:execute|function|script)\b)/i.test(String(command).trim())) return;
+  runtime.gameRules.clear(); runtime.rulesRefresh = createGameRuleRefresh();
+}
 const backupVerificationSubject = Symbol('backupVerificationSubject');
 const defaultProperties = server => ({ 'server-name': server.name, gamemode: 'survival', difficulty: 'normal', 'allow-cheats': 'false', 'max-players': String(server.maxPlayers), 'online-mode': 'true', 'allow-list': 'false', 'server-port': String(server.port), 'server-portv6': String(server.portV6), 'view-distance': '16', 'tick-distance': '4', 'player-idle-timeout': '30', 'max-threads': '8', 'level-name': 'Bedrock level', 'level-seed': '', 'default-player-permission-level': 'member', 'texturepack-required': 'false', transport: server.transport === 'nethernet' ? 'nethernet' : 'raknet', ...(server.transport === 'nethernet' ? { 'server-udp-ports': server.udpPorts } : {}), 'enable-lan-visibility': 'false' });
 
@@ -605,7 +611,11 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const previous = { ...server };
     if (plan) server.version = server.runtime?.mode === 'managed' ? server.runtime.version : plan.runtime.version;
     server.status = 'starting'; server.error = null; server.players = 0; persistStartState(server, previous);
-    let resourceHandle, launched;
+    let resourceHandle, launched, startupPacks = null;
+    if (!isApp(server)) try {
+      const observed = await inspectPacks(workingDirectory, { levelName: properties['level-name'] || 'Bedrock level', serverVersion: server.version, runtimeFiles: server.runtimeFiles || [] });
+      startupPacks = { capturedAt: now(), worldName: properties['level-name'] || 'Bedrock level', revision: observed.revision, stacks: observed.stacks };
+    } catch (error) { startupPacks = { capturedAt: now(), worldName: properties['level-name'] || 'Bedrock level', stacks: null, error: error.message }; }
     try {
       resourceHandle = await resourceController.prepare(server.id, serverPolicy(server), isApp(server) ? { tasksMax: 128 } : {});
       launched = plan ? resourceHandle.spawnWithArgs(plan.executable, plan.args, plan.options, plan.execution) : resourceHandle.spawn(executable, { cwd: workingDirectory, env: { ...process.env, LD_LIBRARY_PATH: workingDirectory }, stdio: ['pipe', 'pipe', 'pipe'], detached: false });
@@ -613,6 +623,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const { child, ready } = launched;
     const runtime = { child, resourceHandle, resourceUsage: null, startedAt: Date.now(), expected: false, online: new Map(), connections: new Map(), instanceId: randomUUID(), worldName: properties['level-name'] || 'Bedrock level', startupProperties: { ...properties }, gameRules: new Map(), previousTicks: 0, previousTime: performance.now(), ready: false, close: null };
     runtime.consoleRunId = consoleRun(server);
+    runtime.startupPacks = startupPacks;
+    runtime.rulesRefresh = createGameRuleRefresh();
     runtime.applicationRuntime = plan?.runtime || null;
     runtime.gameplay = isApp(server) ? { busy: false, consume: () => false, close() {} } : createGameplayConsole({ send: (command, options) => {
       if (!runtimeCurrent(server, runtime)) fail('Phiên chạy máy chủ đã thay đổi.', 409);
@@ -785,8 +797,21 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     let current; try { current = await properties(server); } catch (error) { if (error.code !== 'ENOENT') throw error; current = defaultProperties(server); }
     let world = { name: current['level-name'] || 'Bedrock level', revision: null }, available = false, reason = 'Khởi động server native và đợi sẵn sàng để đọc hoặc đổi gameplay.';
     if (runtime?.ready && server.status === 'running' && !runtime.expected) try { world = await gameplayWorld(server, runtime); available = true; reason = null; } catch (error) { reason = error.message; }
-    const cached = available ? runtime.gameRules : new Map();
-    return { server: publicServer(server), available, reason, world, cheatsEnabled: available && runtime.startupProperties['allow-cheats'] === 'true', rules: GAME_RULES.map(rule => ({ ...rule, value: null, status: 'not-queried', ...(cached.get(rule.key) || {}) })), valuesSource: cached.size ? 'cached-native' : 'not-queried', rulesQueriedAt: available ? runtime.rulesQueriedAt || null : null, players: available ? gamePlayers(runtime) : [], actions: PLAYER_ACTIONS, itemCatalog: GAME_ITEMS, busy: Boolean(runtime?.gameplay?.busy), queryAvailable: available && !runtime.gameplay.busy && !publicServer(server).busy };
+    if (available && (runtime.rulesRefresh.snapshot(world.revision).status === 'refreshing' || !runtime.gameplay.busy && !publicServer(server).busy)) {
+      await runtime.rulesRefresh.refresh(world.revision, () => queryGameRules(server, { worldRevision: world.revision }));
+      if (processes.get(server.id) !== runtime || !runtime.ready || runtime.expected || server.status !== 'running') return gameplayMetadata(server);
+      try { world = await gameplayWorld(server, runtime); }
+      catch (error) { available = false; reason = error.message; world = { name: current['level-name'] || runtime.worldName, revision: null }; }
+    }
+    let cached = available ? runtime.gameRules : new Map(), valuesSource = cached.size ? 'cached-native' : 'not-queried';
+    if (!available && !runtime && server.status === 'stopped') try {
+      const filename = await safePath(runDirectory(server), `worlds/${validateWorldName(world.name)}/level.dat`);
+      const parsed = parseLevelDatTags(await readBounded(filename, BEDROCK_WORLD_LIMITS.levelBytes));
+      cached = new Map(savedGameRulesFromTags(parsed.root.children).map(row => [row.key, row]));
+      if (cached.size) valuesSource = 'saved-world';
+    } catch { /* Missing/changing metadata stays unknown; never assume defaults. */ }
+    if (!runtime && (processes.has(server.id) || valuesSource === 'saved-world' && server.status !== 'stopped')) return gameplayMetadata(server);
+    return { server: publicServer(server), available, reason, world, cheatsEnabled: available ? runtime.startupProperties['allow-cheats'] === 'true' : null, rules: GAME_RULES.map(rule => ({ ...rule, value: null, status: 'not-queried', ...(cached.get(rule.key) || {}) })), valuesSource, automaticRefresh: available ? runtime.rulesRefresh.snapshot(world.revision) : { status: 'idle', lastAttemptAt: null, retryAt: null }, rulesQueriedAt: available ? runtime.rulesQueriedAt || null : null, players: available ? gamePlayers(runtime) : [], actions: PLAYER_ACTIONS, itemCatalog: GAME_ITEMS, busy: Boolean(runtime?.gameplay?.busy), queryAvailable: available && !runtime.gameplay.busy && !publicServer(server).busy };
   }
   async function withGameplay(server, worldRevision, operation) {
     assertOpen(); assertIdle(server); assertRecovered(server);
@@ -813,7 +838,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     return withGameplay(server, input.worldRevision, async ({ runtime, console, world, guard }) => {
       const results = [];
       for (const key of input.keys) { await guard(); const result = await queryNativeRule(console, key); results.push(result); runtime.gameRules.set(key, result); if (result.status === 'unconfirmed') break; }
+      await guard();
       runtime.rulesQueriedAt = now();
+      if (input.keys.length === GAME_RULES.length) runtime.rulesRefresh.markRead(world.revision, { confirmed: results.length === input.keys.length && results.every(rule => rule.status === 'confirmed') });
       return { world, rules: results, valuesSource: 'fresh-native', confirmed: results.length === input.keys.length && results.every(rule => rule.status === 'confirmed'), queriedAt: runtime.rulesQueriedAt };
     });
   }
@@ -1136,6 +1163,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const catalog = await inspectPacks(runRoot, { levelName: (await properties(server))['level-name'] || 'Bedrock level', serverVersion: server.version, runtimeFiles: server.runtimeFiles || [] });
     return { serverVersion: server.version, globalPacks: catalog.packs.filter(pack => pack.scope === null) };
   }
+  function assertWorldLibraryReady(server) {
+    assertOpen(); assertIdle(server); assertRecovered(server);
+    const runtime = processes.get(server.id);
+    if (lifecycle.has(server.id) || !['running', 'stopped'].includes(server.status) || Boolean(runtime) !== (server.status === 'running') || runtime && (!runtime.ready || runtime.expected || runtime.child.exitCode != null || runtime.child.signalCode != null)) fail('Chờ server hoàn tất khởi động hoặc dừng trước khi quản lý thư viện world.', 409);
+    return runtime;
+  }
   const worldRow = (name, current, inspected) => ({ name, displayName: inspected.metadata.displayName || inspected.metadata.name || name, active: name === current, exists: true, state: 'ready', valid: true, validationMode: 'structural', size: inspected.size, modified: inspected.modified, metadata: inspected.metadata, warnings: inspected.warnings, error: null });
   async function worlds(server) {
     const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
@@ -1153,11 +1186,11 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     return { worlds: rows, current, pending, limits: WORLD_LIMITS, validationMode: 'structural', warnings: ['Kiểm tra metadata và bố cục world không xác minh khả năng chơi; Bedrock sẽ đọc database khi khởi động.'] };
   }
   async function importWorld(server, archive, input) {
-    assertStopped(server);
+    const runtime = assertWorldLibraryReady(server);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['name', 'filename'].includes(key))) fail('Yêu cầu nhập world không hợp lệ.');
     const runRoot = await safePath(dataDir, `servers/${server.id}/run`);
     const name = validateWorldName(input.name), current = (await properties(server))['level-name'] || 'Bedrock level';
-    if (name === current) fail('Tên world đang được chọn; hãy nhập bằng tên mới để không thay dữ liệu active.', 409);
+    if (name === current || name === runtime?.worldName) fail('Tên world đang được chọn; hãy nhập bằng tên mới để không thay dữ liệu active.', 409);
     if ((await existingWorldNames(runRoot)).length >= WORLD_LIMITS.maxWorlds) fail('Panel hỗ trợ tối đa 100 world trên một server.', 409);
     await worldTarget(runRoot, name, { missing: true });
     const options = await worldOptions(server);
@@ -1174,7 +1207,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         let target, importRoot, activated = false, committed = false;
         try {
           progress(10, 'Đang giải nén và kiểm tra world Bedrock');
-          const unpacked = await unpackWorld(ownedArchive, input.filename, staging, options);
+          const unpacked = await unpackWorld(ownedArchive, input.filename, staging, { ...options, globalRoot: runRoot, reuseIdenticalGlobalPacks: true });
           importRoot = unpacked.root;
           target = await worldTarget(runRoot, name, { missing: true });
           await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -1183,7 +1216,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
           commitServerFields(server, {}, 'world.import', `${server.name}: ${name}`); committed = true;
           const world = worldRow(name, current, unpacked);
           log(server, `Đã nhập world ${name}; world đang chọn được giữ nguyên.`);
-          return { result: { world, selected: false }, warnings: world.warnings };
+          return { result: { world, selected: false, reusedGlobalPacks: unpacked.reusedGlobalPacks || [] }, warnings: world.warnings };
         } catch (error) {
           if (activated && !committed) {
             // Moving the new folder back does not need free space for a copy.
@@ -1214,23 +1247,46 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     return { world: { name, active: true, exists: !create, state: create ? 'pending-generation' : 'ready', validationMode: create ? null : 'structural' }, configuration };
   }
   async function exportWorldInfo(server, name) {
-    assertStopped(server);
+    const runtime = assertWorldLibraryReady(server);
     const target = await worldTarget(await safePath(dataDir, `servers/${server.id}/run`), name);
-    await inspectSupportedWorld(target, await worldOptions(server));
+    if (!runtime || runtime.worldName !== name) await inspectSupportedWorld(target, await worldOptions(server));
     return { target, name: `${name}.mcworld` };
   }
-  async function exportWorld(server, name) {
-    const info = await exportWorldInfo(server, name);
+  async function exportWorld(server, name, { signal } = {}) {
+    const runtime = assertWorldLibraryReady(server);
+    validateWorldName(name);
     const archive = path.join(directory(server), `.world-export-${randomUUID()}.mcworld`);
-    try {
-      await zipDirectory(info.target, archive, { includeEmptyDirectories: true, maxBytes: WORLD_LIMITS.unpackedMB * 1024 ** 2, maxEntries: WORLD_LIMITS.entries });
-      return { path: archive, name: info.name, cleanup: () => fs.rm(archive, { force: true }) };
-    } catch (error) { await fs.rm(archive, { force: true }).catch(() => {}); throw error; }
+    const active = () => { if (processes.get(server.id) !== runtime || runtime && (!runtime.ready || runtime.expected || server.status !== 'running') || !runtime && server.status !== 'stopped') fail('Phiên server đã thay đổi trong lúc xuất world.', 409); };
+    const guard = () => { assertOpen(); active(); if (signal?.aborted) fail('Đã hủy xuất world.', 499); };
+    const options = await worldOptions(server);
+    let volumeBudget = 0, volumeAvailable;
+    const reserveWorkspace = async bytes => {
+      if (storagePolicy(server).mode !== 'fixed') return reserveDiskWorkspace(bytes);
+      const usage = await fs.statfs(directory(server)), available = Number(usage.bavail) * Number(usage.bsize);
+      volumeAvailable ??= available; volumeBudget += bytes;
+      if (!Number.isSafeInteger(available) || available < bytes || volumeAvailable < volumeBudget) fail('Không đủ dung lượng trống của server để xuất world nhất quán.', 409);
+      return () => {};
+    };
+    const exportData = async live => {
+      try { return await createWorldExport({ runRoot: runDirectory(server), name, destination: archive, options, live, guard, reserveWorkspace }); }
+      catch (error) {
+        if (error.code === 'BACKUP_SAVE_RESUME_REQUIRED' || /save resume/.test(error.message)) log(server, `Chưa xác minh được native đã tiếp tục lưu sau khi xuất world. Kiểm tra console và gửi save resume: ${error.message}`, 'error');
+        throw error;
+      }
+    };
+    if (!runtime || runtime.worldName !== name) return exportData(null);
+    return runtime.gameplay.run(async () => {
+      const control = createBackupConsole({ child: runtime.child, send: command => deliverConsole(server, command, 'world.export.command', { gameplay: true, internal: true }) });
+      runtime.backupConsole = control;
+      const canResume = () => processes.get(server.id) === runtime && runtime.child.exitCode == null && runtime.child.signalCode == null;
+      try { return await exportData({ worldName: runtime.worldName, console: control, guard, releaseGuard: canResume }); }
+      finally { control.close(); delete runtime.backupConsole; }
+    });
   }
   async function deleteWorld(server, name, input) {
-    assertStopped(server); validateWorldName(name);
+    const runtime = assertWorldLibraryReady(server); validateWorldName(name);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'name') || input.name !== name) fail('Hãy nhập chính xác tên world để xác nhận xóa.');
-    if ((await properties(server))['level-name'] === name) fail('Không được xóa world đang chọn; hãy chọn world khác trước.', 409);
+    if ((await properties(server))['level-name'] === name || runtime?.worldName === name) fail('Không được xóa world đang chọn; hãy chọn world khác trước.', 409);
     await worldTarget(await safePath(dataDir, `servers/${server.id}/run`), name);
     const relative = `servers/${server.id}/run/worlds/${name}`, quarantine = await quarantineDeletion(relative, 'server');
     const activity = store.data.activity;
@@ -1316,7 +1372,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
                     if (!Number.isSafeInteger(available) || available < bytes) fail('Không đủ dung lượng trống trong gói máy chủ để tạo bản sao lưu tạm và ZIP.', 409);
                   } else releaseWorkspace = await reserveDiskWorkspace(bytes);
                 },
-                  guard: () => { assertOpen(); active(); }, releaseGuard: active });
+                  guard: () => { assertOpen(); active(); }, releaseGuard: () => processes.get(server.id) === runtime && runtime.child.exitCode == null && runtime.child.signalCode == null });
               } finally { control.close(); delete runtime.backupConsole; }
             });
             source = snapshot; record.consistency = 'native-online';
@@ -1584,7 +1640,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
           finally { schedule.lastCommandResult = { ...record.commandResult }; }
           persist();
           if (!record.commandResult.acceptedToConsole || !['confirmed', 'dispatched'].includes(record.commandResult.status)) throw new Error(record.commandResult.message || (record.commandResult.status === 'rejected' ? `Tiến trình từ chối lệnh lịch: ${record.commandResult.nativeFeedback || 'Không có phản hồi chi tiết.'}` : 'Chưa xác nhận được thứ tự xử lý lệnh lịch. Tác vụ tiếp theo chưa chạy; không tự gửi lại lệnh.'));
-          runtime?.gameRules.clear();
+          invalidateConsoleRules(runtime, fields.command);
         }
         assertOpen(); record.actionStatus = 'running'; record.actionStartedAt = now();
         if (fields.action === 'backup') {
@@ -1857,7 +1913,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       if (typeof command !== 'string' || !command.trim() || command.length > 2048 || /[\r\n\0]/.test(command)) fail('Lệnh phải là một dòng không quá 2048 ký tự.');
       if (!isApp(server) && ['stop', 'restart'].includes(command.trim().toLowerCase())) fail('Hãy dùng nút dừng hoặc khởi động lại để panel theo dõi đúng tiến trình.');
       const result = deliverConsole(server, command);
-      processes.get(id)?.gameRules.clear(); emit({ type: 'update' }); return result;
+      invalidateConsoleRules(processes.get(id), command); emit({ type: 'update' }); return result;
     },
     announcement(id, input) {
       assertOpen(); const server = get(id); assertIdle(server);
@@ -1956,20 +2012,43 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     }  const target = await safePath(runDirectory(server), name, { allowRoot: false }); if (!(await fs.stat(target)).isFile()) fail('Chỉ tải xuống một tệp.'); return { path: target, name: path.basename(target) }; },
     players: id => players(get(id)),
     async packs(id) {
-      const server = get(id); assertStopped(server);
-      return inspectPacks(runDirectory(server), await packOptions(server));
+      const server = get(id), runtime = processes.get(id), data = await inspectPacks(runDirectory(server), await packOptions(server));
+      return { ...data, runtime: { running: Boolean(runtime?.ready && !runtime.expected && server.status === 'running'), capturedAt: runtime?.startupPacks?.capturedAt || null, worldName: runtime?.worldName || data.world?.name, stacks: runtime?.startupPacks?.stacks || null, configuredMatchesStartup: runtime?.startupPacks?.revision ? runtime.startupPacks.worldName === data.world?.name && runtime.startupPacks.revision === data.revision : null, validation: 'configured-at-startup; consult native content log for pack loading errors' } };
     },
     async importPacks(id, archive, filename) {
-      const server = get(id); assertStopped(server);
+      const server = get(id); assertWorldLibraryReady(server);
       return importPacks(runDirectory(server), archive, { ...await packOptions(server, 'pack.import'), filename });
+    },
+    async reorderPacks(id, kind, input) {
+      const server = get(id); assertStopped(server);
+      return reorderPacks(runDirectory(server), kind, input, await packOptions(server, 'pack.reorder', kind));
+    },
+    async experiments(id) {
+      const server = get(id);
+      return inspectWorldExperiments(runDirectory(server), { levelName: (await properties(server))['level-name'] || 'Bedrock level', running: processes.has(id) });
+    },
+    async changeExperiments(id, input) {
+      const server = get(id); assertStopped(server);
+      const levelName = (await properties(server))['level-name'] || 'Bedrock level';
+      return { job: job('world-experiments', server, async progress => {
+        progress(5, 'Đang kiểm tra tính năng thử nghiệm của world');
+        return { result: await saveWorldExperiments(runDirectory(server), input, { levelName, running: false,
+          assertStopped: () => { assertOpen(); assertRecovered(server); if (processes.has(id) || lifecycle.has(id) || server.status !== 'stopped') fail('Dừng server trước khi đổi thử nghiệm của world.', 409); },
+          beforeWrite: async () => { progress(10, 'Đang tạo backup đã xác minh trước khi đổi thử nghiệm'); return performBackup(server, value => progress(10 + value * 0.7, 'Đang sao lưu world trước khi đổi thử nghiệm'), 'pre-experiments'); },
+          onCommit: async () => { commitServerFields(server, {}, 'world.experiments', `${server.name}: ${levelName}`); emit({ type: 'update' }); }
+        }) };
+      }) };
     },
     async setPackEnabled(id, uuid, enabled) {
       const server = get(id); assertStopped(server);
       return setPackEnabled(runDirectory(server), uuid, enabled, await packOptions(server, enabled ? 'pack.activate' : 'pack.deactivate', uuid));
     },
     async removePack(id, uuid) {
-      const server = get(id); assertStopped(server);
-      return removePack(runDirectory(server), uuid, await packOptions(server, 'pack.remove', uuid));
+      const server = get(id), runtime = assertWorldLibraryReady(server);
+      return removePack(runDirectory(server), uuid, { ...await packOptions(server, 'pack.remove', uuid),
+        running: Boolean(runtime), startupStacks: runtime?.startupPacks?.stacks,
+        assertLive: () => { assertOpen(); assertRecovered(server); if (processes.get(id) !== runtime || !runtime?.ready || runtime.expected || runtime.child.exitCode != null || runtime.child.signalCode != null || server.status !== 'running') fail('Phiên server đã thay đổi trong lúc quản lý Add-on.', 409); }
+      });
     },
     savePlayers: (id, input) => savePlayers(get(id), input),
     worlds: id => worlds(get(id)),
@@ -1978,7 +2057,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     createWorld: (id, input) => selectWorld(get(id), input, true),
     deleteWorld: (id, name, input) => deleteWorld(get(id), name, input),
     exportWorldInfo: (id, name) => exportWorldInfo(get(id), name),
-    exportWorld: (id, name) => exportWorld(get(id), name),
+    exportWorld: (id, name, options) => exportWorld(get(id), name, options),
     backups: id => { const server = get(id); return (server.backups || []).map(record => publicBackup(server, record)); },
     backupLimits: () => ({ maxLocked: 50, maxRetention: 50, unpackedMB: 2048, entries: 50000 }),
     backup: id => backup(get(id)),
@@ -2077,7 +2156,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const promise = operationContext.run(id, async () => { await Promise.resolve(); return applicationRead(id, { inspect: true }); }); operations.set(id, promise);
     try { const result = await promise; result.server.busy = false; return result; } finally { operations.delete(id); }
   };
-  for (const name of ['saveAppearance', 'uploadAppearance', 'removeAppearance', 'saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo']) {
+  for (const name of ['saveAppearance', 'uploadAppearance', 'removeAppearance', 'saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'changeExperiments', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo']) {
     const method = manager[name];
     manager[name] = async (id, ...args) => {
       assertOpen();
@@ -2104,7 +2183,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       try { return await promise; } finally { operations.delete(id); }
     };
   }
-  for (const name of ['properties', 'saveProperties', 'players', 'savePlayers', 'packs', 'importPacks', 'setPackEnabled', 'removePack', 'worlds', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo', 'upgrade', 'gameplay', 'queryGameRules', 'saveGameRules', 'playerAction', 'announcement', 'changeGameRules']) {
+  for (const name of ['properties', 'saveProperties', 'players', 'savePlayers', 'packs', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'experiments', 'changeExperiments', 'worlds', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo', 'upgrade', 'gameplay', 'queryGameRules', 'saveGameRules', 'playerAction', 'announcement', 'changeGameRules']) {
     if (typeof manager[name] !== 'function') continue;
     const method = manager[name];
     manager[name] = (id, ...args) => { if (isApp(get(id))) fail('This tool is available for Minecraft Bedrock servers only.', 409); return method(id, ...args); };

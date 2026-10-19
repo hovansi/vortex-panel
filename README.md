@@ -34,7 +34,7 @@ The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel
 
 | Area | What you can manage |
 | --- | --- |
-| **Minecraft Bedrock** | Official stable/preview discovery, searchable version history, console, world settings and gamerules, coordinates, players, permissions, allowlist, add-ons and world import/export |
+| **Minecraft Bedrock** | Official stable/preview discovery, searchable version history, live gamerule readback, coordinates, player controls, add-on stacks/priority, world experiments with pre-change backups and native online world export |
 | **Node.js & Python** | Latest official stable runtime pinned at creation, entry file/npm script/Python module startup, dependency tasks, project inspection and secret environment variables |
 | **Files & recovery** | Upload, download, edit with conflict detection, copy, move, rename, ZIP/extract, per-server backups, retention and restore |
 | **Server identity** | Private cover image, icon, description and accent color for cards/workspaces; separate Bedrock listing text with Minecraft color codes |
@@ -45,6 +45,8 @@ The managed service is `vortex-panel.service`, with source in `/opt/vortex-panel
 | **Access & interface** | Admin/Operator/Viewer roles, per-server grants, TOTP and recovery codes, EN/VI, responsive navigation, saved themes and keyboard controls |
 
 New Node.js/Python applications resolve the latest final stable runtime directly from the official project, then keep that exact pin. Creating another application never upgrades existing ones. The Node.js interpreter running the panel is managed separately. See [application behavior and limits](docs/applications.md).
+
+Bedrock rules remain stored in their world after a normal restart; the panel reads them automatically instead of reactivating them. Add-on inventory stays visible while running, with separate configured/startup stacks and native-log validation. Importing an unused pack and exporting a running world do not require a restart. A custom pack proven unused by the ready process and every world can also be removed online. Changing active pack registration/priority or experiments still requires stopped Bedrock; experiments receive a verified backup before writing. See [world operations](docs/WORLDS.md).
 
 CPU/RAM limits are usage ceilings, rather than hardware reservations. The main VPS keeps a ten-percent capacity budget; linked resource nodes use their effective capacity. Free-space, critical-memory and capability checks still apply. Ports are allocated and checked **per VPS**. See [resource and storage behavior](docs/OPERATIONS-090.md) and [port allocation](docs/PORTS-0155.md).
 

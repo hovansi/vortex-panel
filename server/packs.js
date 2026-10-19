@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { extractZip } from './archives.js';
 import { atomicWrite, cleanRelative, fail, safePath, walkFiles } from './safety.js';
 
@@ -8,6 +8,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KINDS = { behavior: 'behavior_packs', resource: 'resource_packs' };
 const MAX_UNPACKED = 512 * 1024 ** 2;
 const MAX_ENTRIES = 10000;
+const SCRIPT_API = /^@minecraft\/[a-z][a-z0-9-]{0,63}$/;
+const API_VERSION = /^(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})\.(?:0|[1-9]\d{0,7})(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
 const versionValid = value => Array.isArray(value) && value.length === 3 && value.every(number => Number.isSafeInteger(number) && number >= 0 && number <= 2147483647);
 const sameVersion = (a, b) => versionValid(a) && versionValid(b) && a.every((value, index) => value === b[index]);
 const exceedsEngine = (minimum, version) => {
@@ -42,13 +44,23 @@ export function parsePackManifest(manifest, { serverVersion } = {}) {
     if (!versionValid(module?.version)) error('Module version cần ba số nguyên không âm.');
     if (module?.type === 'resources') kinds.add('resource');
     else if (module?.type === 'data') kinds.add('behavior');
-    else error(module?.type ? `Module ${module.type} chưa được hỗ trợ; chỉ hỗ trợ data/resources, không cài Script API.` : 'Module thiếu type; chỉ hỗ trợ data/resources, không cài Script API.');
+    else if (module?.type === 'script') {
+      kinds.add('behavior');
+      if (module.language !== 'javascript') error('Script API chỉ hỗ trợ language=javascript.');
+      try {
+        if (typeof module.entry !== 'string' || module.entry.length > 240 || cleanRelative(module.entry, { allowRoot: false }) !== module.entry || !module.entry.endsWith('.js')) throw Error();
+      } catch { error('Script entry cần là đường dẫn .js tương đối nằm trong pack.'); }
+    }
+    else error(module?.type ? `Module ${module.type} chưa được hỗ trợ; chỉ hỗ trợ data/resources/script.` : 'Module thiếu type; chỉ hỗ trợ data/resources/script.');
   }
-  if (kinds.size !== 1) error('Mỗi pack phải chỉ chứa module data hoặc chỉ chứa module resources.');
+  if (kinds.size !== 1) error('Mỗi pack phải là behavior (data/script) hoặc resource, không trộn cả hai.');
   const dependencies = manifest.dependencies === undefined ? [] : manifest.dependencies;
   if (!Array.isArray(dependencies) || dependencies.length > 64) error('Dependencies phải là danh sách tối đa 64 pack.');
   else for (const dependency of dependencies) {
-    if (!dependency || dependency.module_name !== undefined) error('Script API/module_name dependencies chưa được hỗ trợ.');
+    if (!dependency || typeof dependency !== 'object' || Array.isArray(dependency)) error('Dependency cần là một đối tượng JSON.');
+    else if (dependency.module_name !== undefined) {
+      if (dependency.uuid !== undefined || !SCRIPT_API.test(dependency.module_name) || typeof dependency.version !== 'string' || dependency.version.length > 128 || !API_VERSION.test(dependency.version)) error('Script dependency cần module_name @minecraft/* và phiên bản API cụ thể.');
+    }
     else if (!UUID.test(dependency.uuid || '') || !versionValid(dependency.version)) error('Dependency cần header UUID và version gồm ba số nguyên.');
     else if (dependency.uuid.toLowerCase() === String(header.uuid).toLowerCase()) error('Pack không được phụ thuộc chính nó.');
   }
@@ -61,10 +73,22 @@ export function parsePackManifest(manifest, { serverVersion } = {}) {
     minEngineVersion: versionValid(header.min_engine_version) ? [...header.min_engine_version] : null,
     packScope: header.pack_scope || 'any',
     kind: kinds.size === 1 ? [...kinds][0] : null,
-    modules: modules.map(module => ({ type: module?.type || null, uuid: typeof module?.uuid === 'string' ? module.uuid.toLowerCase() : null, version: versionValid(module?.version) ? [...module.version] : null })),
+    modules: modules.map(module => ({ type: module?.type || null, uuid: typeof module?.uuid === 'string' ? module.uuid.toLowerCase() : null, version: versionValid(module?.version) ? [...module.version] : null, ...(module?.type === 'script' ? { language: module.language, entry: module.entry } : {}) })),
     dependencies: Array.isArray(dependencies) ? dependencies.map(item => ({ ...(item?.uuid ? { uuid: String(item.uuid).toLowerCase() } : {}), ...(item?.module_name ? { module_name: item.module_name } : {}), version: item?.version })) : [],
     errors,
+    scripting: modules.some(module => module?.type === 'script'),
+    requiresBetaApis: Array.isArray(dependencies) && dependencies.some(dependency => dependency?.module_name && typeof dependency.version === 'string' && /(?:^|-)beta(?:[.-]|$)/.test(dependency.version)),
   };
+}
+
+/** Validate code entry locations without executing, importing or granting API permissions. */
+export async function validatePackScriptEntries(root, folder, pack) {
+  for (const module of pack.modules || []) {
+    if (module.type !== 'script') continue;
+    const entry = await safePath(root, `${folder ? folder + '/' : ''}${module.entry}`, { allowRoot: false });
+    const stat = await fs.lstat(entry);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > 16 * 1024 ** 2) fail('Script entry cần là tệp .js thông thường tối đa 16 MiB trong pack.', 409);
+  }
 }
 
 async function readJson(root, relative, { optional = false, array = false } = {}) {
@@ -100,6 +124,7 @@ async function scanPacks(root, options, { allWorlds = false } = {}) {
       try {
         const { value } = await readJson(root, `${folder}/manifest.json`);
         const pack = parsePackManifest(value, options);
+        if (!pack.errors.length) await validatePackScriptEntries(root, folder, pack);
         if (pack.kind && pack.kind !== collection.kind) pack.errors.push('Loại module không khớp thư mục cài đặt.');
         packs.push({ ...pack, kind: collection.kind, folder, scope: collection.scope, protected: (options.runtimeFiles || []).some(name => name === folder || name.startsWith(folder + '/')), enabled: false });
       } catch (error) { packs.push({ uuid: null, name: entry.name, description: '', version: null, minEngineVersion: null, kind: collection.kind, folder, scope: collection.scope, modules: [], dependencies: [], protected: (options.runtimeFiles || []).some(name => name.startsWith(folder + '/')), enabled: false, errors: [error.message] }); }
@@ -122,6 +147,7 @@ async function registrations(root, name) {
   }
   return result;
 }
+const registrationRevision = refs => createHash('sha256').update(JSON.stringify(Object.entries(refs).map(([kind, value]) => [kind, value.text]))).digest('hex');
 async function writeRegistrations(root, changes, commit = () => {}) {
   const written = [];
   try {
@@ -155,6 +181,7 @@ function dependencyClosure(target, packs) {
     if (pack.errors.length) fail(`${pack.name}: ${pack.errors.join(' ')}`, 409);
     visiting.add(pack.uuid);
     for (const dependency of pack.dependencies) {
+      if (dependency.module_name) continue;
       const required = findPack(packs, dependency.uuid);
       if (!sameVersion(required.version, dependency.version)) fail(`${pack.name} cần ${dependency.uuid} phiên bản ${dependency.version.join('.')}.`, 409);
       visit(required);
@@ -168,17 +195,46 @@ export async function inspectPacks(root, options) {
   const result = await scanPacks(root, options);
   let exists = false;
   try { exists = (await fs.stat(await safePath(root, `worlds/${worldName(options.levelName)}`))).isDirectory(); } catch (error) { if (error.status !== 404) throw error; }
+  let refs = null;
   if (exists) {
     try {
-      const refs = await registrations(root, options.levelName);
-      for (const pack of result.packs) pack.enabled = refs[pack.kind].value.some(entry => String(entry?.pack_id).toLowerCase() === pack.uuid && sameVersion(entry?.version, pack.version));
+      refs = await registrations(root, options.levelName);
+      for (const pack of result.packs) {
+        const priority = refs[pack.kind].value.findIndex(entry => String(entry?.pack_id).toLowerCase() === pack.uuid && sameVersion(entry?.version, pack.version));
+        pack.enabled = priority >= 0;
+        pack.priority = priority >= 0 ? priority + 1 : null;
+      }
     } catch (error) { result.warnings.push(error.message); }
   }
   for (const pack of result.packs) for (const dependency of pack.dependencies) {
+    if (dependency.module_name) continue;
     const required = result.packs.filter(item => item.uuid === dependency.uuid);
-    if (dependency.module_name || required.length !== 1 || !sameVersion(required[0].version, dependency.version)) pack.errors.push(`Chưa có dependency hợp lệ ${dependency.uuid || dependency.module_name}.`);
+    if (required.length !== 1 || !sameVersion(required[0].version, dependency.version)) pack.errors.push(`Chưa có dependency hợp lệ ${dependency.uuid}.`);
   }
-  return { ...result, world: { name: options.levelName, exists }, limits: { compressedMB: 100, unpackedMB: 512, entries: MAX_ENTRIES, manifests: 20 } };
+  const stacks = Object.fromEntries(Object.keys(KINDS).map(kind => [kind, (refs?.[kind].value || []).map((entry, index) => {
+    const pack = result.packs.find(item => item.kind === kind && item.uuid === String(entry?.pack_id).toLowerCase() && sameVersion(item.version, entry?.version));
+    return { uuid: entry?.pack_id || null, version: entry?.version || null, priority: index + 1, name: pack?.name || entry?.pack_id || null, folder: pack?.folder || null, missing: !pack, protected: pack?.protected || false, valid: Boolean(pack && !pack.errors.length) };
+  })]));
+  return { ...result, stacks, revision: refs ? registrationRevision(refs) : null, observedAt: new Date().toISOString(), registrationSource: 'world-pack-json', priorityOrder: 'highest-first', runtimeValidation: 'content-log', world: { name: options.levelName, exists }, limits: { compressedMB: 100, unpackedMB: 512, entries: MAX_ENTRIES, manifests: 20 } };
+}
+
+/** Exact, optimistic permutation: missing packs and unknown registration fields survive. */
+export async function reorderPacks(root, kind, input, options) {
+  if (!Object.hasOwn(KINDS, kind) || !input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['packIds', 'revision'].includes(key)) || !Array.isArray(input.packIds) || input.packIds.length > 2000 || input.packIds.some(uuid => typeof uuid !== 'string' || !UUID.test(uuid)) || new Set(input.packIds.map(uuid => uuid.toLowerCase())).size !== input.packIds.length || !/^[a-f0-9]{64}$/.test(input.revision || '')) fail('Thứ tự pack cần loại hợp lệ, revision và danh sách UUID không trùng lặp.');
+  const refs = await registrations(root, options.levelName);
+  if (registrationRevision(refs) !== input.revision) fail('Danh sách pack đã thay đổi; tải lại trước khi sắp xếp.', 409);
+  const original = refs[kind], byId = new Map();
+  for (const entry of original.value) {
+    const uuid = typeof entry?.pack_id === 'string' ? entry.pack_id.toLowerCase() : '';
+    if (!UUID.test(uuid) || byId.has(uuid)) fail('Danh sách pack hiện tại có UUID không hợp lệ hoặc trùng lặp; hãy sửa trước khi sắp xếp.', 409);
+    byId.set(uuid, entry);
+  }
+  const ids = input.packIds.map(uuid => uuid.toLowerCase());
+  if (ids.length !== byId.size || ids.some(uuid => !byId.has(uuid))) fail('Sắp xếp phải giữ nguyên toàn bộ pack đã đăng ký.', 409);
+  const value = ids.map(uuid => byId.get(uuid));
+  if (value.every((entry, index) => entry === original.value[index])) return { ...await inspectPacks(root, options), changed: false };
+  await writeRegistrations(root, [{ ...original, value }], options.onCommit);
+  return { ...await inspectPacks(root, options), changed: true, appliesOn: 'next-world-load' };
 }
 
 export async function importPacks(root, archive, options) {
@@ -215,6 +271,7 @@ export async function importPacks(root, archive, options) {
       const pack = parsePackManifest(manifest, options);
       if (pack.errors.length) fail(`${pack.name}: ${pack.errors.join(' ')}`);
       const source = path.dirname(filename);
+      await validatePackScriptEntries(source, '', pack);
       if (manifests.some(other => other !== filename && path.dirname(other).startsWith(source + path.sep))) fail('Không cho phép các thư mục pack chồng lồng nhau.');
       candidates.push({ ...pack, source, folder: `${KINDS[pack.kind]}/vortex-${pack.uuid}`, scope: null, protected: false, enabled: false });
     }
@@ -262,6 +319,7 @@ export async function setPackEnabled(root, uuid, enabled, options) {
 export async function removePack(root, uuid, options) {
   const catalog = await scanPacks(root, options, { allWorlds: true }); const pack = findPack(catalog.packs, uuid);
   if (pack.protected) fail('Pack runtime/Mojang được bảo vệ; hãy dùng cập nhật phiên bản.', 403);
+  if (options.running) return removeInactivePack(root, pack, catalog, options);
   const changes = [];
   for (const name of await worldFolders(root)) {
     const refs = await registrations(root, name);
@@ -275,4 +333,66 @@ export async function removePack(root, uuid, options) {
   catch (error) { await fs.rename(trash, source).catch(rollbackError => { error.message += `; không thể khôi phục thư mục pack: ${rollbackError.message}`; }); throw error; }
   await fs.rm(trash, { recursive: true, force: true });
   return { ok: true, worldsUpdated: changes.length };
+}
+
+function startupRegistrationIds(stacks) {
+  if (!stacks || typeof stacks !== 'object' || Array.isArray(stacks)) fail('Chưa có ảnh chụp pack khi khởi động; dừng máy chủ trước khi xóa Add-on.', 409);
+  const ids = new Set();
+  for (const kind of Object.keys(KINDS)) {
+    const entries = stacks[kind];
+    if (!Array.isArray(entries) || entries.length > 2000) fail('Ảnh chụp pack khi khởi động không hợp lệ; dừng máy chủ trước khi xóa Add-on.', 409);
+    for (const entry of entries) {
+      const uuid = typeof entry?.uuid === 'string' ? entry.uuid.toLowerCase() : '';
+      if (!UUID.test(uuid) || !versionValid(entry?.version) || ids.has(uuid)) fail('Ảnh chụp pack khi khởi động không hợp lệ; dừng máy chủ trước khi xóa Add-on.', 409);
+      ids.add(uuid);
+    }
+  }
+  return ids;
+}
+async function inactiveRemovalProof(root, pack, catalog, options) {
+  await options.assertLive?.();
+  if (startupRegistrationIds(options.startupStacks).has(pack.uuid)) fail('Pack đã được đăng ký khi tiến trình khởi động; dừng máy chủ trước khi xóa Add-on.', 409);
+  const records = [];
+  for (const name of (await worldFolders(root)).sort()) {
+    let refs;
+    try { refs = await registrations(root, name); }
+    catch { fail('Danh sách pack của world không hợp lệ; dừng máy chủ trước khi xóa Add-on.', 409); }
+    const worldIds = new Set();
+    for (const kind of Object.keys(KINDS)) {
+      const ids = new Set();
+      for (const entry of refs[kind].value) {
+        const uuid = typeof entry?.pack_id === 'string' ? entry.pack_id.toLowerCase() : '';
+        if (!UUID.test(uuid) || !versionValid(entry?.version) || ids.has(uuid)) fail('Danh sách pack của world không hợp lệ; dừng máy chủ trước khi xóa Add-on.', 409);
+        ids.add(uuid); worldIds.add(uuid);
+      }
+      if (ids.has(pack.uuid)) fail('Pack còn được đăng ký cho một thế giới; dừng máy chủ trước khi xóa Add-on.', 409);
+      records.push([name, kind, refs[kind].text]);
+    }
+    for (const dependant of catalog.packs) {
+      if ((dependant.scope === null || dependant.scope === name) && worldIds.has(dependant.uuid) && dependant.dependencies.some(dependency => dependency.uuid === pack.uuid)) fail('Một pack đang bật còn phụ thuộc Add-on này; dừng máy chủ trước khi xóa.', 409);
+    }
+  }
+  return createHash('sha256').update(JSON.stringify(records)).digest('hex');
+}
+async function removeInactivePack(root, pack, catalog, options) {
+  const proof = await inactiveRemovalProof(root, pack, catalog, options), source = await safePath(root, pack.folder), before = await fs.lstat(source);
+  if (!before.isDirectory() || before.isSymbolicLink()) fail('Thư mục Add-on không hợp lệ.', 409);
+  const trash = path.join(path.dirname(root), `.packs-trash-${randomUUID()}`);
+  if (await inactiveRemovalProof(root, pack, catalog, options) !== proof) fail('Danh sách pack đã thay đổi; tải lại hoặc dừng máy chủ trước khi xóa.', 409);
+  const current = await fs.lstat(await safePath(root, pack.folder));
+  if (current.dev !== before.dev || current.ino !== before.ino || !current.isDirectory()) fail('Thư mục Add-on đã thay đổi; tải lại trước khi xóa.', 409);
+  await fs.rename(source, trash);
+  try {
+    if (await inactiveRemovalProof(root, pack, catalog, options) !== proof) fail('Danh sách pack đã thay đổi; Add-on chưa được xóa.', 409);
+    await options.onCommit?.();
+  } catch (error) {
+    try {
+      if (await fs.lstat(source).catch(value => { if (value.code === 'ENOENT') return null; throw value; })) fail('Một thư mục khác đã xuất hiện tại vị trí Add-on; giữ bản cách ly để khôi phục thủ công.', 409);
+      await fs.rename(trash, source);
+    } catch (rollback) { error.message += `; không thể khôi phục thư mục pack: ${rollback.message}`; }
+    throw error;
+  }
+  try { await fs.rm(trash, { recursive: true, force: true }); }
+  catch { return { ok: true, worldsUpdated: 0, removedWhileRunning: true, cleanupPending: true, warnings: ['Add-on đã được bỏ khỏi thư viện; chưa dọn xong thư mục cách ly.'] }; }
+  return { ok: true, worldsUpdated: 0, removedWhileRunning: true };
 }

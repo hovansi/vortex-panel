@@ -148,22 +148,88 @@ export function parseNativeRuleResponse(line, key, { mutation = false } = {}) {
   if (mutation && nativeInfoHeader.test(line) && new RegExp(`^(?:Game rule |Gamerule )${key}\\b.*(?:updated|changed|set)`, 'i').test(body)) return { status: 'confirmed', reasonCode: 'native-rule-acknowledgement', setFeedback: true, nativeFeedback: body };
   return null;
 }
+// The caller must first validate a complete, bounded Bedrock level.dat with
+// parseLevelDatTags and only use this snapshot while its server is stopped.
+// Missing, unsupported and mistyped tags remain unknown; documentation defaults
+// and a previous world's observations are never substituted.
+export function savedGameRulesFromTags(tags) {
+  if (!Array.isArray(tags)) throw new TypeError('Validated root NBT tags are required.');
+  const result = [];
+  for (const rule of GAME_RULES) {
+    const matches = tags.filter(tag => tag?.name === rule.key);
+    if (matches.length !== 1) continue;
+    const tag = matches[0];
+    if (tag.type !== (rule.type === 'boolean' ? 1 : 3)) continue;
+    if (rule.type === 'boolean' && tag.value !== 0 && tag.value !== 1) continue;
+    const value = rule.type === 'boolean' ? tag.value === 1 : tag.value;
+    try { validateRuleValue(rule.key, value); } catch { continue; }
+    result.push({ key: rule.key, value, status: 'saved', source: 'world-level.dat', readOnly: true });
+  }
+  return result;
+}
+// One coordinator belongs to one managed process. Reads can take a few seconds;
+// simultaneous metadata requests must share that work rather than queueing a
+// console scan per viewer. Failed/partial reads are throttled too. This helper
+// never applies values and never carries observations into another world.
+export function createGameRuleRefresh({ cooldownMs = 60000, clock = () => Date.now() } = {}) {
+  if (!Number.isFinite(cooldownMs) || cooldownMs < 1000 || cooldownMs > 3600000 || typeof clock !== 'function') throw new TypeError('Invalid world-rule refresh policy.');
+  let generation = 0, currentWorld = null, state = { status: 'idle', lastAttemptAt: null, retryAt: null }, attemptedAt = null;
+  const pending = new Map(), timestamp = value => new Date(value).toISOString();
+  function select(worldRevision) {
+    revision(worldRevision);
+    if (currentWorld !== worldRevision) { currentWorld = worldRevision; generation++; attemptedAt = null; state = { status: 'idle', lastAttemptAt: null, retryAt: null }; }
+  }
+  const markRead = (worldRevision, { confirmed = true } = {}) => {
+    select(worldRevision); const time = clock(); attemptedAt = time;
+    state = { status: confirmed ? 'current' : 'partial', lastAttemptAt: timestamp(time), retryAt: timestamp(time + cooldownMs) };
+  };
+  return {
+    snapshot(worldRevision) { return currentWorld === worldRevision ? { ...state } : { status: 'idle', lastAttemptAt: null, retryAt: null }; },
+    markRead,
+    async refresh(worldRevision, operation, { force = false } = {}) {
+      select(worldRevision);
+      if (typeof operation !== 'function') throw new TypeError('A read operation is required.');
+      if (pending.has(worldRevision)) return pending.get(worldRevision);
+      const time = clock();
+      if (!force && attemptedAt !== null && time - attemptedAt < cooldownMs) return { refreshed: false, throttled: true };
+      const selectedGeneration = generation;
+      attemptedAt = time; state = { status: 'refreshing', lastAttemptAt: timestamp(time), retryAt: timestamp(time + cooldownMs) };
+      const run = Promise.resolve().then(operation).then(result => {
+        if (generation === selectedGeneration) state = { ...state, status: result?.confirmed === false ? 'partial' : 'current' };
+        return { refreshed: true, result };
+      }, error => {
+        if (generation === selectedGeneration) state = { ...state, status: 'unconfirmed' };
+        return { refreshed: false, error };
+      }).finally(() => { if (pending.get(worldRevision) === run) pending.delete(worldRevision); });
+      pending.set(worldRevision, run); return run;
+    }
+  };
+}
 export async function applyGameRuleChanges(input, { console, guard, query, onRead = () => {} }) {
   // Read every baseline before writing the first change. This is optimistic
   // concurrency, not an atomic multi-rule transaction in the native engine.
+  const baselines = new Map();
   for (const key of input.keys) {
-    await guard(); const current = await query(key); onRead(current);
+    await guard(); const current = await query(key); await guard(); onRead(current);
     if (current.status !== 'confirmed') fail('Chưa đọc được giá trị luật thế giới hiện tại. Chưa gửi thay đổi; hãy đọc lại.', 409);
     if (current.value !== input.expected[key]) fail('Giá trị luật thế giới đã thay đổi. Bản nháp được giữ; hãy đọc lại và kiểm tra trước khi áp dụng.', 409);
+    baselines.set(key, current);
   }
   const results = [];
   for (const key of input.keys) {
     let sent;
     try {
       await guard();
+      // Re-reading an unchanged rule is enough. Never rewrite an already
+      // persisted value just because a caller submitted it again.
+      if (baselines.get(key).value === input.changes[key]) {
+        const read = baselines.get(key);
+        results.push({ key, requested: input.changes[key], value: read.value, status: 'confirmed', confirmedApplied: true, acceptedToConsole: false, changed: false, reasonCode: 'already-current', ...(read.nativeFeedback ? { nativeFeedback: read.nativeFeedback } : {}) });
+        continue;
+      }
       sent = await console.exchange(`gamerule ${key} ${input.changes[key]}`, line => parseNativeRuleResponse(line, key, { mutation: true }), { endFence: true });
       if (sent.status === 'unconfirmed' || sent.status === 'rejected') { results.push({ key, requested: input.changes[key], acceptedToConsole: Boolean(sent.acceptedToConsole), confirmedApplied: false, status: sent.status, ...(sent.reasonCode ? { reasonCode: sent.reasonCode } : {}), ...(sent.message ? { message: sent.message } : {}), ...(sent.nativeFeedback ? { nativeFeedback: sent.nativeFeedback } : {}), ...(sent.warnings?.length ? { warnings: sent.warnings } : {}) }); break; }
-      await guard(); const read = await query(key); onRead(read);
+      await guard(); const read = await query(key); await guard(); onRead(read);
       const confirmedApplied = read.status === 'confirmed' && read.value === input.changes[key];
       results.push({ key, requested: input.changes[key], acceptedToConsole: Boolean(sent.acceptedToConsole), confirmedApplied, value: read.value, status: confirmedApplied ? 'confirmed' : 'unconfirmed', ...(!confirmedApplied ? { reasonCode: read.status === 'confirmed' ? 'readback-mismatch' : 'readback-unconfirmed' } : {}), ...(read.nativeFeedback ? { nativeFeedback: read.nativeFeedback } : {}), ...(sent.warnings?.length ? { warnings: sent.warnings } : {}), ...(!confirmedApplied ? { message: 'Lệnh đã được nhận nhưng chưa xác nhận giá trị mong muốn. Không tự gửi lại thay đổi.' } : {}) });
       if (!confirmedApplied) break;

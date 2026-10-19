@@ -93,7 +93,7 @@ Allowlist entries use `{name,xuid?,ignoresPlayerLimit?}`; permission entries use
 
 The player-list `revision` is a lowercase 64-character SHA-256 value covering the allowlist and permissions together; online-player changes do not alter it. PUT checks a supplied revision under the instance write lock before changing either file. An invalid revision returns HTTP 400 with `code:"PLAYER_LIST_REVISION"`; a stale revision returns HTTP 409 with `code:"PLAYER_LIST_CONFLICT"`. Omitting `revision` preserves the legacy API's explicit whole-list replacement behavior, without a concurrency precondition.
 
-Transport is detected from the official package. NetherNet uses TCP signaling and a UDP range; legacy RakNet uses UDP ports. Ranges are reserved and checked across instances. World and active configuration changes require stopped state. Lifecycle/data writes are serialized per instance.
+Transport is detected from the official package. NetherNet uses TCP signaling and a UDP range; legacy RakNet uses UDP ports. Ranges are reserved and checked across instances. Selecting the loaded world, creating its next-start configuration, changing experiments or its active pack stack requires stopped state. Read-only inspection, online exports and managing inactive worlds remain available while running. Lifecycle/data writes are serialized per instance.
 
 Configuration `settings` accepts `name,autoStart,autoRestart,backupRetention,messageLanguage,worldVoiceEnabled`; properties merge with current keys, preserving unknown advanced properties. Known booleans/enums/ranges are validated. Settings-only edits may be saved while running; any properties/network edit requires stopped state. `network` exposes `udpMode,recommendedUdpPorts,udpPortCount,allowedTransports,debugPort,requiresStopped,warnings`. Auto mode recalculates NetherNet UDP range with port/player-limit changes; custom mode retains validated NAT mappings. Original and candidate ports stay reserved until durable commit. TCP/UDP sockets are probed for external occupancy; this does not allocate firewall rules or guarantee a future bind against external races. Properties, metadata and actor audit roll back on observed write failure; this is not a multi-file power-loss transaction. Raw properties/file-editor routes share this validator.
 
@@ -152,7 +152,7 @@ Use the Version and Add-ons tools for Bedrock packages and pack registration, an
 
 ## Worlds
 
-All paths below start with `/api/servers/:id`. GET metadata requires assigned read; every mutation and export requires assigned manage. Create/select/import/export/delete require stopped and idle. Import owns the upload before returning its asynchronous job.
+All paths below start with `/api/servers/:id`. GET metadata requires assigned read; every mutation and export requires assigned manage. World mutations and exports require an idle instance; metadata can instead report changing bytes. Selecting or creating the selected world requires a stopped server. Importing a new, unselected world, deleting an unselected world and exporting can run while an owned Bedrock process is ready. The selected/running world cannot be deleted. Import owns the upload before returning its asynchronous job.
 
 | Method / suffix | Body | Response |
 | --- | --- | --- |
@@ -160,11 +160,13 @@ All paths below start with `/api/servers/:id`. GET metadata requires assigned re
 | POST `/worlds/import` | Multipart `file` (`.mcworld`/`.zip`), `name` | 202 `{job}`; completed `job.result:{world,selected:false}` |
 | POST `/worlds/select` | `{name}` | `{world,configuration}` |
 | POST `/worlds/create` | `{name,seed?:string}` | 201 `{world,configuration}`; `state:"pending-generation"` |
-| HEAD `/worlds/:name/export` | — | Checks permission/state/format, no archive creation |
+| HEAD `/worlds/:name/export` | — | Checks permission/state; format where quiescent, no archive or native save commands |
 | GET `/worlds/:name/export` | — | `.mcworld` root attachment; temporary artifact cleaned after response/abort |
 | DELETE `/worlds/:name` | `{name}` exact confirmation | `{ok:true,warnings?,cleanupPending?}`, inactive only |
 
 World records include `name,displayName,active,exists,state,valid,validationMode,size,modified,metadata,warnings,error`; changing data may return `state:"changing",retryable:true`. Metadata is structural validation, not a gameplay/database guarantee. Limits: one compressed GiB, two expanded GiB, 50,000 entries, 100 worlds. New names never overwrite; import does not select. Create stores exact string seed, writes no placeholder database. Supported embedded packs are preserved and validated; unsupported content is rejected. See [Worlds](WORLDS.md).
+
+Exporting the running world uses native `save hold/query/resume`, copies the confirmed byte boundaries into a private snapshot and resumes saves before ZIP compression. An unselected/quiescent world uses a verified disk copy. Exports include referenced supported global resource/behavior packs as embedded packs, preserve registration order and revalidate without access to host-global packs. `.mcworld` contains no server identity, unrelated world or server configuration. Snapshot failure does not silently stop/restart the process. Request aborts cancel preparation and release native saving; artifacts are cleaned after response/abort. See [online snapshot limits](ONLINE-BACKUPS.md).
 
 ## Recovery integrity and protection
 
@@ -180,18 +182,25 @@ Operation jobs expose `operationCompleted`, `completionAuditRecorded`, `completi
 
 ## Bedrock add-ons
 
-All routes require assigned read/manage permissions and a stopped server; writes also acquire the instance data lock.
+GET requires assigned read and works while Bedrock runs. Writes require assigned manage and the instance data lock. Import installs new pack files without activating them and can run while a ready server runs. Activation, deactivation and reordering require stopped Bedrock because they change world registration. Removal can run online only for a custom pack proven absent from the ready process’s startup snapshot, every world registration and enabled dependants. Protected, loaded, registered or unprovable packs remain blocked. Online removal rechecks state and changes no registration JSON.
 
 | Method / path | Body | Response |
 | --- | --- | --- |
-| GET `/api/servers/:id/packs` | — | `{packs,world:{name,exists},warnings,limits}` |
+| GET `/api/servers/:id/packs` | — | `{packs,stacks,revision,world,warnings,limits,runtime,registrationSource,observedAt,priorityOrder}` |
 | POST `/api/servers/:id/packs/import` | Multipart `file` (`.mcpack`/`.mcaddon`) | 201 `{packs,warnings}` |
 | PATCH `/api/servers/:id/packs/:uuid` | `{enabled:boolean}` | `{pack,activated,world}` |
 | DELETE `/api/servers/:id/packs/:uuid` | — | `{ok:true,worldsUpdated}` |
+| PATCH `/api/servers/:id/packs/order/:kind` | `{revision,packIds:[uuid,...]}` | Reordered metadata; `kind` is `behavior` or `resource` |
+| GET `/api/servers/:id/experiments` | — | World experiment flags, metadata revision and installed-runtime availability; readable while running |
+| PATCH `/api/servers/:id/experiments` | `{revision,flags:{id:boolean},acknowledgeExperimental?:boolean}` | 202 `{job}`; stopped only, verified backup before writing |
 
-Pack records expose `uuid,name,description,version,minEngineVersion,packScope,kind,folder,scope,modules,dependencies,errors,protected,enabled`. `scope` is null for instance-level folders, or the owning world name. Activation writes the world's behavior/resource reference lists and includes exact UUID/version dependencies; disabling a required pack is blocked while dependants remain active. A configured existing world is required. Removal updates references across the instance's worlds; Mojang runtime packs are protected. Imported folders and reference lists are rolled back if durable metadata commit fails.
+Pack records expose `uuid,name,description,version,minEngineVersion,packScope,kind,folder,scope,modules,dependencies,errors,protected,enabled,priority,scripting,requiresBetaApis`. `scope` is null for instance-level folders, or the owning world name. `stacks` preserve exact world registration order, highest priority first, including missing-pack warnings. Reorder is an optimistic exact permutation of every registered UUID; stale revisions, duplicates and omitted/invented UUIDs reject without writing. Unknown registration fields survive. Activation writes the world's behavior/resource reference lists and includes exact UUID/version dependencies; disabling a required pack is blocked while dependants remain active. A configured existing world is required. Stopped removal updates references across the instance's worlds; safe online removal changes no registrations. Mojang runtime packs are protected. Imported folders and reference lists are rolled back if durable metadata commit fails.
 
-The supported subset is manifest v2, data/resources modules and acyclic UUID dependencies. Script API/module_name, manifest v3, global-only scope, encrypted archives and world bundles are rejected. Limits: 100 MiB compressed, cumulative 512 MiB unpacked/10,000 entries including nested `.mcpack`, 20 manifests. Duplicate UUIDs, unsafe paths and unsupported engine versions are rejected.
+`registrationSource:"world-pack-json"` describes configured files. `runtime.stacks` is the configuration captured at process startup; `configuredMatchesStartup` compares that snapshot with the current registration. It is not proof that scripts/assets loaded successfully. Inspect Bedrock's native content log for actual loading errors. Importing a pack does not hot-load it into a running world.
+
+The supported subset is manifest v2, data/resources/JavaScript script modules, exact `@minecraft/*` API-version dependencies and acyclic UUID dependencies. Script entry files must be present safe relative `.js` paths. API availability is checked by Bedrock, not guaranteed by manifest acceptance. Beta dependencies may require Beta APIs; activation does not enable experiments automatically. Manifest v3, global-only scope, encrypted archives and world bundles are rejected. Limits: 100 MiB compressed, cumulative 512 MiB unpacked/10,000 entries including nested `.mcpack`, 20 manifests. Duplicate UUIDs, unsafe paths and unsupported engine versions are rejected.
+
+Experiments come from validated bounded `level.dat` and names detected in the current world/installed runtime. Unknown native flags stay visible and unchanged; unavailable flags cannot be invented. Changes require exact metadata revision, stopped state and a verified pre-change backup. Enabling requires `acknowledgeExperimental:true`; history flags indicating prior experimental use are retained. Completed jobs return the new experiment metadata and backup. Changes apply on next world load; disabling a toggle does not guarantee that experimental world changes or compatibility are reversed.
 
 ## Versions, schedules and activity
 
@@ -254,9 +263,9 @@ WebSocket `/ws` needs an authenticated cookie and valid Origin. Events: `{type:"
 
 Create and configuration settings accept `resourcePolicy`: `{mode:"shared"}` or `{mode:"fixed",cpuCores:<number>,memoryMiB:<integer>}`. Fixed limits require the capability exposed at `dashboard.capabilities.resourceControl` / configuration `resourceControl`. Server responses contain `resourcePolicy` and `resources:{configured,effective,usage,cleanupPending,lastExit}`. `effective.applied`/`kernelEnforced` describe the current run; `lastExit` is one bounded historical final-kernel sample, with `reason:"memory-limit"|"native-exit"`. Limits can change only while stopped; limits are not reservations.
 
-- GET `/api/servers/:id/gameplay`: metadata, rule definitions/cached native values, current world revision, observed online connection identities, action/item catalogs. Read-only; no native command is sent. Labels have `*I18n` metadata.
+- GET `/api/servers/:id/gameplay`: metadata, rule definitions/observations, current world revision, observed online connection identities and action/item catalogs. For an owned ready world it automatically issues serialized **read-only** native rule queries on first access, then reuses that runtime/world observation subject to a 60-second automatic refresh cooldown. Refresh is deferred during conflicting work, so the saved observation is not a constant live-state guarantee. Concurrent readers share one refresh; partial/failed scans are throttled too. It never applies a rule. `automaticRefresh:{status,lastAttemptAt,retryAt}` distinguishes idle, refreshing, current, partial and unconfirmed scans. With stopped Bedrock, exact typed whitelisted values from validated `level.dat` have `status:"saved"`, `source:"world-level.dat"` and `readOnly:true`; they are saved-disk observations, not live native confirmation. Missing/mistyped fields stay unknown. No old-runtime/world defaults are copied. Labels have `*I18n` metadata.
 - POST `/api/servers/:id/gamerules/query`: `{worldRevision,keys?}`. Requires manage permission, sends fenced serialized native queries. Returns per-rule typed confirmed/unconfirmed results and current world identity.
-- PATCH `/api/servers/:id/gamerules`: `{worldRevision,changes:{key:value},expected:{key:value}}`. Exact typed keys and expected values; stale world/expected values reject before writes. All expected values are checked before writes. Once any native command was accepted, a later failure returns per-rule partial/unconfirmed/not-sent results, rather than falsely asserting no effect. World rules do not require cheats.
+- PATCH `/api/servers/:id/gamerules`: `{worldRevision,changes:{key:value},expected:{key:value}}`. Exact typed keys and expected values; stale world/expected values reject before writes. All expected values are checked before writes. A value already matching the request returns confirmed readback with `reasonCode:"already-current",changed:false,acceptedToConsole:false`, without a mutation command. Once any native command was accepted, a later failure returns per-rule partial/unconfirmed/not-sent results, rather than falsely asserting no effect. Bedrock saves rules in the world; they do not need reactivation after a normal restart. World rules do not require cheats.
 - POST `/api/servers/:id/player-actions`: `{worldRevision,action,target:{name,xuid,connectionId},values}`. Requires manage permission and exact observed current online identity. Actions: `give`, `kill`, `kick`, `heal`, `gamemode`, `teleport`, `op`, `deop`. Give/Kill/Heal/Gamemode/Teleport require cheats; Vortex never enables them automatically. Returns command acceptance separately from native effect confirmation. Arbitrary selectors/command fragments are rejected.
 
 Admin-only history routes:

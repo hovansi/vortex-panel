@@ -19,6 +19,7 @@ const serverRoutes = [
   ['POST', /^\/storage\/grow\/?$/],
   ['GET,PATCH', /^\/appearance\/?$/], ['GET,POST,DELETE', /^\/appearance\/media\/(?:icon|cover)\/?$/],
   ['GET,PATCH', /^\/application\/?$/], ['POST', /^\/dependencies\/?$/],
+  ['GET,PATCH', /^\/experiments\/?$/], ['PATCH', /^\/packs\/order\/(?:behavior|resource)\/?$/],
   ['GET', /^\/(?:metrics|logs|properties|configuration|files|players|packs|worlds|activity|backups|gameplay|versions|network-access)\/?$/],
   ['POST,DELETE', /^\/network-access\/?$/],
   ['GET,PUT,DELETE', /^\/file\/?$/], ['PUT', /^\/(?:properties|players)\/?$/], ['PATCH', /^\/(?:configuration|gamerules)\/?$/],

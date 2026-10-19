@@ -24,7 +24,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/server-firewall.js', 'server/server-voice.js',
   'server/storage-cli.js', 'server/storage-policy.js',
   'server/storage-volumes.js', 'server/store.js', 'server/system-power.js',
-  'server/version-catalog.js', 'server/versions.js', 'server/worlds.js',
+  'server/version-catalog.js', 'server/versions.js', 'server/worlds.js', 'server/world-experiments.js',
   'public/world-voice.js',
 ]);
 

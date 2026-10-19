@@ -101,7 +101,7 @@ async function copyPrefix(root, destination, relative, size, guard) {
   let output;
   try {
     const stat = await input.stat();
-    if (!stat.isFile() || stat.size < size) fail('Tệp thế giới thay đổi hoặc ngắn hơn dữ liệu server đã xác nhận.', 409);
+    if (!stat.isFile() || stat.nlink > 1 || stat.size < size) fail('Tệp thế giới thay đổi, có liên kết cứng hoặc ngắn hơn dữ liệu server đã xác nhận.', 409);
     output = await fs.open(target, 'wx', 0o600);
     const buffer = Buffer.allocUnsafe(Math.min(1024 ** 2, Math.max(size, 1)));
     for (let offset = 0; offset < size;) {

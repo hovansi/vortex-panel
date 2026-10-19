@@ -26,7 +26,7 @@ Lệnh mặc định bật quyền quản trị host root cho bản cài mới. 
 
 | Nhóm | Khả năng |
 | --- | --- |
-| Minecraft Bedrock | Catalog Stable/Preview và bản cũ có tìm kiếm; console; world/gamerule gồm tọa độ; người chơi, quyền, allowlist; add-on; nhập/xuất world |
+| Minecraft Bedrock | Catalog Stable/Preview và bản cũ có tìm kiếm; tự đọc gamerule đã lưu; tác động người chơi; add-on và thứ tự ưu tiên; thử nghiệm có backup trước khi đổi; xuất world đang chạy qua snapshot native |
 | Node.js/Python | Tự tra bản ổn định mới nhất khi tạo rồi ghim phiên bản; entry file/npm script/module; cài thư viện; xem project; biến môi trường bí mật |
 | Tệp và sao lưu | Upload/download, editor chống ghi đè xung đột, copy/move/rename, nén/giải nén, backup, retention và restore |
 | Nhận diện máy chủ | Ảnh bìa, biểu tượng, miêu tả và màu chủ đạo cho thẻ/workspace; nội dung danh sách Bedrock hỗ trợ mã màu § được lưu riêng |
@@ -36,6 +36,8 @@ Lệnh mặc định bật quyền quản trị host root cho bản cài mới. 
 | Cập nhật panel | Xác minh release ổn định chính thức, cập nhật VPS phụ trước và panel chính cuối cùng, chỉ thay source/dependency của panel và agent, có kiểm chứng từng VPS và khôi phục yêu cầu bị gián đoạn |
 
 Runtime của server cũ giữ nguyên; tạo ứng dụng mới không tự nâng cấp ứng dụng đang có. CPU/RAM là mức trần sử dụng, không phải cam kết tài nguyên vật lý. VPS chạy panel giữ lại 10% ngân sách; worker dùng dung lượng hiệu dụng, vẫn phải qua kiểm tra RAM/đĩa và năng lực thực tế.
+
+Gamerule được Bedrock lưu trong world và giữ nguyên sau khi restart bình thường; panel tự đọc lại, không kích hoạt lại mù quáng. Có thể xem add-on/cấu hình stack khi server chạy, nhập pack chưa dùng và xuất world online. Có thể xóa online pack tùy chỉnh đã xác minh không dùng bởi tiến trình sẵn sàng và mọi world. Bật/tắt pack, đổi thứ tự ưu tiên hoặc sửa thử nghiệm cần dừng Bedrock để thay registration/metadata an toàn. Thử nghiệm được backup đã kiểm toàn vẹn trước khi ghi; xem [quản lý world](WORLDS.md).
 
 ## Dữ liệu và nâng cấp
 

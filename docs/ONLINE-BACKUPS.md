@@ -2,6 +2,8 @@
 
 Backup thủ công và backup theo lịch có thể thực hiện khi server Bedrock đang chạy và đã sẵn sàng. Người chơi tiếp tục kết nối bằng cùng tiến trình; panel không gửi lệnh dừng hoặc khởi động lại. Server đang khởi động, đang dừng hoặc có tác vụ quản lý khác cần hoàn tất trước khi sao lưu. Server đã dừng vẫn dùng quy trình sao lưu ZIP thông thường. Khôi phục bản sao lưu và cập nhật phiên bản vẫn yêu cầu dừng server.
 
+Xuất world đang chạy thành `.mcworld` dùng cùng cơ chế snapshot native bên dưới. Chỉ world được chọn và các add-on được tham chiếu vào bản xuất; không đưa world khác, cấu hình server hay identity vào archive. Các pack toàn instance được nhúng và kiểm dependency để world xuất không lệ thuộc thư viện trên VPS. Xuất không tạo một mục backup trong retention. Server dừng hoặc world không được chọn dùng bản sao dữ liệu yên trên đĩa; các điều kiện quyền, busy, dung lượng và toàn vẹn vẫn áp dụng.
+
 ## Mốc dữ liệu nhất quán
 
 Panel dùng cơ chế được mô tả trong `bedrock_server_how_to.html` đi kèm gói Bedrock chính thức:
