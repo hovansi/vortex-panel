@@ -632,7 +632,12 @@ fi
 # Prepare the pinned native compatibility engine while the previous service
 # is still healthy. A failed build never switches the active panel release.
 if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
-  python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role panel
+  VORTEX_BEDROCK_PAGE_SIZE=$(getconf PAGESIZE)
+  if [[ $VORTEX_BEDROCK_PAGE_SIZE == 4096 ]]; then
+    python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role panel
+  else
+    printf 'Minecraft Bedrock on ARM64 currently requires a 4 KiB kernel page size; this host reports %s bytes. Vortex Panel, Node.js and Python remain available. Bedrock is unavailable on this host.\n' "$VORTEX_BEDROCK_PAGE_SIZE" >&2
+  fi
 fi
 id vortex-panel >/dev/null 2>&1 || useradd --system --create-home --home-dir "$DATA_DIR" --shell /usr/sbin/nologin vortex-panel
 SERVICE_USER=vortex-panel

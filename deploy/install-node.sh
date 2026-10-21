@@ -391,7 +391,12 @@ else
 fi
 # Build the private engine before switching a working node or its source.
 if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
-  python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role worker
+  VORTEX_BEDROCK_PAGE_SIZE=$(getconf PAGESIZE)
+  if [[ $VORTEX_BEDROCK_PAGE_SIZE == 4096 ]]; then
+    python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role worker
+  else
+    printf 'Minecraft Bedrock on ARM64 currently requires a 4 KiB kernel page size; this host reports %s bytes. The Vortex worker, Node.js and Python remain available. Bedrock is unavailable on this host.\n' "$VORTEX_BEDROCK_PAGE_SIZE" >&2
+  fi
 fi
 install -d -m 0755 "$INSTALL_DIR"
 # Copy only the worker runtime. Even when invoked from a complete panel source

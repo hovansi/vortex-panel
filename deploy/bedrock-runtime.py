@@ -161,6 +161,30 @@ def extract(archive, destination):
                 require(member.issym() or member.islnk(), 'Unsupported Box64 archive entry.')
 
 
+def unmount_owned(mount, image):
+    deadline = time.monotonic() + 30
+    def budget(limit):
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, 'Private build volume cleanup deadline expired.')
+        return min(limit, remaining)
+    for attempt in range(8):
+        # Recheck the exact private loop backing before every unmount attempt.
+        info = json.loads(run(['findmnt', '--json', '--mountpoint', str(mount), '--output', 'TARGET,SOURCE,FSTYPE'], timeout=budget(10), capture=True))
+        rows = info.get('filesystems', [])
+        require(len(rows) == 1 and rows[0]['target'] == str(mount) and rows[0]['fstype'] == 'ext4'
+                and re.fullmatch('/dev/loop[0-9]+', rows[0]['source']), 'Private build mount identity changed; preserved for review.')
+        backing = run(['losetup', '--noheadings', '--output', 'BACK-FILE', rows[0]['source']], timeout=budget(10), capture=True).strip()
+        require(backing == str(image), 'Private build loop backing changed; preserved for review.')
+        result = subprocess.run(['umount', '--', str(mount)], env=ENV, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, timeout=budget(15))
+        if result.returncode == 0:
+            return
+        require('busy' in result.stdout.lower() and attempt < 7 and time.monotonic() < deadline,
+                'Private build volume could not be unmounted: ' + result.stdout.strip()[-1000:])
+        time.sleep(budget(0.5))
+    raise ValueError('Private build volume remained busy.')
+
+
 @contextlib.contextmanager
 def build_volume(runtime):
     base = Path(tempfile.mkdtemp(prefix='.box64-build-', dir=runtime))
@@ -183,13 +207,20 @@ def build_volume(runtime):
         require(backing == str(image), 'Private Box64 build volume backing file differs.')
         yield mount
     finally:
-        if mounted:
-            # A failed unmount preserves the complete private tree for review;
-            # never recurse through an unexpectedly live mount point.
-            run(['umount', '--', str(mount)])
-        require(base.parent == runtime and base.name.startswith('.box64-build-') and base.resolve() == base,
-                'Refusing to clean an unexpected Box64 build location.')
-        shutil.rmtree(base)
+        original = sys.exc_info()[1]
+        try:
+            if mounted:
+                unmount_owned(mount, image)
+            require(base.parent == runtime and base.name.startswith('.box64-build-') and base.resolve() == base,
+                    'Refusing to clean an unexpected Box64 build location.')
+            shutil.rmtree(base)
+        except (OSError, ValueError, subprocess.SubprocessError) as cleanup:
+            # Keep the failure that interrupted compilation. Never recurse
+            # through a live mount, use lazy/forced unmount or hide its location.
+            print('Bedrock ARM64 cleanup warning: ' + str(cleanup) + '. Private build tree preserved at ' + str(base),
+                  file=sys.stderr, flush=True)
+            if original is None:
+                raise
 
 
 def build(command, work):
@@ -197,6 +228,7 @@ def build(command, work):
     arguments = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect', '--service-type=exec', '--unit=' + unit,
                  '--property=WorkingDirectory=' + str(work), '--property=MemoryMax=768M', '--property=MemorySwapMax=0',
                  '--property=CPUQuota=90%', '--property=TasksMax=128', '--property=RuntimeMaxSec=3600',
+                 '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TimeoutStopSec=30',
                  '--property=Nice=10', '--property=IOWeight=10', '--property=NoNewPrivileges=yes',
                  '--property=PrivateNetwork=yes', '--property=PrivateTmp=yes', '--property=PrivateDevices=yes',
                  '--property=ProtectHome=yes', '--property=ProtectSystem=strict', '--property=ReadWritePaths=' + str(work),
@@ -205,7 +237,16 @@ def build(command, work):
         run(arguments, timeout=3660)
     finally:
         # RuntimeMaxSec is also enforced by PID1 if this installer is interrupted.
-        subprocess.run(['systemctl', 'stop', unit + '.service'], env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        original = sys.exc_info()[1]
+        try:
+            stopped = subprocess.run(['systemctl', 'stop', unit + '.service'], env=ENV, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, timeout=40)
+            # A completed transient unit may already have been collected.
+            require(stopped.returncode in (0, 5), 'Unable to stop bounded build unit ' + unit + ': ' + stopped.stdout.strip()[-1000:])
+        except (OSError, ValueError, subprocess.SubprocessError) as cleanup:
+            print('Bedrock ARM64 cleanup warning: ' + str(cleanup), file=sys.stderr, flush=True)
+            if original is None:
+                raise
 
 
 def publish(candidate, target):
@@ -260,7 +301,10 @@ def install(role):
                 print('Preparing pinned Box64 ' + VERSION + ' for Minecraft Bedrock on ARM64…', file=sys.stderr, flush=True)
                 download(archive)
                 extract(archive, source)
-                build(['cmake', '-S', str(source), '-B', str(output), '-DARM_DYNAREC=ON', '-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DNOGIT=1'], work)
+                # Keep upstream's O2 runtime optimization without generating
+                # large debug records on memory-constrained production hosts.
+                build(['cmake', '-S', str(source), '-B', str(output), '-DARM_DYNAREC=ON', '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
+                       '-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG', '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG', '-DNOGIT=1'], work)
                 build(['cmake', '--build', str(output), '--parallel', '1'], work)
                 (candidate / 'bin').mkdir(mode=0o755)
                 (candidate / 'lib/x86_64').mkdir(parents=True, mode=0o755)
@@ -319,7 +363,8 @@ def main():
     os.umask(0o022)
     def interrupted(signum, frame):
         raise InterruptedError('Runtime installation interrupted; preserving the active panel and workloads.')
-    signal.signal(signal.SIGTERM, interrupted)
+    for termination in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(termination, interrupted)
     try:
         print(json.dumps(install(args.role) if args.operation == 'install' else inspect(args.role), separators=(',', ':')))
     except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
