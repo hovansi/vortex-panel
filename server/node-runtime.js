@@ -5,7 +5,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'package.json', 'package-lock.json',
   'server/application-runtime.js', 'server/application-schema.js', 'server/application-runtime-catalog.js', 'server/application-managed-runtime.js', 'server/application-runtime-artifact.js',
   'server/access.js', 'server/archives.js', 'server/backup-messages.js', 'server/bedrock-log.js',
-  'server/bedrock-world-format.js', 'server/capacity.js',
+  'server/bedrock-world-format.js', 'server/bedrock-runtime.js', 'server/capacity.js',
   'server/configuration.js', 'server/diagnostics.js',
   'server/file-operations.js', 'server/file-privacy.js',
   'server/gameplay-messages.js', 'server/gameplay.js',
@@ -31,5 +31,5 @@ export const NODE_RUNTIME_FILES = Object.freeze([
 ]);
 
 export const NODE_INSTALLER_FILES = Object.freeze([
-  ...NODE_RUNTIME_FILES, 'deploy/install-node.sh', 'deploy/application-isolation.py', 'deploy/install-ledger.py',
+  ...NODE_RUNTIME_FILES, 'deploy/install-node.sh', 'deploy/application-isolation.py', 'deploy/install-ledger.py', 'deploy/bedrock-runtime.py',
 ]);

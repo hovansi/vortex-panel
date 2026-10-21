@@ -10,6 +10,7 @@ import { fail, parseUdpPorts, networkPortReservations } from './safety.js';
 import { createNodeNaming } from './node-naming.js';
 import { capacityErrorPayload } from './capacity.js';
 import { applicationErrorPayload, applicationIssue } from './application-schema.js';
+import { bedrockRuntimeErrorPayload } from './bedrock-runtime.js';
 import { canAccessServer } from './access.js';
 import { creationPortMode, supportsAutomaticPorts, requireAutomaticPorts } from './port-allocation.js';
 
@@ -122,9 +123,9 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
         const error = new Error(typeof value.error === 'string' ? value.error : `Node request failed (${response.statusCode}).`);
         error.status = response.statusCode; error.body = value;
         // The central create facade throws through its own error handler. Keep
-        // recognized capacity identities there, using local canonical metadata
+        // recognized operation identities there, using local canonical metadata
         // rather than trusting arbitrary message/code fields from a peer.
-        const canonical = typeof value?.code === 'string' ? capacityErrorPayload(value) || applicationErrorPayload(value) : null;
+        const canonical = typeof value?.code === 'string' ? capacityErrorPayload(value) || applicationErrorPayload(value) || bedrockRuntimeErrorPayload(value) : null;
         if (canonical) { error.code = canonical.code; error.errorI18n = canonical.errorI18n; }
         throw error;
       }

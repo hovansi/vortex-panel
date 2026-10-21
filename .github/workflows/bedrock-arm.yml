@@ -1,0 +1,323 @@
+name: Bedrock on native ARM64
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-bedrock:
+    name: Ubuntu ARM64 / official Stable and Preview
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify native ARM64 and trusted runtime ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          test "$(getconf PAGESIZE)" = 4096
+          test -d /run/systemd/system
+          for directory in /opt /mnt; do
+            test -d "$directory"
+            test ! -L "$directory"
+            test "$(stat -c '%u' -- "$directory")" = 0
+            sudo chmod 0755 -- "$directory"
+            test "$(stat -c '%u:%a' -- "$directory")" = 0:755
+          done
+          dpkg --print-foreign-architectures > "$RUNNER_TEMP/vortex-foreign-architectures.before"
+      - name: Install the production ARM64 panel and its managed Bedrock runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          if ! /usr/bin/time -f 'ARM panel installation: seconds=%e peak_rss_kib=%M' \
+            sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install.sh \
+            --root-mode --local-only --self-signed --no-network-tuning \
+            > "$RUNNER_TEMP/vortex-bedrock-panel-install.log" 2>&1; then
+            sed -E 's/(One-time setup token:|SETUP TOKEN:).*/\1 [redacted]/' \
+              "$RUNNER_TEMP/vortex-bedrock-panel-install.log" | tail -n 100 >&2
+            exit 1
+          fi
+          tail -n 1 "$RUNNER_TEMP/vortex-bedrock-panel-install.log"
+          sudo systemctl is-active --quiet vortex-panel.service
+      - name: Prepare an ephemeral authenticated lifecycle verifier
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          cat > "$RUNNER_TEMP/vortex-bedrock-smoke.mjs" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { randomBytes, createHash } from 'node:crypto';
+          import { openSync, readSync, closeSync, readFileSync, realpathSync, existsSync, readdirSync, statSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { setTimeout as delay } from 'node:timers/promises';
+
+          const role = process.argv[2];
+          assert.ok(['panel', 'worker'].includes(role));
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.arch, 'arm64');
+          assert.equal(execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim(), 'aarch64');
+          assert.equal(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' }).trim(), '4096');
+          const unit = role === 'panel' ? 'vortex-panel.service' : 'vortex-node.service';
+          const servicePid = execFileSync('systemctl', ['show', unit, '--property=MainPID', '--value'], { encoding: 'utf8' }).trim();
+          const panelPid = execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim();
+          assert.match(servicePid, /^[1-9][0-9]*$/);
+          let dataDir = '/var/lib/vortex-panel', cookie = '', csrf = '', connection, requestNode;
+          const origin = 'http://127.0.0.1:3000';
+          if (role === 'worker') {
+            const cli = await import('/opt/vortex-node/current/server/node-cli.js');
+            ({ requestNode } = await import('/opt/vortex-node/current/server/node-transport.js'));
+            const config = cli.readNodeConfig('/etc/vortex-node.json');
+            dataDir = config.dataDir;
+            connection = cli.nodeConnection(config, 'https://127.0.0.1:' + config.port);
+            assert.match(connection.fingerprint, /^[A-F0-9]{64}$/);
+            const identity = await requestNode(connection);
+            assert.equal(identity.service, 'vortex-node');
+            assert.equal(identity.processId, Number(servicePid));
+            await assert.rejects(requestNode({ ...connection, token: 'A'.repeat(43) }), error => error.status === 401);
+          }
+          async function request(path, method = 'GET', body) {
+            if (role === 'worker') return requestNode(connection, { method, path: '/api' + path, timeoutMs: 180000, ...(body === undefined ? {} : { body }), headers: { 'Accept-Language': 'en' } });
+            const headers = { Origin: origin, 'Accept-Language': 'en' };
+            if (cookie) headers.Cookie = cookie;
+            if (csrf) headers['X-CSRF-Token'] = csrf;
+            if (body !== undefined) headers['Content-Type'] = 'application/json';
+            const response = await fetch(origin + '/api' + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(180000) });
+            const value = await response.json();
+            assert.ok(response.ok, `${method} ${path}: ${response.status} ${value.code || value.error || 'operation failed'}`);
+            for (const row of response.headers.getSetCookie()) if (row.startsWith('bedrock.sid=')) cookie = row.split(';')[0];
+            if (value.csrfToken) csrf = value.csrfToken;
+            return value;
+          }
+          if (role === 'panel') {
+            const invocation = execFileSync('systemctl', ['show', unit, '--property=InvocationID', '--value'], { encoding: 'utf8' }).trim();
+            assert.match(invocation, /^[a-f0-9]{32}$/);
+            const journal = execFileSync('journalctl', ['-b', '-u', unit, '_PID=' + servicePid, '_SYSTEMD_INVOCATION_ID=' + invocation, '-n', '100', '--no-pager', '-o', 'cat'], { encoding: 'utf8' });
+            const token = [...journal.matchAll(/^SETUP TOKEN: ([A-Za-z0-9_-]{20,128})$/gm)].at(-1)?.[1];
+            assert.ok(token, 'The current panel invocation must supply a setup token.');
+            assert.equal((await request('/auth/status')).setupRequired, true);
+            await request('/auth/setup', 'POST', { token, username: 'arm-bedrock', password: randomBytes(32).toString('base64url') });
+            assert.ok(cookie && csrf);
+          }
+          const snapshot = await request(role === 'worker' ? '/node/snapshot' : '/dashboard');
+          assert.equal(snapshot.host.arch, 'arm64');
+          assert.equal(snapshot.capabilities.bedrockRuntime.supported, true);
+          assert.equal(snapshot.capabilities.bedrockRuntime.mode, 'box64');
+          assert.equal(snapshot.capabilities.bedrockRuntime.engineVersion, '0.4.4');
+          assert.equal(snapshot.capabilities.resourceControl.fixedSupported, true);
+          assert.equal(snapshot.capabilities.storageControl.fixedSupported, true);
+          assert.equal(snapshot.servers.length, 0);
+
+          function elf(filename, machine) {
+            const fd = openSync(filename, 'r'), header = Buffer.alloc(64);
+            try { assert.equal(readSync(fd, header, 0, header.length, 0), header.length); } finally { closeSync(fd); }
+            assert.equal(header.subarray(0, 4).toString('hex'), '7f454c46');
+            assert.equal(header[4], 2); assert.equal(header[5], 1);
+            assert.equal(header.readUInt16LE(18), machine);
+          }
+          const runtimeRoot = '/opt/vortex-' + (role === 'worker' ? 'node' : 'panel') + '/runtime/box64-v0.4.4-arm64';
+          const receipt = JSON.parse(readFileSync(runtimeRoot + '/.vortex-bedrock-runtime.json', 'utf8'));
+          assert.equal(receipt.source.commit, '2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a');
+          assert.equal(receipt.source.sha256, 'ce844041092de3f44316bd1c033a3cc10024e5f798c1a8e8a58f046c6d967981');
+          for (const file of [receipt.executable, ...receipt.libraries]) {
+            const filename = runtimeRoot + '/' + file.path;
+            elf(filename, file === receipt.executable ? 183 : 62);
+            assert.equal(createHash('sha256').update(readFileSync(filename)).digest('hex'), file.sha256);
+          }
+          assert.equal(existsSync('/etc/binfmt.d/box64.conf'), false);
+          const refreshed = await request('/versions/refresh', 'POST', {});
+          assert.match(refreshed.latest, /^\d+\.\d+\.\d+\.\d+$/);
+          assert.match(refreshed.preview, /^\d+\.\d+\.\d+\.\d+$/);
+          const owned = new Set(), report = [];
+          const server = async id => (await request('/servers/' + id)).server;
+          async function waitState(id, status, timeout = 180000) {
+            const deadline = Date.now() + timeout;
+            while (Date.now() < deadline) {
+              const value = await server(id);
+              if (value.status === status && !value.busy) return value;
+              assert.ok(!['error', 'crashed'].includes(value.status), `Bedrock ${id} entered ${value.status}: ${value.error || ''}`);
+              await delay(1000);
+            }
+            throw new Error('Bedrock did not reach ' + status);
+          }
+          async function waitJob(id) {
+            const deadline = Date.now() + 15 * 60000;
+            let last = 0;
+            while (Date.now() < deadline) {
+              const { job } = await request('/jobs/' + id);
+              if (Date.now() - last > 15000) { console.log(JSON.stringify({ role, stage: 'job', type: job.type, status: job.status, phase: job.phase, progress: job.progress })); last = Date.now(); }
+              if (job.status === 'completed') return job;
+              assert.ok(['queued', 'pending', 'running'].includes(job.status), `Bedrock job failed: ${job.error || job.message || job.status}`);
+              await delay(1000);
+            }
+            throw new Error('Bedrock job timed out.');
+          }
+          async function nativeLine(id, command, match, timeout = 20000) {
+            const before = (await request('/servers/' + id + '/logs')).logs;
+            const previous = new Set(before.map(row => row.id));
+            await request('/servers/' + id + '/command', 'POST', { command });
+            const deadline = Date.now() + timeout;
+            while (Date.now() < deadline) {
+              const logs = (await request('/servers/' + id + '/logs')).logs;
+              const row = logs.find(row => !previous.has(row.id) && row.source !== 'command' && row.level !== 'command' && match.test(row.message));
+              if (row) return row.message;
+              await delay(250);
+            }
+            throw new Error('No native response to ' + command.split(' ')[0]);
+          }
+          function kernelLimits(value) {
+            const effective = value.resources.effective;
+            assert.equal(effective.kernelEnforced, true);
+            assert.equal(effective.mode, 'fixed');
+            assert.equal(effective.memoryMaxBytes, 1536 * 1024 ** 2);
+            assert.equal(effective.cpuQuotaMicros, 150000);
+            assert.equal(effective.cpuPeriodMicros, 100000);
+            assert.ok(effective.cgroupPath.startsWith('/sys/fs/cgroup/'));
+            assert.equal(readFileSync(join(effective.cgroupPath, 'memory.max'), 'utf8').trim(), String(1536 * 1024 ** 2));
+            assert.equal(readFileSync(join(effective.cgroupPath, 'cpu.max'), 'utf8').trim(), '150000 100000');
+            const membership = readFileSync('/proc/' + value.pid + '/cgroup', 'utf8').trim().split('\n');
+            assert.ok(membership.some(line => line === '0::' + effective.cgroupPath.slice('/sys/fs/cgroup'.length)));
+            return effective;
+          }
+          async function exercise(channel) {
+            const expected = channel === 'stable' ? refreshed.latest : refreshed.preview;
+            const created = await request('/servers', 'POST', { kind: 'bedrock', name: 'Native ARM64 ' + channel, version: 'latest', channel, eula: true, portAllocation: 'auto', maxPlayers: 4, storagePolicy: { mode: 'fixed', diskGiB: 2 }, resourcePolicy: { mode: 'fixed', cpuCores: 1.5, memoryMiB: 1536 } });
+            const id = created.server.id; owned.add(id);
+            assert.equal(created.server.version, expected);
+            assert.equal(created.server.channel, channel);
+            await waitJob(created.job.id); await waitState(id, 'stopped');
+            const { properties } = await request('/servers/' + id + '/properties');
+            await request('/servers/' + id + '/properties', 'PUT', { properties: { ...properties, 'allow-cheats': 'true', 'view-distance': '5', 'tick-distance': '4' } });
+            await request('/servers/' + id + '/start', 'POST', {});
+            const first = await waitState(id, 'running');
+            assert.equal(first.bedrockRuntime.mode, 'box64');
+            assert.equal(realpathSync('/proc/' + first.pid + '/exe'), runtimeRoot + '/bin/box64');
+            elf('/proc/' + first.pid + '/exe', 183);
+            elf(join(dataDir, 'servers', id, 'run', 'bedrock_server'), 62);
+            const logs = (await request('/servers/' + id + '/logs')).logs;
+            assert.ok(logs.some(row => row.source !== 'command' && /\bServer started\./.test(row.message)), 'Native Bedrock readiness must be observed.');
+            const effective = kernelLimits(first);
+            await nativeLine(id, 'list', /There are \d+\/\d+ players online/);
+            await nativeLine(id, 'gamerule showcoordinates true', /(?:showcoordinates = true|(?:Game rule|Gamerule) showcoordinates\b.*(?:updated|changed|set))/i);
+            await nativeLine(id, 'gamerule showcoordinates', /showcoordinates = true/);
+            const backup = await request('/servers/' + id + '/backups', 'POST', {});
+            await waitJob(backup.job.id);
+            assert.equal((await server(id)).status, 'running');
+            const backupLogs = (await request('/servers/' + id + '/logs')).logs;
+            assert.ok(backupLogs.some(row => row.level !== 'command' && /(?:^|\] )Saving\.\.\.$/.test(row.message)), 'Native Bedrock must acknowledge the live save hold.');
+            assert.ok(backupLogs.some(row => row.level !== 'command' && /Data saved\. Files are now ready to be copied\./.test(row.message)));
+            assert.ok(backupLogs.some(row => row.level !== 'command' && /Changes to the world are resumed\./.test(row.message)));
+            const backups = (await request('/servers/' + id + '/backups')).backups;
+            assert.equal(backups.length, 1);
+            assert.equal(backups[0].consistency, 'native-online');
+            assert.equal(backups[0].integrity.status, 'verified');
+            assert.match(backups[0].sha256, /^[a-f0-9]{64}$/);
+            assert.ok(backups[0].size > 0);
+            const verified = await request('/servers/' + id + '/backups/' + backups[0].id + '/verify', 'POST', {});
+            await waitJob(verified.job.id);
+            const checkedBackup = (await request('/servers/' + id + '/backups')).backups.find(row => row.id === backups[0].id);
+            assert.equal(checkedBackup.consistency, 'native-online');
+            assert.equal(checkedBackup.integrity.status, 'verified');
+            assert.equal(checkedBackup.sha256, backups[0].sha256);
+            const peakPath = join(effective.cgroupPath, 'memory.peak');
+            const peakBytes = existsSync(peakPath) ? Number(readFileSync(peakPath, 'utf8').trim()) : null;
+            await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped');
+            const worldRoot = join(dataDir, 'servers', id, 'run', 'worlds', properties['level-name'] || 'Bedrock level');
+            assert.ok(statSync(join(worldRoot, 'level.dat')).size > 0);
+            assert.ok(readdirSync(join(worldRoot, 'db')).some(name => /\.(?:ldb|log)$/.test(name)));
+            const worldNames = readdirSync(join(dataDir, 'servers', id, 'run', 'worlds')).sort();
+            await request('/servers/' + id + '/start', 'POST', {});
+            const restarted = await waitState(id, 'running');
+            assert.notEqual(restarted.pid, first.pid);
+            kernelLimits(restarted);
+            await nativeLine(id, 'gamerule showcoordinates', /showcoordinates = true/);
+            assert.deepEqual(readdirSync(join(dataDir, 'servers', id, 'run', 'worlds')).sort(), worldNames);
+            assert.ok(statSync(join(worldRoot, 'level.dat')).size > 0);
+            await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped');
+            await request('/servers/' + id, 'DELETE'); owned.delete(id);
+            assert.equal((await request('/servers')).servers.some(row => row.id === id), false);
+            report.push({ channel, version: expected, hostELF: 'aarch64', guestELF: 'x86_64', cpuCores: 1.5, memoryMiB: 1536, observedPeakBytes: peakBytes, realNativeConsole: true, liveBackupVerified: true, worldRulesPersisted: true, stoppedAndRemoved: true });
+            console.log(JSON.stringify({ role, stage: 'bedrock-complete', ...report.at(-1) }));
+          }
+          try {
+            await exercise('stable');
+            await exercise('preview');
+            assert.equal((await request('/servers')).servers.length, 0);
+            assert.equal(execFileSync('systemctl', ['show', unit, '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), servicePid);
+            assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), panelPid);
+            console.log(JSON.stringify({ role, nativeArchitecture: 'arm64', actualProductionInstaller: true, managedBox64: receipt.version, officialBedrock: report, serviceUninterrupted: true, passed: true }));
+          } catch (error) {
+            for (const id of owned) {
+              try { console.error(JSON.stringify({ role, stage: 'owned-bedrock-failure', serverId: id, state: await server(id), console: (await request('/servers/' + id + '/logs')).logs.slice(-60).map(row => ({ level: row.level, source: row.source, message: row.message })) })); }
+              catch { console.error('Could not read diagnostics from the ephemeral Bedrock instance.'); }
+            }
+            throw error;
+          } finally {
+            for (const id of owned) {
+              try {
+                const value = await server(id);
+                if (['running', 'starting'].includes(value.status)) { await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped'); }
+                if ((await server(id)).status === 'stopped') await request('/servers/' + id, 'DELETE');
+              } catch { console.error('An ephemeral Bedrock instance remains for disposal with the CI VM.'); }
+            }
+            if (role === 'panel' && cookie) await request('/auth/logout', 'POST', {}).catch(() => {});
+          }
+          NODE
+          sudo install -o root -g root -m 0600 "$RUNNER_TEMP/vortex-bedrock-smoke.mjs" /run/vortex-bedrock-smoke.mjs
+      - name: Exercise official Bedrock through the installed panel API
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PANEL_PID=$(sudo systemctl show vortex-panel.service --property=MainPID --value)
+          PANEL_NODE=$(sudo readlink -f "/proc/$PANEL_PID/exe")
+          sudo "$PANEL_NODE" /run/vortex-bedrock-smoke.mjs panel
+      - name: Install the production ARM64 worker and its private runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          if ! /usr/bin/time -f 'ARM worker installation: seconds=%e peak_rss_kib=%M' \
+            sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install-node.sh \
+            --endpoint https://127.0.0.1:8443 \
+            > "$RUNNER_TEMP/vortex-bedrock-worker-install.log" 2>&1; then
+            sudo systemctl show vortex-node.service --property=ActiveState --property=SubState --property=Result >&2
+            echo 'Worker installation failed; private connection records remain in the disposable VM.' >&2
+            exit 1
+          fi
+          tail -n 1 "$RUNNER_TEMP/vortex-bedrock-worker-install.log"
+          sudo systemctl is-active --quiet vortex-node.service
+      - name: Exercise official Bedrock through the authenticated worker API
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORKER_PID=$(sudo systemctl show vortex-node.service --property=MainPID --value)
+          WORKER_NODE=$(sudo readlink -f "/proc/$WORKER_PID/exe")
+          sudo "$WORKER_NODE" /run/vortex-bedrock-smoke.mjs worker
+      - name: Verify idempotent runtime repair and absence of global emulation changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for role in panel worker; do
+            component=$role
+            [[ $role != worker ]] || component=node
+            receipt="/opt/vortex-$component/runtime/box64-v0.4.4-arm64/.vortex-bedrock-runtime.json"
+            before=$(sudo sha256sum -- "$receipt")
+            sudo /usr/bin/python3 -I -B deploy/bedrock-runtime.py install --role "$role"
+            test "$(sudo sha256sum -- "$receipt")" = "$before"
+          done
+          dpkg --print-foreign-architectures > "$RUNNER_TEMP/vortex-foreign-architectures.after"
+          cmp "$RUNNER_TEMP/vortex-foreign-architectures.before" "$RUNNER_TEMP/vortex-foreign-architectures.after"
+          test ! -e /etc/binfmt.d/box64.conf
+          test ! -e /usr/local/bin/box64
+          sudo systemctl is-active --quiet vortex-panel.service
+          sudo systemctl is-active --quiet vortex-node.service

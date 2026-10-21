@@ -16,7 +16,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/re
 
 Installer tải release ổn định mới nhất, kiểm tra checksum/archive, cài dependency và dịch vụ. Bản cài mới tự chuẩn bị HTTPS tại **`https://IP:19191`**; kết thúc sẽ in URL và hướng dẫn tạo Admin bằng setup token riêng. Không có mật khẩu `admin` dùng chung.
 
-Panel, node agent và ứng dụng Node.js/Python chạy trực tiếp trên cả x86-64 và ARM64. Bedrock Linux chính thức cần VPS x86-64; panel ARM64 có thể quản lý Bedrock trên VPS x86-64 liên kết.
+Panel, node agent và ứng dụng Node.js/Python chạy trực tiếp trên cả x86-64 và ARM64. Trên ARM64 dùng trang bộ nhớ 4 KiB, bộ cài tự chuẩn bị Box64 riêng để tạo và chạy Bedrock Linux x86-64 chính thức. Bước chuẩn bị cần tối thiểu 1 GiB RAM đang khả dụng và 2 GiB đĩa trống, được giới hạn CPU/RAM để tránh chiếm hết tài nguyên. Panel/agent ARM64 cũ cần chạy lại bộ cài đầy đủ một lần; chỉ cập nhật source chưa đủ để cài môi trường Bedrock.
 
 HTTPS theo IP tự yêu cầu chứng chỉ công khai từ Let’s Encrypt và cài timer gia hạn. Cần mở TCP 80 để xác thực chứng chỉ và TCP 19191 để truy cập panel. Thao tác tự động tạo tài khoản ACME riêng không kèm email và chấp nhận thỏa thuận của CA; dùng `--self-signed` nếu muốn giữ chứng chỉ tự ký. Khi cấp chứng chỉ thất bại, HTTPS hiện có được giữ và cảnh báo còn được hiển thị đúng. Xem [quản lý HTTPS](HTTPS.md).
 

@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Prepare the private, pinned ARM64 compatibility runtime for Bedrock.
+
+This is an installer operation, never a request-time download. Nothing is
+registered with binfmt, ldconfig, dpkg multiarch, or the host's Box64 config.
+"""
+import argparse
+import contextlib
+import ctypes
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import re
+import signal
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+import uuid
+
+VERSION = '0.4.4'
+COMMIT = '2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a'
+SOURCE_SHA256 = 'ce844041092de3f44316bd1c033a3cc10024e5f798c1a8e8a58f046c6d967981'
+SOURCE_BYTES = 19678563
+SOURCE_URL = 'https://codeload.github.com/ptitSeb/box64/tar.gz/' + COMMIT
+RECEIPT = '.vortex-bedrock-runtime.json'
+LIBRARIES = {'libstdc++.so.6': '5b8ad47cced79a8d88d3df7ee78d952d1d688369690591d6ada7fab3e18af888',
+             'libgcc_s.so.1': 'caf944063eb6261bc1c1a6a9f0c7b40d3842843044f3bce58824358f425be254'}
+GCC_SOURCE = 'https://raw.githubusercontent.com/gcc-mirror/gcc/5115c7e447fc07457443df874bf57840e8316d5f/'
+GCC_LICENSES = {'COPYING3': (35147, '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903'),
+                'COPYING.RUNTIME': (3324, '9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74')}
+ROOTS = {'panel': Path('/opt/vortex-panel'), 'worker': Path('/opt/vortex-node')}
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'HOME': '/nonexistent'}
+WORK_BYTES = 1536 * 1024 ** 2
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def trusted(path, directory=False):
+    for item in [*reversed(path.parents), path]:
+        info = item.lstat()
+        require(not stat.S_ISLNK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+                'Bedrock runtime paths must be root-owned, without symlinks or shared write access: ' + str(item))
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+            'Unexpected Bedrock runtime file type: ' + str(path))
+    return info
+
+
+def elf(path, machine):
+    trusted(path)
+    with path.open('rb') as stream:
+        header = stream.read(64)
+    require(len(header) == 64 and header[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', header, 18)[0] == machine,
+            'Bedrock compatibility runtime has an unexpected ELF architecture: ' + str(path))
+
+
+def prefix(role):
+    return ROOTS[role] / 'runtime' / ('box64-v' + VERSION + '-arm64')
+
+
+def inspect(role):
+    target = prefix(role)
+    trusted(target, directory=True)
+    receipt = target / RECEIPT
+    require(trusted(receipt).st_size <= 32768, 'Bedrock runtime receipt is too large.')
+    value = json.loads(receipt.read_text(encoding='utf-8'))
+    expected = {'schema': 1, 'engine': 'box64', 'version': VERSION, 'hostArch': 'arm64', 'guestArch': 'x64',
+                'pageSize': 4096, 'profile': 'generic-arm64-v1'}
+    require(all(value.get(key) == item for key, item in expected.items()), 'Bedrock runtime receipt identity is invalid.')
+    require(value.get('source') == {'commit': COMMIT, 'sha256': SOURCE_SHA256}, 'Bedrock runtime source pin is invalid.')
+    records = [value.get('executable'), *(value.get('libraries') or [])]
+    names = ['bin/box64', *['lib/x86_64/' + item for item in LIBRARIES]]
+    require(len(records) == len(names), 'Bedrock runtime library inventory is incomplete.')
+    for record, name in zip(records, names):
+        require(isinstance(record, dict) and record.get('path') == name and re.fullmatch('[a-f0-9]{64}', record.get('sha256', '')),
+                'Bedrock runtime file receipt is invalid.')
+        path = target / name
+        elf(path, 183 if name == 'bin/box64' else 62)
+        require(digest(path) == record['sha256'], 'Bedrock runtime file differs from its installation receipt: ' + name)
+        if name != 'bin/box64':
+            require(record['sha256'] == LIBRARIES[Path(name).name], 'Bedrock runtime library differs from the reviewed upstream pin.')
+    require(os.access(target / 'bin/box64', os.X_OK), 'The private Box64 executable cannot be run.')
+    return {'ok': True, 'prefix': str(target), **value}
+
+
+def run(arguments, timeout=120, capture=False):
+    result = subprocess.run(arguments, check=False, env=ENV, timeout=timeout,
+                            stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.STDOUT if capture else None, text=True)
+    require(result.returncode == 0, 'Bedrock runtime command failed: ' + arguments[0] +
+            (': ' + (result.stdout or '')[-4000:] if capture else ''))
+    return result.stdout or ''
+
+
+def download(path, url=SOURCE_URL, size=SOURCE_BYTES, sha256=SOURCE_SHA256):
+    request = urllib.request.Request(url, headers={'User-Agent': 'Vortex-Panel-Bedrock-Runtime/' + VERSION})
+    total = 0
+    deadline = time.monotonic() + 300
+    hasher = hashlib.sha256()
+    with urllib.request.urlopen(request, timeout=90) as response, path.open('xb') as output:
+        require(response.url == url, 'Unexpected pinned Box64 dependency download redirect.')
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            require(total <= size and time.monotonic() < deadline, 'Box64 dependency exceeds the pinned download size or deadline.')
+            output.write(chunk)
+            hasher.update(chunk)
+    require(total == size and hasher.hexdigest() == sha256, 'Box64 dependency failed pinned size/SHA-256 verification.')
+
+
+def extract(archive, destination):
+    total = 0
+    count = 0
+    root_name = 'box64-' + COMMIT
+    with tarfile.open(archive, 'r:gz') as source:
+        for member in source:
+            parts = PurePosixPath(member.name).parts
+            require(parts and parts[0] == root_name and not any(item in ('..', '') for item in parts)
+                    and not member.name.startswith('/'), 'Unsafe path in pinned Box64 source.')
+            if len(parts) == 1:
+                require(member.isdir(), 'Unexpected Box64 archive root.')
+                continue
+            target = destination.joinpath(*parts[1:])
+            count += 1
+            total += member.size
+            require(count <= 16000 and 0 <= member.size <= 64 * 1024 ** 2 and total <= 256 * 1024 ** 2,
+                    'Box64 source exceeds extraction limits.')
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True, mode=0o755)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+                with source.extractfile(member) as input_file, target.open('xb') as output:
+                    shutil.copyfileobj(input_file, output, 1024 * 1024)
+                target.chmod(0o755 if member.mode & 0o111 else 0o644)
+            else:
+                # Source links are unnecessary for the native target and must
+                # never redirect extraction outside this private build tree.
+                require(member.issym() or member.islnk(), 'Unsupported Box64 archive entry.')
+
+
+@contextlib.contextmanager
+def build_volume(runtime):
+    base = Path(tempfile.mkdtemp(prefix='.box64-build-', dir=runtime))
+    base.chmod(0o700)
+    image, mount = base / 'work.ext4', base / 'work'
+    mounted = False
+    try:
+        mount.mkdir(mode=0o700)
+        with image.open('xb') as stream:
+            stream.truncate(WORK_BYTES)
+        run(['mkfs.ext4', '-q', '-F', '-m', '0', str(image)])
+        run(['mount', '-o', 'loop,nodev,nosuid,noatime', str(image), str(mount)])
+        mounted = True
+        mount.chmod(0o700)
+        info = json.loads(run(['findmnt', '--json', '--mountpoint', str(mount), '--output', 'TARGET,SOURCE,FSTYPE'], capture=True))
+        rows = info.get('filesystems', [])
+        require(len(rows) == 1 and rows[0]['target'] == str(mount) and rows[0]['fstype'] == 'ext4'
+                and re.fullmatch('/dev/loop[0-9]+', rows[0]['source']), 'Private Box64 build volume verification failed.')
+        backing = run(['losetup', '--noheadings', '--output', 'BACK-FILE', rows[0]['source']], capture=True).strip()
+        require(backing == str(image), 'Private Box64 build volume backing file differs.')
+        yield mount
+    finally:
+        if mounted:
+            # A failed unmount preserves the complete private tree for review;
+            # never recurse through an unexpectedly live mount point.
+            run(['umount', '--', str(mount)])
+        require(base.parent == runtime and base.name.startswith('.box64-build-') and base.resolve() == base,
+                'Refusing to clean an unexpected Box64 build location.')
+        shutil.rmtree(base)
+
+
+def build(command, work):
+    unit = 'vortex-box64-build-' + uuid.uuid4().hex
+    arguments = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect', '--service-type=exec', '--unit=' + unit,
+                 '--property=WorkingDirectory=' + str(work), '--property=MemoryMax=768M', '--property=MemorySwapMax=0',
+                 '--property=CPUQuota=90%', '--property=TasksMax=128', '--property=RuntimeMaxSec=3600',
+                 '--property=Nice=10', '--property=IOWeight=10', '--property=NoNewPrivileges=yes',
+                 '--property=PrivateNetwork=yes', '--property=PrivateTmp=yes', '--property=PrivateDevices=yes',
+                 '--property=ProtectHome=yes', '--property=ProtectSystem=strict', '--property=ReadWritePaths=' + str(work),
+                 '--setenv=PATH=' + ENV['PATH'], '--setenv=HOME=/nonexistent', '--setenv=LC_ALL=C.UTF-8', *command]
+    try:
+        run(arguments, timeout=3660)
+    finally:
+        # RuntimeMaxSec is also enforced by PID1 if this installer is interrupted.
+        subprocess.run(['systemctl', 'stop', unit + '.service'], env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+
+def publish(candidate, target):
+    # An administrator may have created the destination during compilation.
+    # Linux RENAME_NOREPLACE keeps even an empty foreign directory intact.
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = library.renameat2
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    result = rename(-100, os.fsencode(candidate), -100, os.fsencode(target), 1)
+    if result:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(target))
+
+
+def install(role):
+    require(os.geteuid() == 0, 'Run the Bedrock runtime installer as root.')
+    require(sys.platform == 'linux' and platform.machine().lower() in ('aarch64', 'arm64') and struct.calcsize('P') == 8,
+            'The private Box64 runtime requires native ARM64 Linux userspace.')
+    require(os.sysconf('SC_PAGE_SIZE') == 4096, 'Bedrock on ARM64 currently requires a 4 KiB page-size kernel.')
+    runtime = ROOTS[role] / 'runtime'
+    for path in (ROOTS[role], runtime):
+        if not os.path.lexists(path):
+            trusted(path.parent, directory=True)
+            path.mkdir(mode=0o755)
+        trusted(path, directory=True)
+    target = prefix(role)
+    if os.path.lexists(target):
+        return inspect(role)
+    for tool in ('cmake', 'gcc', 'g++', 'make', 'systemd-run', 'mkfs.ext4', 'mount', 'umount', 'findmnt', 'losetup'):
+        require(shutil.which(tool, path=ENV['PATH']), 'Missing ARM64 Bedrock build dependency (' + tool + '). Run the full Vortex installer to prepare this host.')
+    require(Path('/run/systemd/system').is_dir(), 'The bounded Bedrock runtime build requires systemd.')
+    available = next((int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')), 0)
+    require(available >= 1024 * 1024 ** 2, 'At least 1 GiB of currently available physical RAM is required to prepare Bedrock ARM64 safely. Stop workloads and retry the full installer.')
+    require(shutil.disk_usage(runtime).free >= WORK_BYTES + 512 * 1024 ** 2,
+            'At least 2 GiB of free installation storage is required to build Bedrock ARM64 safely.')
+    lock_path = runtime / '.box64-install.lock'
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        info = os.fstat(descriptor)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
+                'Unexpected private Bedrock runtime installation lock.')
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.path.lexists(target):
+            return inspect(role)
+        candidate = Path(tempfile.mkdtemp(prefix='.box64-candidate-', dir=runtime))
+        candidate.chmod(0o755)
+        try:
+            with build_volume(runtime) as work:
+                archive, source, output = work / 'source.tar.gz', work / 'source', work / 'build'
+                source.mkdir(mode=0o755)
+                print('Preparing pinned Box64 ' + VERSION + ' for Minecraft Bedrock on ARM64…', file=sys.stderr, flush=True)
+                download(archive)
+                extract(archive, source)
+                build(['cmake', '-S', str(source), '-B', str(output), '-DARM_DYNAREC=ON', '-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DNOGIT=1'], work)
+                build(['cmake', '--build', str(output), '--parallel', '1'], work)
+                (candidate / 'bin').mkdir(mode=0o755)
+                (candidate / 'lib/x86_64').mkdir(parents=True, mode=0o755)
+                (candidate / 'licenses').mkdir(mode=0o755)
+                shutil.copyfile(output / 'box64', candidate / 'bin/box64')
+                (candidate / 'bin/box64').chmod(0o755)
+                elf(candidate / 'bin/box64', 183)
+                for name in LIBRARIES:
+                    incoming = source / 'x64lib' / name
+                    require(incoming.is_file() and not incoming.is_symlink(), 'Pinned Box64 source is missing required x64 library: ' + name)
+                    require(digest(incoming) == LIBRARIES[name], 'Pinned Box64 x64 library differs from the reviewed source inventory: ' + name)
+                    destination = candidate / 'lib/x86_64' / name
+                    shutil.copyfile(incoming, destination)
+                    destination.chmod(0o644)
+                    elf(destination, 62)
+                shutil.copyfile(source / 'LICENSE', candidate / 'licenses/Box64-LICENSE')
+                for name, (size, sha256) in GCC_LICENSES.items():
+                    download(candidate / 'licenses' / name, GCC_SOURCE + name, size, sha256)
+                (candidate / 'licenses/NOTICE').write_text(
+                    'Box64 ' + VERSION + ': https://github.com/ptitSeb/box64/tree/' + COMMIT + '\n'
+                    'Box64 is distributed under its MIT license (Box64-LICENSE).\n'
+                    'The separate x86_64 libgcc_s and libstdc++ files retain their GCC licenses:\n'
+                    'GNU GPL version 3 with the GCC Runtime Library Exception 3.1.\n'
+                    'The private library bytes are from the pinned Box64 source archive x64lib directory.\n'
+                    'GCC license texts: ' + GCC_SOURCE + '\n', encoding='utf-8')
+                # Nothing invokes CMake install: binfmt, global libraries and
+                # host Box64 configuration remain outside this transaction.
+                result = subprocess.run([str(candidate / 'bin/box64'), '--version'], env={**ENV, 'BOX64_NORCFILES': '1', 'BOX64_DYNACACHE': '0'},
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+                require(result.returncode == 0 and VERSION in result.stdout, 'The compiled Box64 executable failed its native version check.')
+                value = {'schema': 1, 'engine': 'box64', 'version': VERSION, 'hostArch': 'arm64', 'guestArch': 'x64',
+                         'pageSize': 4096, 'profile': 'generic-arm64-v1', 'source': {'commit': COMMIT, 'sha256': SOURCE_SHA256},
+                         'executable': {'path': 'bin/box64', 'sha256': digest(candidate / 'bin/box64')},
+                         'libraries': [{'path': 'lib/x86_64/' + name, 'sha256': digest(candidate / 'lib/x86_64' / name)} for name in LIBRARIES],
+                         'installedAt': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                receipt = candidate / RECEIPT
+                receipt.write_text(json.dumps(value, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+                for item in candidate.rglob('*'):
+                    item.chmod(0o755 if item.is_dir() or item == candidate / 'bin/box64' else 0o644)
+                publish(candidate, target)
+            return inspect(role)
+        finally:
+            if candidate.exists():
+                require(candidate.parent == runtime and candidate.name.startswith('.box64-candidate-') and candidate.resolve() == candidate,
+                        'Refusing to clean an unexpected Box64 staging location.')
+                shutil.rmtree(candidate)
+    finally:
+        os.close(descriptor)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=('install', 'inspect'))
+    parser.add_argument('--role', choices=tuple(ROOTS), required=True)
+    args = parser.parse_args()
+    os.umask(0o022)
+    def interrupted(signum, frame):
+        raise InterruptedError('Runtime installation interrupted; preserving the active panel and workloads.')
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        print(json.dumps(install(args.role) if args.operation == 'install' else inspect(args.role), separators=(',', ':')))
+    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
+        print('Bedrock ARM64 runtime: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

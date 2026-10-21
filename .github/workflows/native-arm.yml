@@ -123,22 +123,13 @@ jobs:
           const capabilities = dashboard.capabilities;
           console.log(JSON.stringify({ stage: 'native-capabilities', application: { supported: capabilities.applicationRuntime.supported, reason: capabilities.applicationRuntime.reason, reasonCode: capabilities.applicationRuntime.reasonCode, diagnosticPhase: capabilities.applicationRuntime.diagnosticPhase, runtimes: capabilities.applicationRuntime.runtimes.map(runtime => ({ kind: runtime.kind, available: runtime.available, managedAvailable: runtime.managedAvailable, missing: runtime.prerequisites?.missing || [] })) }, resources: { supported: capabilities.resourceControl.supported, fixedSupported: capabilities.resourceControl.fixedSupported, pidsSupported: capabilities.resourceControl.pidsSupported, reason: capabilities.resourceControl.reason, configuredUnit: capabilities.resourceControl.configuredUnit }, storage: { supported: capabilities.storageControl.supported, fixedSupported: capabilities.storageControl.fixedSupported, reason: capabilities.storageControl.reason } }));
           assert.equal(dashboard.host.arch, 'arm64');
-          assert.equal(dashboard.capabilities.bedrockRuntime.supported, false);
+          assert.equal(dashboard.capabilities.bedrockRuntime.supported, true);
+          assert.equal(dashboard.capabilities.bedrockRuntime.mode, 'box64');
           assert.equal(dashboard.capabilities.applicationRuntime.supported, true);
           assert.equal(dashboard.capabilities.resourceControl.fixedSupported, true);
           assert.equal(dashboard.capabilities.resourceControl.pidsSupported, true);
           assert.equal(dashboard.capabilities.storageControl.fixedSupported, true);
           assert.equal(dashboard.servers.length, 0);
-          const previousJobs = (await request('/jobs')).jobs.map(job => job.id).sort();
-          for (const language of ['en', 'vi']) {
-            const response = await fetch(origin + '/api/servers', { method: 'POST', headers: { Origin: origin, Cookie: cookie, 'X-CSRF-Token': csrf, 'Accept-Language': language, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'bedrock', name: 'Unsupported native Bedrock', version: 'latest', eula: true, portAllocation: 'auto', storagePolicy: { mode: 'fixed', diskGiB: 1 }, resourcePolicy: { mode: 'shared' } }), signal: AbortSignal.timeout(30000) });
-            assert.equal(response.status, 409);
-            const value = await response.json();
-            assert.equal(value.error, dashboard.capabilities.bedrockRuntime.reasonI18n[language]);
-          }
-          assert.equal((await request('/servers')).servers.length, 0);
-          assert.deepEqual((await request('/jobs')).jobs.map(job => job.id).sort(), previousJobs);
-          console.log(JSON.stringify({ stage: 'native-bedrock-rejection', languages: ['en', 'vi'], noServerOrJobAllocated: true, passed: true }));
           const owned = new Set();
           const report = [];
           async function server(id) { return (await request('/servers/' + encodeURIComponent(id))).server; }
@@ -262,21 +253,16 @@ jobs:
           await assert.rejects(requestNode({ ...connection, token: 'A'.repeat(43) }), error => error.status === 401);
           const snapshot = await requestNode(connection, { path: '/api/node/snapshot' });
           assert.equal(snapshot.host.arch, 'arm64');
-          assert.equal(snapshot.capabilities.bedrockRuntime.supported, false);
+          assert.equal(snapshot.capabilities.bedrockRuntime.supported, true);
+          assert.equal(snapshot.capabilities.bedrockRuntime.mode, 'box64');
           assert.equal(snapshot.capabilities.applicationRuntime.supported, true);
           assert.equal(snapshot.capabilities.resourceControl.fixedSupported, true);
           assert.equal(snapshot.capabilities.resourceControl.pidsSupported, true);
           assert.equal(snapshot.capabilities.storageControl.fixedSupported, true);
           assert.equal(snapshot.servers.length, 0);
-          const previousJobs = (await requestNode(connection, { path: '/api/jobs' })).jobs.map(job => job.id).sort();
-          for (const language of ['en', 'vi']) {
-            await assert.rejects(requestNode(connection, { method: 'POST', path: '/api/servers', headers: { 'Accept-Language': language }, body: { kind: 'bedrock', name: 'Unsupported native Bedrock', version: 'latest', eula: true, portAllocation: 'auto', storagePolicy: { mode: 'fixed', diskGiB: 1 }, resourcePolicy: { mode: 'shared' } } }), error => error.status === 409 && error.body?.error === snapshot.capabilities.bedrockRuntime.reasonI18n[language]);
-          }
-          assert.equal((await requestNode(connection, { path: '/api/node/snapshot' })).servers.length, 0);
-          assert.deepEqual((await requestNode(connection, { path: '/api/jobs' })).jobs.map(job => job.id).sort(), previousJobs);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-node.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[3]);
-          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, rejectedInvalidCredential: true, translatedBedrockRejectedWithoutAllocation: true, panelUninterrupted: true, passed: true }));
+          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, rejectedInvalidCredential: true, managedBox64RuntimeVerified: true, panelUninterrupted: true, passed: true }));
           NODE
       - name: Verify native worker update preserves interpreter and configuration
         shell: bash
@@ -328,7 +314,8 @@ jobs:
           const snapshot = await requestNode(connection, { path: '/api/node/snapshot' });
           assert.equal(snapshot.host.arch, 'arm64');
           assert.equal(snapshot.capabilities.applicationRuntime.supported, true);
-          assert.equal(snapshot.capabilities.bedrockRuntime.supported, false);
+          assert.equal(snapshot.capabilities.bedrockRuntime.supported, true);
+          assert.equal(snapshot.capabilities.bedrockRuntime.mode, 'box64');
           assert.equal(snapshot.servers.length, 0);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
           const cliDirectory = mkdtempSync('/run/vortex-native-cli-');

@@ -221,6 +221,7 @@ export function nodeDetailFacts(node){
   {key:'panelVersion',label:local?nodeText('Panel version','Phiên bản panel'):nodeText('Agent identity','Định danh agent'),value:local?version||notReported:agentId||notReported},
   {key:'hostname',label:nodeText('System hostname','Hostname hệ thống'),value:node.host?.hostname||notReported},
   {key:'system',label:nodeText('Operating system','Hệ điều hành'),value:node.host?.os?.prettyName||node.host?.release||node.host?.platform||notReported},
+  {key:'bedrock',label:'Minecraft Bedrock',value:nodeBedrockRuntime(node).supported===true?nodeBedrockRuntime(node).mode==='box64'?`Box64 ${nodeBedrockRuntime(node).engineVersion||''} · ARM64`:nodeText('Native x86-64','Chạy trực tiếp trên x86-64'):wireText(nodeBedrockRuntime(node).reason,nodeBedrockRuntime(node).reasonI18n)||notReported},
   {key:'serverCount',label:nodeText('Reported servers','Máy chủ được báo'),value:count===null?notReported:count},
   {key:'resource',label:nodeText('Fixed CPU / RAM','Giới hạn CPU / RAM'),value:resource?.fixedSupported?nodeText('Available','Có hỗ trợ'):nodeText('Not available','Chưa hỗ trợ')},
   {key:'tls',label:nodeText('Agent TLS trust','Xác thực TLS của agent'),value:trust}

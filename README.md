@@ -67,9 +67,9 @@ CPU/RAM limits are usage ceilings, rather than hardware reservations. The main V
 | --- | --- | --- |
 | Panel and node agent | Native | Native |
 | Node.js and Python applications | Native | Native |
-| Official Minecraft Bedrock server | Supported | Run on a linked x86-64 node |
+| Official Minecraft Bedrock server | Native | Managed Box64 compatibility runtime (4 KiB kernel pages) |
 
-An ARM64 main panel can manage both ARM64 and x86-64 workers. Bedrock's official Linux executable requires an x86-64 worker; Vortex does not install an emulator. Node.js uses the official archive for the selected node's architecture, and Python is built natively from verified official source. Existing application runtime pins remain unchanged.
+An ARM64 main panel can manage both ARM64 and x86-64 workers. On ARM64, the full installer automatically builds a private, pinned Box64 runtime to run Mojang's x86-64 Bedrock server. It requires 4 KiB kernel pages, at least 1 GiB of available physical RAM and 2 GiB of free installation storage during preparation. The build uses one CPU thread and a capped temporary volume/cgroup; no system-wide emulator or multiarch registration is installed. Run the full installer once on older ARM64 installations to prepare this runtime; a source-only update cannot install host dependencies. Bedrock creation, console, resource limits and world storage use the same panel controls on both architectures. Node.js and Python continue to run natively, and existing application runtime pins remain unchanged.
 
 Use a fresh VPS for the automatic public setup. An existing web server or occupied port requires deliberate configuration; the installer does not take over unrelated services. Provider firewalls and NAT remain under your control. Minecraft game ports and application ports are separate from the panel's HTTPS endpoint.
 

@@ -65,6 +65,10 @@ jobs:
     with:
       python_managed: false
 
+  bedrock-arm:
+    name: Minecraft Bedrock on ARM64
+    uses: ./.github/workflows/bedrock-arm.yml
+
   https:
     name: Managed HTTPS and public port
     uses: ./.github/workflows/https.yml

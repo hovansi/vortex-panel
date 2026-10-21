@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.23.6'
+        default: 'v0.23.7'
         type: string
 
 permissions:
@@ -105,6 +105,11 @@ jobs:
     with:
       python_managed: false
 
+  bedrock-arm:
+    name: Minecraft Bedrock on ARM64
+    needs: verify
+    uses: ./.github/workflows/bedrock-arm.yml
+
   https:
     name: Public HTTPS port and upgrade compatibility
     needs: verify
@@ -112,7 +117,7 @@ jobs:
 
   publish:
     name: Build and publish verified assets
-    needs: [verify, native-arm, https]
+    needs: [verify, native-arm, bedrock-arm, https]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -229,7 +234,7 @@ jobs:
           }
           checkTag();
           const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
-          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nFresh installations now open at https://IP:19191. The public HTTPS port is handled consistently by NGINX, redirects, authentication, certificate verification, renewal and owned firewall cleanup. The internal service remains on loopback port 3000; linked agents and workload ports retain their settings.\n\nOrdinary upgrades preserve an existing endpoint. To move a verified Vortex-owned IP proxy to 19191, allow inbound TCP 19191 and run the installer with --public-port 19191. The migration preserves certificates and restores the previous endpoint if access verification fails. Custom proxies are preserved.\n\nRelease checks validate production source and packages with Node.js 22 on Ubuntu 22.04 x64 and Ubuntu 24.04 x64/ARM64. Native ARM64 checks install the panel and worker, exercise managed Node.js HTTP start/restart/stop, and verify resource controls, agent credentials and pinned TLS. HTTPS integration checks install the real proxy, exercise authenticated requests and WebSocket over TLS, and verify default, preserved and explicitly migrated endpoints. No live Minecraft gameplay validation is implied.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
+          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nARM64 hosts can now create and run the official Minecraft Bedrock server through a private, pinned Box64 compatibility runtime. Full panel and agent installers prepare the runtime automatically on supported Ubuntu hosts with 4 KiB kernel pages, without changing system libraries or registering a global emulator. Existing Node.js and Python runtimes remain native and keep their saved versions.\n\nOlder ARM64 installations need the full installer once to add the Bedrock runtime. A source-only update preserves host dependencies and explains when runtime preparation is needed. The panel verifies the runtime receipt, architecture and hashes before creation or startup, and identifies Box64 execution in the interface.\n\nRelease gates validate native x64 and ARM64 production source, full panel and worker installation, official Stable and Preview Bedrock creation/start/console/world persistence/live backup, cgroup CPU and RAM enforcement, application lifecycle, authenticated agent TLS, and HTTPS access. Real Minecraft client gameplay is not part of the automated checks.\n\nFresh public installations use https://IP:19191. Existing endpoints, accounts, workloads and data are retained during ordinary upgrades.\n\nAssets include the production source ZIP, checksums, release manifest and installer. Read README.md before installation.\n\nInstall or update on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
           const creation = join(process.env.RUNNER_TEMP, 'vortex-release-create.json');
           writeFileSync(creation, JSON.stringify({ tag_name: tag, target_commitish: head, name: `Vortex Panel ${pkg.version}`,
             body: readFileSync(notes, 'utf8'), draft: true, prerelease: false }), { flag: 'wx' });

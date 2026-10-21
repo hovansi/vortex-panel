@@ -441,6 +441,9 @@ if [[ $VORTEX_AUTO_ACCESS == true ]]; then
 fi
 # Trusted Ubuntu prerequisites for isolated side-by-side Python source builds.
 DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
+if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-upgrade --no-remove g++ cmake libjemalloc2
+fi
 # Install prerequisites only. The application capability probe must still prove
 # that this host permits the required namespaces; never disable AppArmor/userns
 # protection or fall back to the management account for uploaded code.
@@ -626,6 +629,11 @@ if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VOR
   export PATH="$PANEL_NODE_DIR/bin:$PATH"
 fi
 
+# Prepare the pinned native compatibility engine while the previous service
+# is still healthy. A failed build never switches the active panel release.
+if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
+  python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role panel
+fi
 id vortex-panel >/dev/null 2>&1 || useradd --system --create-home --home-dir "$DATA_DIR" --shell /usr/sbin/nologin vortex-panel
 SERVICE_USER=vortex-panel
 TERMINAL=false

@@ -20,7 +20,7 @@ An existing healthy agent can be linked again without reinstalling it or changin
 4. Back in **Nodes → Add node**, enter its name, endpoint, game/public address, optional location, token and exact fingerprint. The panel verifies the TLS connection, credential and agent identity before storing the link.
 5. Choose this node in **Create server**. Its own version catalog, resource capabilities and occupied ports determine the available choices. Players connect to the selected node's game address and server port.
 
-The panel, agent and Node.js/Python applications run natively on both architectures. The official Linux Bedrock server requires an x86-64 node; an ARM64 panel can manage Bedrock on a linked x86-64 node.
+The panel, agent and Node.js/Python applications run natively on both architectures. ARM64 agents with 4 KiB kernel pages also run the official x86-64 Linux Bedrock server through a private Box64 runtime prepared automatically by the full agent installer. Older ARM64 agents need that installer once before creating Bedrock servers; source-only updates preserve host runtime installation. The main panel uses the capability reported and verified by each worker.
 
 The default agent uses a self-signed certificate pinned explicitly by SHA-256, so a domain is optional. A certificate trusted by the operating system can instead use normal CA validation without a pin. The certificate's validity period is checked in both cases. Certificate replacement requires intentionally updating the pin. See [agent configuration and renewal](NODE-AGENT.md).
 

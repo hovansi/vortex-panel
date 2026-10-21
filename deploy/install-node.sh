@@ -179,6 +179,9 @@ fi
 apt-get -o DPkg::Lock::Timeout=120 update
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
+if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove g++ cmake libjemalloc2
+fi
 # BEGIN optional kernel module
 prepare_memory_module() {
   local kernel package candidate metadata dependency_status dependency_query_code dependency_candidate='' audit simulation operation changed remainder expected
@@ -385,6 +388,10 @@ else
   install -d -m 0755 "$(dirname -- "$ZRAM_HELPER")"
   install -m 0755 "$SOURCE_DIR/server/host-zram.py" "$ZRAM_HELPER"
   NEW_HELPER=true
+fi
+# Build the private engine before switching a working node or its source.
+if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
+  python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" install --role worker
 fi
 install -d -m 0755 "$INSTALL_DIR"
 # Copy only the worker runtime. Even when invoked from a complete panel source

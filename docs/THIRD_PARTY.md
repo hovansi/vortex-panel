@@ -31,3 +31,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## ARM64 Bedrock compatibility runtime
+
+The full ARM64 installer downloads and builds [Box64 0.4.4](https://github.com/ptitSeb/box64/tree/2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a) from the immutable official source archive, checked against SHA-256 `ce844041092de3f44316bd1c033a3cc10024e5f798c1a8e8a58f046c6d967981`. Box64 uses its MIT license. Private x86-64 `libgcc_s` and `libstdc++` files come from that same pinned archive and retain their separate GNU GPL version 3 with GCC Runtime Library Exception 3.1; they are not licensed under Box64's MIT license. The installed runtime includes the Box64 license, GCC license and exception texts, provenance notice and file receipt. These dependencies and Minecraft binaries are downloaded during installation/use and are not bundled in the Vortex source ZIP.

@@ -1,5 +1,5 @@
 import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
-import {bedrockRuntimeSupport,BEDROCK_PLATFORM_MESSAGE} from '../public/runtime-platform.js';
+import { createBedrockRuntime } from './bedrock-runtime.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -49,7 +49,6 @@ const appRevision = server => createHash('sha256').update(JSON.stringify([server
 const MUTABLE = ['worlds/', 'config/', 'keys/', 'server.properties', 'allowlist.json', 'permissions.json', 'valid_known_packs.json', 'server_identity_key.pem'];
 const mutable = name => MUTABLE.some(prefix => name === prefix || (prefix.endsWith('/') && name.startsWith(prefix)));
 const now = () => new Date().toISOString();
-function assertBedrockRuntime(){if(!bedrockRuntimeSupport({platform:process.platform,arch:process.arch}).supported)fail(BEDROCK_PLATFORM_MESSAGE.vi,409);}
 function invalidateConsoleRules(runtime, command) {
   if (!runtime?.gameRules || !/^\/?(?:gamerule\s+\S+\s+\S+|(?:execute|function|script)\b)/i.test(String(command).trim())) return;
   runtime.gameRules.clear(); runtime.rulesRefresh = createGameRuleRefresh();
@@ -85,8 +84,9 @@ export async function ensureServerIdentity(runRoot) {
   return destination;
 }
 
-export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, hostReader, portAllocator, protectedTcpPorts = [] }) {
+export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, bedrockController, bedrockRuntimeRole = 'panel', hostReader, portAllocator, protectedTcpPorts = [] }) {
   const applicationRuntime = applicationController || createApplicationRuntime({dataDir,resourceController,storageController});
+  const bedrockRuntime = bedrockController || createBedrockRuntime({ role: bedrockRuntimeRole });
   const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [...protectedTcpPorts, Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
   let applicationControl = {supported:false,engine:'bubblewrap',runtimes:[],reason:'Application runtime has not been checked.'};
   const versionService = createVersionService({ store, dataDir, emit, audit: (...args) => audit(...args), reserveDisk: bytes => reservePackageWorkspace(bytes) });
@@ -218,7 +218,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     maintenance = record;
     return record.release;
   }
-  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), restartRecovery: publicRestartRecovery(server.restartRecovery), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
+  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, bedrockRuntime: !isApp(server) ? processes.get(server.id)?.bedrockRuntime || null : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), restartRecovery: publicRestartRecovery(server.restartRecovery), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
   const persist = () => { store.save(); emit({ type: 'update' }); };
   const audit = (action, detail, user, detailI18n, serverId) => store.audit(action, detail, user || actorContext.getStore()?.username || 'system', detailI18n, serverId);
   const commitServerFields = (server, fields, action, detail = server.name) => {
@@ -637,9 +637,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     validateNetwork(networkServers(), server.id, server);
     assertMemoryHeadroom({ host: await capacityHostInfo(), servers: capacityServers(), reserveRatio, minimumMemoryMiB: resourceControl.memory?.minMiB ?? 256 });
     if (closed) fail('Panel đang tắt.', 503);
-    if (!isApp(server)) assertBedrockRuntime();
+    const bedrockCapability = !isApp(server) ? await bedrockRuntime.assertReady() : null;
     const workingDirectory = runDirectory(server);
-    let executable, plan, properties = {};
+    let executable, plan, bedrockPlan, properties = {};
     if (isApp(server)) {
       await requireApplicationRuntime(appKind(server), { server });
       await applicationRuntime.prepareWorkspace(server);
@@ -649,6 +649,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     executable = await safePath(workingDirectory, 'bedrock_server');
     const stat = await fs.stat(executable);
     if (!stat.isFile()) fail('Không tìm thấy tệp Bedrock server.', 409);
+    bedrockPlan = await bedrockRuntime.launchPlan(executable, workingDirectory);
     properties = parseProperties(await fs.readFile(await safePath(workingDirectory, 'server.properties'), 'utf8'));
     validateBedrockProperties(properties);
     const transport = properties.transport || 'raknet';
@@ -667,7 +668,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     } catch (error) { startupPacks = { capturedAt: now(), worldName: properties['level-name'] || 'Bedrock level', stacks: null, error: error.message }; }
     try {
       resourceHandle = await resourceController.prepare(server.id, serverPolicy(server), isApp(server) ? { tasksMax: 128 } : {});
-      launched = plan ? resourceHandle.spawnWithArgs(plan.executable, plan.args, plan.options, plan.execution) : resourceHandle.spawn(executable, { cwd: workingDirectory, env: { ...process.env, LD_LIBRARY_PATH: workingDirectory }, stdio: ['pipe', 'pipe', 'pipe'], detached: false });
+      const launch = plan || bedrockPlan;
+      launched = launch ? resourceHandle.spawnWithArgs(launch.executable, launch.args, launch.options, launch.execution) : resourceHandle.spawn(executable, { cwd: workingDirectory, env: { ...process.env, LD_LIBRARY_PATH: workingDirectory }, stdio: ['pipe', 'pipe', 'pipe'], detached: false });
     } catch (error) { await resourceHandle?.cleanup().catch(() => {}); server.status = 'error'; server.error = error.message; log(server, `${isApp(server) ? 'Cannot start application' : 'Không thể chạy Bedrock'}: ${error.message}`, 'error'); persistRuntime(server); throw error; }
     const { child, ready } = launched;
     const runtime = { child, resourceHandle, resourceUsage: null, startedAt: Date.now(), expected: false, online: new Map(), connections: new Map(), instanceId: randomUUID(), worldName: properties['level-name'] || 'Bedrock level', startupProperties: { ...properties }, gameRules: new Map(), previousTicks: null, previousTime: performance.now(), ready: false, close: null };
@@ -675,6 +677,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     runtime.startupPacks = startupPacks;
     runtime.rulesRefresh = createGameRuleRefresh();
     runtime.applicationRuntime = plan?.runtime || null;
+    runtime.bedrockRuntime = bedrockPlan?.runtime || bedrockCapability;
     runtime.gameplay = isApp(server) ? { busy: false, consume: () => false, close() {} } : createGameplayConsole({ send: (command, options) => {
       if (!runtimeCurrent(server, runtime)) fail('Phiên chạy máy chủ đã thay đổi.', 409);
       return deliverConsole(server, command, 'server.gameplay.command', { gameplay: true, internal: options.internal });
@@ -1811,7 +1814,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     async dashboard() {
       resourceControl = await resourceController.capabilities();
-      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { bedrockRuntime: bedrockRuntimeSupport({platform:process.platform,arch:process.arch}), linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
+      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { bedrockRuntime: await bedrockRuntime.capabilities(), linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
     },
     listServers: () => store.data.servers.map(publicServer),
     getServer: id => publicServer(get(id)),
@@ -1832,7 +1835,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await applicationRuntime.assertNoPendingBuilds?.();
       if (input && ['nodejs', 'python'].includes(input.kind)) return createApplicationServer(input);
       if (input?.kind !== undefined && input.kind !== 'bedrock') throw applicationIssue('APPLICATION_INPUT', 400);
-      assertBedrockRuntime();
+      await bedrockRuntime.assertReady();
       if (!input || input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA và Điều khoản trước khi cài đặt.');
       if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 || /[\r\n\0]/.test(input.name)) fail('Tên server phải có 1–80 ký tự.');
       const selection = await resolveVersion(input.version, input.channel || 'stable');
@@ -1935,7 +1938,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await applicationRuntime.assertNoPendingBuilds?.();
       const source = get(id); assertStopped(source);
       if (isApp(source)) fail('Application cloning is not available. Create a new application and restore its source files.', 409);
-      assertBedrockRuntime();
+      await bedrockRuntime.assertReady();
       if (input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA trước khi nhân bản.');
       if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 || /[\r\n\0]/.test(input.name)) fail('Tên server phải có 1–80 ký tự.');
       const maxPlayers = source.maxPlayers;
@@ -2168,7 +2171,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     async setBackupLocked(id, backupId, input) { const server = get(id); const record = backupRecord(server, backupId); if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'locked') || typeof input.locked !== 'boolean') fail('Trạng thái khóa sao lưu phải là boolean.'); if (input.locked && record.locked !== true && (server.backups || []).filter(item => item.locked === true).length >= 50) fail('Mỗi server được khóa tối đa 50 bản sao lưu; hãy mở khóa bản không còn cần giữ.', 409); const updated = commitBackupFields(server, record, { locked: input.locked }, input.locked ? 'backup.lock' : 'backup.unlock'); return { backup: publicBackup(server, updated) }; },
     async deleteBackup(id, backupId) { const server = get(id); assertIdle(server); return deleteBackupRecord(server, backupRecord(server, backupId)); },
-    async upgrade(id, input) { const server = get(id); assertStopped(server); assertBedrockRuntime(); const selection = await resolveVersion(input.version, input.channel || server.channel); assertStopped(server); return job('update', server, progress => install(server, selection, progress, true)); },
+    async upgrade(id, input) { const server = get(id); assertStopped(server); await bedrockRuntime.assertReady(); const selection = await resolveVersion(input.version, input.channel || server.channel); assertStopped(server); return job('update', server, progress => install(server, selection, progress, true)); },
     versions: () => versionService.metadata(),
     refreshVersions: () => { assertOpen(); return versionService.refresh(); },
     reserveDiskWorkspace,

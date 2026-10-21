@@ -19,6 +19,7 @@ import { serverFirewallErrorPayload } from './server-firewall.js';
 import { capacityErrorPayload } from './capacity.js';
 import { storageErrorPayload } from './storage-volumes.js';
 import { applicationErrorPayload } from './application-runtime.js';
+import { bedrockRuntimeErrorPayload } from './bedrock-runtime.js';
 import { createHostnameController, changeHostname, hostnameErrorPayload } from './hostname.js';
 import { createSystemPowerController, sendPowerRequest, systemPowerErrorPayload } from './system-power.js';
 import { createHostZramController, sendZramRequest, hostZramErrorPayload } from './host-zram.js';
@@ -85,7 +86,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   try {
     store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
-    manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
+    manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, bedrockRuntimeRole: 'worker', resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
     systemTimezone = timezoneController || createHostTimezoneController({ dataDir, store, nodeId, role: 'worker' });
     systemNetwork = networkController || createHostNetworkTuningController({ role: 'worker', nodeId, store, manager });
     // Establish the verified OS timezone before auto-starting managed children.
@@ -182,7 +183,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   app.use((error, _req, res, _next) => {
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
-    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
+    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
     else res.destroy();
   });
   let server;
