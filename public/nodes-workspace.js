@@ -1,4 +1,5 @@
 import {telemetryMarkup,capacityMarkup,syncTelemetry} from './telemetry-view.js';
+import {bedrockRuntimeSupport} from './runtime-platform.js';
 import {wireText,uiHTML,uiText,formatUI} from './i18n.js';
 import {beginButtonBusy} from './button-busy.js';
 import {createJobTracker} from './job-tracker.js';
@@ -39,6 +40,13 @@ function renameNode(node,target,context){
 export function nodeCreationState(node){
   const online=node?.online===true,maintenance=node?.maintenance===true;
   return {allowed:online&&!maintenance,reason:!node?nodeText('Choose a node','Chọn VPS'):!online?nodeText('This node is unavailable','VPS này chưa kết nối'):maintenance?nodeText('This node is in maintenance','VPS này đang bảo trì'):'',capability:node?.capabilities?.resourceControl||{fixedSupported:false,reason:nodeText('Resource capabilities have not been reported by this node.','VPS này chưa báo khả năng giới hạn tài nguyên.')},nextPort:numeric(node?.nextPort),nextPortV6:numeric(node?.nextPortV6)};
+}
+export function nodeBedrockRuntime(node){
+ const declared=node?.capabilities?.bedrockRuntime;
+ if(typeof declared?.supported==='boolean')return declared;
+ if(node?.host?.platform&&node?.host?.arch)return bedrockRuntimeSupport(node.host);
+ const reasonI18n={id:'panel.runtime.bedrock-unknown',en:'Refresh this node to verify its architecture before creating a Bedrock server.',vi:'Làm mới VPS để xác minh kiến trúc trước khi tạo server Bedrock.'};
+ return {supported:null,reason:reasonI18n.vi,reasonI18n};
 }
 export function serverNodeUnavailable(server){return Boolean(server?.nodeId&&server.nodeId!=='local'&&server.nodeOnline!==true);}
 export function serverNodeAddress(server){const address=String(server?.nodeAddress||'').trim();if(!address)return '';return `${address.includes(':')&&!address.startsWith('[')?`[${address}]`:address}:${server.port}`;}

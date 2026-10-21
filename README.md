@@ -20,7 +20,7 @@ Created by **@hovansi** · Maintained at [hovansi/vortex-panel](https://github.c
 
 ## Install with one command
 
-On an **Ubuntu 22.04+ x86_64 VPS with systemd**, run:
+On an **Ubuntu 22.04+ x86-64 or ARM64 VPS with systemd**, run:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
@@ -57,11 +57,19 @@ CPU/RAM limits are usage ceilings, rather than hardware reservations. The main V
 
 | Requirement | Details |
 | --- | --- |
-| **Host** | Ubuntu 22.04 or later, x86_64, systemd, root/sudo access |
+| **Host** | Ubuntu 22.04 or later, x86-64 or ARM64 (`aarch64`), matching 64-bit userspace, systemd, root/sudo access |
 | **Connectivity** | Working HTTPS access to GitHub, Ubuntu repositories and the official runtime providers; `curl` and trusted CA certificates for the initial command |
 | **Public setup** | A routable public IPv4 address and available web ports; see the installer guide for ownership checks and firewall boundaries |
 | **Application isolation** | Working cgroup v2, namespace, Bubblewrap and storage capabilities reported by the selected node |
 | **Python creation** | Capacity for a capped 1 GiB RAM build and temporary 3 GiB build volume, plus panel/runtime storage and admission overhead |
+
+| Workload | x86-64 VPS | ARM64 VPS |
+| --- | --- | --- |
+| Panel and node agent | Native | Native |
+| Node.js and Python applications | Native | Native |
+| Official Minecraft Bedrock server | Supported | Run on a linked x86-64 node |
+
+An ARM64 main panel can manage both ARM64 and x86-64 workers. Bedrock's official Linux executable requires an x86-64 worker; Vortex does not install an emulator. Node.js uses the official archive for the selected node's architecture, and Python is built natively from verified official source. Existing application runtime pins remain unchanged.
 
 Use a fresh VPS for the automatic public setup. An existing web server or occupied port requires deliberate configuration; the installer does not take over unrelated services. Provider firewalls and NAT remain under your control. Minecraft game ports and application ports are separate from the panel's HTTPS endpoint.
 
@@ -83,7 +91,7 @@ Use a fresh VPS for the automatic public setup. An existing web server or occupi
 
 ## Run from reviewed source
 
-The supported runtime host is Ubuntu 22.04+ x86_64 with Node.js 22 or later. For manual setup from a reviewed checkout:
+The supported runtime host is Ubuntu 22.04+ x86-64 or ARM64 with Node.js 22 or later. For manual setup from a reviewed checkout:
 
 ```bash
 npm ci

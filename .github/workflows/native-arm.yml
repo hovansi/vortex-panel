@@ -1,0 +1,252 @@
+name: Native ARM64
+
+on:
+  workflow_call:
+    inputs:
+      python_managed:
+        description: Build and exercise the latest pinned Python from official source
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      python_managed:
+        description: Build and exercise the latest pinned Python from official source
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  installed-applications:
+    name: Ubuntu ARM64 / native installed applications
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify native ARM64 kernel and userspace
+        run: |
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          test -d /run/systemd/system
+      - name: Install the panel with its production installer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          if ! sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install.sh \
+            --root-mode --local-only --self-signed --no-network-tuning \
+            > "$RUNNER_TEMP/vortex-native-install.log" 2>&1; then
+            echo 'Native ARM64 installer failed; no application lifecycle was counted as passed.' >&2
+            sed -E 's/(One-time setup token:|SETUP TOKEN:).*/\1 [redacted]/' "$RUNNER_TEMP/vortex-native-install.log" | tail -n 100 >&2
+            exit 1
+          fi
+          sudo systemctl is-active --quiet vortex-panel.service
+      - name: Exercise authenticated native application lifecycles
+        shell: bash
+        env:
+          PYTHON_MANAGED: ${{ inputs.python_managed && '1' || '0' }}
+        run: |
+          set -Eeuo pipefail
+          PANEL_PID=$(sudo systemctl show vortex-panel.service --property=MainPID --value)
+          [[ $PANEL_PID =~ ^[1-9][0-9]*$ ]]
+          PANEL_NODE=$(sudo readlink -f "/proc/$PANEL_PID/exe")
+          sudo "$PANEL_NODE" --input-type=module - "$PYTHON_MANAGED" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { randomBytes } from 'node:crypto';
+          import { openSync, readSync, closeSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.arch, 'arm64');
+          assert.ok(['0', '1'].includes(process.argv[2]));
+          assert.equal(execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim(), 'aarch64');
+          const pythonManaged = process.argv[2] === '1';
+          const hostPython = JSON.parse(execFileSync('/usr/bin/python3', ['-I', '-c', 'import json,platform,ssl,sqlite3,venv; print(json.dumps({"arch":platform.machine(),"version":platform.python_version(),"ssl":ssl.OPENSSL_VERSION}))'], { encoding: 'utf8' }));
+          assert.equal(hostPython.arch, 'aarch64');
+          console.log(JSON.stringify({ stage: 'native-host', node: process.version, nodeArch: process.arch, hostPython, managedPythonRequested: pythonManaged }));
+          const unit = 'vortex-panel.service';
+          const panelPid = execFileSync('systemctl', ['show', unit, '--property=MainPID', '--value'], { encoding: 'utf8' }).trim();
+          const invocation = execFileSync('systemctl', ['show', unit, '--property=InvocationID', '--value'], { encoding: 'utf8' }).trim();
+          assert.match(panelPid, /^[1-9][0-9]*$/);
+          assert.match(invocation, /^[a-f0-9]{32}$/);
+          const journal = execFileSync('journalctl', ['-b', '-u', unit, '_PID=' + panelPid, '_SYSTEMD_INVOCATION_ID=' + invocation, '-n', '100', '--no-pager', '-o', 'cat'], { encoding: 'utf8' });
+          const setupToken = [...journal.matchAll(/^SETUP TOKEN: ([A-Za-z0-9_-]{20,128})$/gm)].at(-1)?.[1];
+          assert.ok(setupToken, 'The current managed service must provide a one-time setup token.');
+          const origin = 'http://127.0.0.1:3000';
+          let cookie = '', csrf = '';
+          async function request(path, method = 'GET', body) {
+            const headers = { Origin: origin, 'Accept-Language': 'en' };
+            if (cookie) headers.Cookie = cookie;
+            if (csrf) headers['X-CSRF-Token'] = csrf;
+            if (body !== undefined) headers['Content-Type'] = 'application/json';
+            const response = await fetch(origin + '/api' + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(120000) });
+            const value = await response.json();
+            assert.ok(response.ok, `${method} ${path} failed with ${response.status}: ${value.code || value.error || 'unknown error'}`);
+            for (const row of response.headers.getSetCookie()) if (row.startsWith('bedrock.sid=')) cookie = row.split(';')[0];
+            if (value.csrfToken) csrf = value.csrfToken;
+            return value;
+          }
+          const pending = await request('/auth/status');
+          assert.equal(pending.setupRequired, true);
+          await request('/auth/setup', 'POST', { token: setupToken, username: 'arm-native', password: randomBytes(32).toString('base64url') });
+          assert.ok(cookie && csrf);
+          const dashboard = await request('/dashboard');
+          assert.equal(dashboard.host.arch, 'arm64');
+          assert.equal(dashboard.capabilities.bedrockRuntime.supported, false);
+          assert.equal(dashboard.capabilities.applicationRuntime.supported, true);
+          assert.equal(dashboard.capabilities.resourceControl.fixedSupported, true);
+          assert.equal(dashboard.capabilities.resourceControl.pidsSupported, true);
+          assert.equal(dashboard.capabilities.storageControl.fixedSupported, true);
+          assert.equal(dashboard.servers.length, 0);
+          const previousJobs = (await request('/jobs')).jobs.map(job => job.id).sort();
+          for (const language of ['en', 'vi']) {
+            const response = await fetch(origin + '/api/servers', { method: 'POST', headers: { Origin: origin, Cookie: cookie, 'X-CSRF-Token': csrf, 'Accept-Language': language, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'bedrock', name: 'Unsupported native Bedrock', version: 'latest', eula: true, portAllocation: 'auto', storagePolicy: { mode: 'fixed', diskGiB: 1 }, resourcePolicy: { mode: 'shared' } }), signal: AbortSignal.timeout(30000) });
+            assert.equal(response.status, 409);
+            const value = await response.json();
+            assert.equal(value.error, dashboard.capabilities.bedrockRuntime.reasonI18n[language]);
+          }
+          assert.equal((await request('/servers')).servers.length, 0);
+          assert.deepEqual((await request('/jobs')).jobs.map(job => job.id).sort(), previousJobs);
+          console.log(JSON.stringify({ stage: 'native-bedrock-rejection', languages: ['en', 'vi'], noServerOrJobAllocated: true, passed: true }));
+          const owned = new Set();
+          const report = [];
+          async function server(id) { return (await request('/servers/' + encodeURIComponent(id))).server; }
+          async function waitState(id, wanted) {
+            const deadline = Date.now() + 120000;
+            while (Date.now() < deadline) {
+              const value = await server(id);
+              if (value.status === wanted) return value;
+              assert.ok(!['error', 'crashed'].includes(value.status), `Application entered ${value.status}: ${value.error || 'no reason supplied'}`);
+              await delay(1000);
+            }
+            throw new Error('Native application never reached ' + wanted);
+          }
+          async function waitJob(id, kind) {
+            const deadline = Date.now() + (kind === 'python' ? 50 * 60 : 10 * 60) * 1000;
+            let logged = 0;
+            while (Date.now() < deadline) {
+              const { job } = await request('/jobs/' + encodeURIComponent(id));
+              if (Date.now() - logged > 15000) { console.log(JSON.stringify({ stage: 'install', kind, status: job.status, phase: job.phase, progress: job.progress })); logged = Date.now(); }
+              if (job.status === 'completed') return;
+              if (!['queued', 'pending', 'running'].includes(job.status)) {
+                if (owned.has(job.serverId)) {
+                  const { logs } = await request('/servers/' + encodeURIComponent(job.serverId) + '/logs');
+                  console.error(JSON.stringify({ stage: 'owned-application-install-failed', kind, output: logs.slice(-40).map(row => row.message) }));
+                }
+                throw new Error(`Native ${kind} installation ended with ${job.status}: ${job.error || job.message || 'no reason supplied'}`);
+              }
+              await delay(1000);
+            }
+            throw new Error('Native managed ' + kind + ' installation did not complete.');
+          }
+          function elf64(filename) {
+            const file = openSync(filename, 'r'); const header = Buffer.alloc(64);
+            try { assert.equal(readSync(file, header, 0, header.length, 0), 64); } finally { closeSync(file); }
+            assert.equal(header.subarray(0, 4).toString('hex'), '7f454c46');
+            assert.equal(header[4], 2); assert.equal(header[5], 1); assert.equal(header.readUInt16LE(18), 183);
+          }
+          async function roundTrip(value, kind) {
+            assert.equal(value.status, 'running');
+            assert.ok(value.pid > 1 && value.applicationRuntime.uid > 0);
+            assert.equal(value.resources.effective.kernelEnforced, true);
+            const response = await fetch('http://127.0.0.1:' + value.port, { signal: AbortSignal.timeout(10000) });
+            assert.equal(response.status, 200);
+            assert.equal(await response.text(), kind === 'nodejs' ? 'Vortex Node.js application is running.\n' : 'Vortex Python application is running.\n');
+          }
+          async function exercise(kind) {
+            const created = await request('/servers', 'POST', { kind, name: 'ARM64 native ' + kind, portAllocation: 'auto', storagePolicy: { mode: 'fixed', diskGiB: 1 }, resourcePolicy: { mode: 'shared' }, application: { dependencies: 'none', readiness: 'tcp' } });
+            const id = created.server.id; owned.add(id);
+            assert.equal(created.server.runtime.arch, 'arm64');
+            assert.equal(created.server.runtime.mode, 'managed');
+            assert.ok(created.server.port >= 1024 && created.server.port <= 65535);
+            const pin = JSON.stringify(created.server.runtime);
+            await waitJob(created.job.id, kind);
+            const installed = await waitState(id, 'stopped');
+            assert.equal(JSON.stringify(installed.runtime), pin);
+            const prefix = '/var/lib/vortex-panel/.application-runtimes/' + kind + '-' + installed.runtime.version + '-linux-arm64/prefix';
+            const executable = prefix + (kind === 'nodejs' ? '/bin/node' : '/bin/python' + installed.runtime.version.split('.').slice(0, 2).join('.'));
+            elf64(executable);
+            await request('/servers/' + id + '/start', 'POST', {});
+            const first = await waitState(id, 'running'); await roundTrip(first, kind);
+            await request('/servers/' + id + '/restart', 'POST', {});
+            const restarted = await waitState(id, 'running'); await roundTrip(restarted, kind);
+            assert.notEqual(restarted.pid, first.pid);
+            assert.equal(JSON.stringify(restarted.runtime), pin);
+            await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped');
+            await request('/servers/' + id, 'DELETE'); owned.delete(id);
+            assert.equal((await request('/servers')).servers.some(row => row.id === id), false);
+            report.push({ kind, version: installed.runtime.version, arch: installed.runtime.arch, nativeELF: true, runtimePinPreserved: true, httpLifecyclePassed: true, removed: true });
+            console.log(JSON.stringify({ stage: 'application-complete', ...report.at(-1) }));
+          }
+          try {
+            await exercise('nodejs');
+            if (pythonManaged) await exercise('python');
+            assert.equal(execFileSync('systemctl', ['show', unit, '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), panelPid);
+            assert.equal((await request('/servers')).servers.length, 0);
+            console.log(JSON.stringify({ nativeArchitecture: 'arm64', actualInstalledPanel: true, managedApplications: report, managedPythonBuilt: pythonManaged, passed: true }));
+          } finally {
+            for (const id of owned) {
+              try { const value = await server(id); if (value.status === 'running') { await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped'); } if ((await server(id)).status === 'stopped') await request('/servers/' + id, 'DELETE'); }
+              catch { console.error('Cleanup of an owned ephemeral application requires VM disposal.'); }
+            }
+            if (cookie) await request('/auth/logout', 'POST', {}).catch(() => {});
+          }
+          NODE
+      - name: Verify the installed native worker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          PANEL_PID=$(sudo systemctl show vortex-panel.service --property=MainPID --value)
+          if ! sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install-node.sh \
+            --endpoint https://127.0.0.1:8443 \
+            > "$RUNNER_TEMP/vortex-native-worker-install.log" 2>&1; then
+            echo 'Native ARM64 worker installer failed; private connection details remain in the disposable VM.' >&2
+            sudo systemctl show vortex-node.service --property=ActiveState --property=SubState --property=Result >&2
+            exit 1
+          fi
+          sudo systemctl is-active --quiet vortex-node.service
+          WORKER_PID=$(sudo systemctl show vortex-node.service --property=MainPID --value)
+          [[ $WORKER_PID =~ ^[1-9][0-9]*$ ]]
+          WORKER_NODE=$(sudo readlink -f "/proc/$WORKER_PID/exe")
+          sudo "$WORKER_NODE" --input-type=module - "$PANEL_PID" "$WORKER_PID" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readNodeConfig, nodeConnection } from '/opt/vortex-node/current/server/node-cli.js';
+          import { requestNode } from '/opt/vortex-node/current/server/node-transport.js';
+          assert.equal(process.platform, 'linux');
+          assert.equal(process.arch, 'arm64');
+          const config = readNodeConfig('/etc/vortex-node.json');
+          const connection = nodeConnection(config, 'https://127.0.0.1:' + config.port);
+          assert.match(connection.fingerprint, /^[A-F0-9]{64}$/);
+          const identity = await requestNode(connection);
+          assert.equal(identity.service, 'vortex-node');
+          assert.equal(identity.protocol, 1);
+          assert.equal(identity.nodeId, config.nodeId);
+          assert.equal(identity.processId, Number(process.argv[3]));
+          await assert.rejects(requestNode({ ...connection, token: 'A'.repeat(43) }), error => error.status === 401);
+          const snapshot = await requestNode(connection, { path: '/api/node/snapshot' });
+          assert.equal(snapshot.host.arch, 'arm64');
+          assert.equal(snapshot.capabilities.bedrockRuntime.supported, false);
+          assert.equal(snapshot.capabilities.applicationRuntime.supported, true);
+          assert.equal(snapshot.capabilities.resourceControl.fixedSupported, true);
+          assert.equal(snapshot.capabilities.resourceControl.pidsSupported, true);
+          assert.equal(snapshot.capabilities.storageControl.fixedSupported, true);
+          assert.equal(snapshot.servers.length, 0);
+          const previousJobs = (await requestNode(connection, { path: '/api/jobs' })).jobs.map(job => job.id).sort();
+          for (const language of ['en', 'vi']) {
+            await assert.rejects(requestNode(connection, { method: 'POST', path: '/api/servers', headers: { 'Accept-Language': language }, body: { kind: 'bedrock', name: 'Unsupported native Bedrock', version: 'latest', eula: true, portAllocation: 'auto', storagePolicy: { mode: 'fixed', diskGiB: 1 }, resourcePolicy: { mode: 'shared' } } }), error => error.status === 409 && error.body?.error === snapshot.capabilities.bedrockRuntime.reasonI18n[language]);
+          }
+          assert.equal((await requestNode(connection, { path: '/api/node/snapshot' })).servers.length, 0);
+          assert.deepEqual((await requestNode(connection, { path: '/api/jobs' })).jobs.map(job => job.id).sort(), previousJobs);
+          assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
+          assert.equal(execFileSync('systemctl', ['show', 'vortex-node.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[3]);
+          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, rejectedInvalidCredential: true, translatedBedrockRejectedWithoutAllocation: true, panelUninterrupted: true, passed: true }));
+          NODE

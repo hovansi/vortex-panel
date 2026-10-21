@@ -52,7 +52,23 @@ parse_installer_options "$@"
 [[ $EUID -eq 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 source /etc/os-release
 [[ $ID == ubuntu ]] && dpkg --compare-versions "$VERSION_ID" ge 22.04 || { echo 'Ubuntu 22.04 LTS or newer is required.' >&2; exit 1; }
-[[ $(uname -m) == x86_64 ]] || { echo 'Official Bedrock Linux binaries require x86_64.' >&2; exit 1; }
+# BEGIN host architecture
+vortex_host_architecture() {
+  local machine native_arch
+  [[ $(uname -s) == Linux ]] || { echo 'Ubuntu Linux is required.' >&2; return 1; }
+  machine=$(uname -m)
+  case $machine in
+    x86_64|amd64) VORTEX_NODE_ARCH=x64; VORTEX_DPKG_ARCH=amd64;;
+    aarch64|arm64) VORTEX_NODE_ARCH=arm64; VORTEX_DPKG_ARCH=arm64;;
+    *) echo 'A 64-bit x86_64/amd64 or aarch64/arm64 host is required.' >&2; return 1;;
+  esac
+  native_arch=$(dpkg --print-architecture) || return 1
+  [[ $native_arch == "$VORTEX_DPKG_ARCH" ]] || {
+    echo 'The Ubuntu userspace architecture must match the supported 64-bit host architecture.' >&2; return 1;
+  }
+}
+vortex_host_architecture
+# END host architecture
 # BEGIN installer transaction lock
 VORTEX_INSTALL_LOCK_FDS=()
 acquire_installer_lock() {
@@ -387,7 +403,7 @@ elif [[ $VORTEX_ACCESS_MODE != auto || -n $VORTEX_PUBLIC_IP ]]; then
 fi
 # END automatic access plan
 apt-get update
-DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 if [[ $VORTEX_AUTO_ACCESS == true ]]; then
   DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-remove nginx openssl iproute2
 fi
@@ -402,7 +418,7 @@ done
 if [[ -f $SOURCE_DIR/deploy/application-isolation.py ]]; then
   if ! python3 "$SOURCE_DIR/deploy/application-isolation.py" prepare --owner vortex-panel.service --transaction "$ISOLATION_TRANSACTION"; then
     rollback_isolation
-    echo 'Optional application sandbox setup is unavailable; Minecraft installation continues.' >&2
+    echo 'Optional application sandbox setup is unavailable; Vortex Panel installation continues.' >&2
   fi
 fi
 
@@ -462,7 +478,7 @@ prepare_memory_module() {
     case $operation in
       Inst|Conf)
         expected=''
-        if [[ $changed == "$package" || $changed == "$package:amd64" ]]; then
+        if [[ $changed == "$package" || $changed == "$package:$VORTEX_DPKG_ARCH" ]]; then
           expected=$candidate
           if [[ $operation == Inst ]]; then requested=true; elif [[ $requested != true ]]; then unsafe=true; fi
         elif [[ -n $dependency_candidate && ( $changed == wireless-regdb || $changed == wireless-regdb:all ) ]]; then
@@ -541,7 +557,7 @@ else:
 PY
 
 if [[ -f /etc/systemd/system/vortex-panel.service ]]; then
-  PREVIOUS_NODE_BIN=$(sed -n 's|^ExecStart=\(/opt/vortex-panel/runtime/node-v22\.[0-9][0-9.]*-linux-x64/bin/node\) .*|\1|p' /etc/systemd/system/vortex-panel.service | head -n 1)
+  PREVIOUS_NODE_BIN=$(sed -nE "s|^ExecStart=(/opt/vortex-panel/runtime/node-v22\\.[0-9]+\\.[0-9]+-linux-$VORTEX_NODE_ARCH/bin/node) .*|\\1|p" /etc/systemd/system/vortex-panel.service | head -n 1)
   if [[ -n $PREVIOUS_NODE_BIN ]]; then
     python3 - "$PREVIOUS_NODE_BIN" <<'PY'
 import os, pathlib, stat, sys
@@ -557,10 +573,11 @@ PY
   fi
 fi
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-if [[ $NODE_MAJOR -lt 22 ]]; then
+NODE_ARCH=$(node -p 'process.arch' 2>/dev/null || true)
+if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VORTEX_NODE_ARCH" ]]; then
   NODE_TEMP=$(mktemp -d /tmp/vortex-node-runtime.XXXXXXXX)
   curl --fail --location --proto '=https' --tlsv1.2 --output "$NODE_TEMP/SHASUMS256.txt" https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt
-  NODE_FILE=$(awk '$2 ~ /^node-v22\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz$/ {print $2; exit}' "$NODE_TEMP/SHASUMS256.txt")
+  NODE_FILE=$(awk -v arch="$VORTEX_NODE_ARCH" '$2 ~ ("^node-v22\\.[0-9]+\\.[0-9]+-linux-" arch "\\.tar\\.xz$") {print $2; exit}' "$NODE_TEMP/SHASUMS256.txt")
   [[ -n $NODE_FILE ]] || { echo 'Unable to resolve official Node 22 archive.' >&2; exit 1; }
   curl --fail --location --proto '=https' --tlsv1.2 --output "$NODE_TEMP/$NODE_FILE" "https://nodejs.org/dist/latest-v22.x/$NODE_FILE"
   (cd -- "$NODE_TEMP" && awk -v f="$NODE_FILE" '$2 == f' SHASUMS256.txt | sha256sum --check -)

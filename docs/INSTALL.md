@@ -6,12 +6,17 @@ The public installer downloads a complete, versioned Vortex Panel release and in
 
 ## Requirements
 
-- Ubuntu 22.04 or later, x86_64, with a running systemd and root/sudo access.
+- Ubuntu 22.04 or later on x86-64 (`x86_64`/`amd64`) or ARM64 (`aarch64`/`arm64`), matching 64-bit userspace, a running systemd and root/sudo access.
 - Working HTTPS access to GitHub, Ubuntu repositories and the official runtime providers. The initial command requires `curl` and a working HTTPS CA trust store.
 - For automatic public setup: a globally routable IPv4 address and available TCP 80/443. Provider firewall/NAT access must allow the intended traffic.
 - Sufficient CPU, memory and storage for the intended workloads. Creating Python runtimes additionally requires a capped 1 GiB RAM build and temporary 3 GiB build volume, plus admission overhead. The panel reports missing sandbox/resource capabilities rather than silently dropping enforcement.
 
 Windows and macOS are development/UI preview environments; this installer targets the supported Ubuntu host.
+
+The same installation command supports both architectures for the panel and node agent. Node.js and Python applications run natively on either architecture when the selected node's isolation and resource checks pass. Official Minecraft Bedrock Linux executables require an x86-64 node. An ARM64 main panel can manage Bedrock on a linked x86-64 worker; Vortex does not install an emulator or translate runtime binaries.
+
+An update retains existing application runtime pins, project files and configuration. Moving a project between CPU architectures requires a new application on the target node and dependency installation there; copying a managed interpreter cache or Python virtual environment is not a supported migration.
+
 
 ## One command
 

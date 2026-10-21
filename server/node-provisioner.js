@@ -4,6 +4,7 @@ import net from 'node:net';
 import { randomUUID, createHash, timingSafeEqual, X509Certificate } from 'node:crypto';
 import ssh2 from 'ssh2';
 import { buildNodeBundle } from './node-bundle.js';
+import { normalizeArchitecture } from '../public/runtime-platform.js';
 const { Client, utils } = ssh2;
 
 const activeStatus = new Set(['queued', 'running']);
@@ -26,7 +27,7 @@ const messages = {
   PROVISION_HOST_CHANGED: ['SSH host key changed. No authentication was sent to the changed host.', 'Khóa host SSH đã thay đổi. Chưa gửi thông tin đăng nhập tới host bị đổi khóa.'],
   PROVISION_SSH: ['SSH connection or authentication failed. Check address, port and credentials.', 'Kết nối hoặc đăng nhập SSH thất bại. Kiểm tra địa chỉ, cổng và thông tin đăng nhập.'],
   PROVISION_TIMEOUT: ['Provisioning timed out. Remote installation may still be running; do not repeat it automatically.', 'Cài đặt quá thời gian chờ. Installer trên VPS có thể vẫn chạy; không tự động chạy lại.'],
-  PROVISION_PREFLIGHT: ['This host requires Ubuntu 22.04+, x86_64, root and systemd, with at least 2 GiB free disk and 1 GiB RAM.', 'VPS cần Ubuntu 22.04+, x86_64, root và systemd, tối thiểu 2 GiB đĩa trống và 1 GiB RAM.'],
+  PROVISION_PREFLIGHT: ['This host requires Ubuntu 22.04+, x64 or ARM64, root and systemd, with at least 2 GiB free disk and 1 GiB RAM.', 'VPS cần Ubuntu 22.04+, x64 hoặc ARM64, root và systemd, tối thiểu 2 GiB đĩa trống và 1 GiB RAM.'],
   PROVISION_EXISTING_UNHEALTHY: ['An existing agent configuration or service is unhealthy. It was not overwritten.', 'Cấu hình hoặc dịch vụ agent hiện có không hoạt động. Chưa ghi đè cài đặt đó.'],
   PROVISION_PORT: ['The selected agent TCP port is already occupied.', 'Cổng TCP đã chọn cho agent đang được sử dụng.'],
   PROVISION_LOCKED: ['Another installation is already running on this VPS.', 'VPS này đang có một lượt cài đặt khác.'],
@@ -79,6 +80,7 @@ printf 'uid=%s\\n' "$(id -u)"
 printf 'os=%s\\n' "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')"
 printf 'version=%s\\n' "$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '\"')"
 printf 'arch=%s\\n' "$(uname -m)"
+printf 'userspace=%s\\n' "$(dpkg --print-architecture 2>/dev/null || true)"
 printf 'disk=%s\\n' "$(df -Pk /var/lib | awk 'NR==2 {printf "%.0f",$4*1024}')"
 printf 'memory=%s\\n' "$(awk '/^MemTotal:/ {printf "%.0f",$2*1024}' /proc/meminfo)"
 if command -v systemctl >/dev/null 2>&1; then printf 'systemd=1\\n'; else printf 'systemd=0\\n'; fi
@@ -193,8 +195,8 @@ export function createNodeProvisioner({ nodes, store, projectDir, dataDir, emit 
     const { stdout } = await exec(client, PREFLIGHT, { signal });
     if (!stdout.startsWith('VORTEX_PREFLIGHT_V1\n')) fail('PROVISION_PREFLIGHT', 409);
     const fields = Object.fromEntries(stdout.trim().split('\n').slice(1).map(line => line.split('=')));
-    const host = { os: fields.os, version: fields.version, arch: fields.arch, root: fields.uid === '0', diskAvailableBytes: Number(fields.disk), memoryTotalBytes: Number(fields.memory), systemd: fields.systemd === '1' };
-    const compatible = host.os === 'ubuntu' && /^\d+\.\d+$/.test(host.version || '') && Number(host.version) >= 22.04 && host.arch === 'x86_64' && host.root && host.systemd && Number.isSafeInteger(host.diskAvailableBytes) && host.diskAvailableBytes >= 2 * 1024 ** 3 && Number.isSafeInteger(host.memoryTotalBytes) && host.memoryTotalBytes >= 1024 ** 3;
+    const host = { os: fields.os, version: fields.version, arch: fields.arch, userspaceArch: fields.userspace, root: fields.uid === '0', diskAvailableBytes: Number(fields.disk), memoryTotalBytes: Number(fields.memory), systemd: fields.systemd === '1' };
+    const compatible = host.os === 'ubuntu' && /^\d+\.\d+$/.test(host.version || '') && Number(host.version) >= 22.04 && normalizeArchitecture(host.arch)!==null && normalizeArchitecture(host.arch)===normalizeArchitecture(host.userspaceArch) && host.root && host.systemd && Number.isSafeInteger(host.diskAvailableBytes) && host.diskAvailableBytes >= 2 * 1024 ** 3 && Number.isSafeInteger(host.memoryTotalBytes) && host.memoryTotalBytes >= 1024 ** 3;
     let existingAgent = { installed: fields.existing === '1', healthy: false };
     if (existingAgent.installed && compatible) {
       const health = await exec(client, 'node /opt/vortex-node/current/server/node-cli.js check --config /etc/vortex-node.json', { signal, allowFailure: true });

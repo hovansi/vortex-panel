@@ -27,6 +27,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/storage-volumes.js', 'server/store.js', 'server/system-power.js',
   'server/version-catalog.js', 'server/versions.js', 'server/worlds.js', 'server/world-experiments.js',
   'public/world-voice.js',
+  'public/runtime-platform.js',
 ]);
 
 export const NODE_INSTALLER_FILES = Object.freeze([

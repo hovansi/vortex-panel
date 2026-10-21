@@ -17,7 +17,9 @@ import { WORLD_OPERATIONS_MESSAGES } from './world-experiments.js';
 import { TIMEZONE_MESSAGES } from './host-timezone.js';
 import { NETWORK_TUNING_MESSAGES } from './host-network-tuning.js';
 import { TLS_MESSAGES } from './host-tls.js';
+import { BEDROCK_PLATFORM_MESSAGE } from '../public/runtime-platform.js';
 export const PANEL_MESSAGES = Object.freeze([
+  BEDROCK_PLATFORM_MESSAGE,
   { id: 'panel.host.maintenance', vi: 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.', en: 'System changes are being applied. Wait for completion.' },
   { id: 'panel.host.realadmin', vi: 'Thao tác hệ thống cần tài khoản quản trị thật.', en: 'System changes require a real administrator account.' },
   { id: 'panel.node.uninstallrequired', vi: 'Cần gỡ Vortex và xác minh kết quả trước khi ngắt quản lý VPS.', en: 'Uninstall Vortex and verify the result before disconnecting this VPS.' },

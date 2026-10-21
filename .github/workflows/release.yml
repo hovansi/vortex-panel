@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,6 +76,21 @@ jobs:
           }
           appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
           NODE
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ endsWith(matrix.os, '-arm') && 'arm64' || 'x64' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          const arm = process.env.EXPECTED_ARCH === 'arm64';
+          const kernel = execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
+          const userspace = execFileSync('dpkg', ['--print-architecture'], { encoding: 'utf8' }).trim();
+          if (process.platform !== 'linux' || process.arch !== process.env.EXPECTED_ARCH
+              || kernel !== (arm ? 'aarch64' : 'x86_64') || userspace !== (arm ? 'arm64' : 'amd64')) {
+            throw new Error('The Node interpreter, kernel and Ubuntu userspace must run natively on the expected architecture.');
+          }
+          console.log(JSON.stringify({ platform: process.platform, node: process.arch, kernel, userspace }));
+          NODE
       - name: Install locked dependencies
         run: npm ci
       - name: Validate production source
@@ -83,9 +98,16 @@ jobs:
       - name: Check bootstrap syntax
         run: bash -n deploy/bootstrap.sh
 
+  native-arm:
+    name: Native ARM64 installation and applications
+    needs: verify
+    uses: ./.github/workflows/native-arm.yml
+    with:
+      python_managed: false
+
   publish:
     name: Build and publish verified assets
-    needs: verify
+    needs: [verify, native-arm]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

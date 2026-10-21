@@ -63,9 +63,24 @@ bootstrap_parse_args() {
   }
 }
 
+bootstrap_architecture() {
+  local machine native_arch
+  [[ $(uname -s) == Linux ]] || { echo 'Ubuntu Linux is required.' >&2; return 1; }
+  machine=$(uname -m)
+  case $machine in
+    x86_64|amd64) VORTEX_NODE_ARCH=x64; VORTEX_DPKG_ARCH=amd64;;
+    aarch64|arm64) VORTEX_NODE_ARCH=arm64; VORTEX_DPKG_ARCH=arm64;;
+    *) echo 'A 64-bit x86_64/amd64 or aarch64/arm64 host is required.' >&2; return 1;;
+  esac
+  native_arch=$(dpkg --print-architecture) || return 1
+  [[ $native_arch == "$VORTEX_DPKG_ARCH" ]] || {
+    echo 'The Ubuntu userspace architecture must match the supported 64-bit host architecture.' >&2; return 1;
+  }
+}
+
 bootstrap_preflight() {
   [[ $(id -u) == 0 ]] || { bootstrap_fail 'Run this bootstrap with sudo bash (or as root).'; return 1; }
-  [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { bootstrap_fail 'Ubuntu x86_64 is required.'; return 1; }
+  bootstrap_architecture || return 1
   [[ -r /etc/os-release ]] || { bootstrap_fail 'Unable to identify Ubuntu.'; return 1; }
   # shellcheck disable=SC1091
   source /etc/os-release

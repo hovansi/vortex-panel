@@ -384,7 +384,7 @@ export function createApplicationRuntime(options = {}) {
     initializing = (async () => {
       let phase = 'platform', systemFile = null;
       try {
-        if (platform !== 'linux' || uid !== 0) throw applicationIssue('APPLICATION_UNSUPPORTED');
+        if (platform !== 'linux' || uid !== 0 || !['x64', 'arm64'].includes(runtimeArch)) throw applicationIssue('APPLICATION_UNSUPPORTED');
         phase = 'resource-controller';
         await resourceController?.initialize?.();
         if ((await resourceController?.capabilities?.())?.pidsSupported !== true) throw applicationIssue('APPLICATION_UNSUPPORTED');

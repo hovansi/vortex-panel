@@ -10,7 +10,7 @@ Vortex Panel manages Minecraft Bedrock, Node.js and Python on the same nodes. Ap
 4. Choose **TCP port accepts connections** for a web service, or **Process is running** for a bot/background script. TCP readiness does not prove that an HTTP endpoint behaves correctly. Process readiness does not check a web endpoint.
 5. Start the application and inspect its console. Console input is a line written to the application's standard input; an application must implement a corresponding input handler to use it.
 
-The selected VPS must report working runtime isolation and the required resource/storage controls. New applications require managed-runtime support on that node. Catalog, artifact or verification failures do not silently select an older release or the host interpreter. Windows is a development/UI preview environment; application execution requires Ubuntu/Linux.
+Node.js and Python applications support native x86-64 and ARM64 (`aarch64`) Ubuntu nodes. The selected VPS must report working runtime isolation and the required resource/storage controls. New applications require managed-runtime support on that node. Catalog, artifact or verification failures do not silently select an older release or the host interpreter. Windows is a development/UI preview environment; application execution requires Ubuntu/Linux.
 
 ## Exact runtime lifecycle
 
@@ -18,9 +18,11 @@ Node.js selects the newest stable Current release, including newer stable releas
 
 Python's official Linux source is built under the application's dedicated non-root identity, in its own temporary 3 GiB volume and a capped build cgroup (0.5 CPU, 1 GiB RAM). This first build can take considerably longer than downloading Node.js. The admission check accounts for temporary build, archive and promotion disk space. Concurrent applications requesting the same exact artifact share the verified immutable runtime cache. Build output is available in the installation task. A failed or interrupted cleanup remains a recovery condition; it is not an instruction to replay the installation.
 
+Managed runtime executables are verified as ELF64 binaries for the node's architecture before promotion into the immutable cache and whenever that cache is reused. A foreign-architecture executable is rejected before application execution.
+
 The installer prepares the Ubuntu development tools required for Python. Existing installations can review the node's missing-prerequisites report before creating Python applications. These packages are compiler/header dependencies; the managed runtime does not replace the host Python or Node.js executable.
 
-Servers created before this feature retain their existing host runtime/virtual environment and startup configuration. Starting, editing or installing dependencies for an existing server does not resolve the latest version. A managed server keeps its exact saved pin after a later upstream release. This release does not provide an automatic in-place runtime upgrade or downgrade.
+Servers created before this feature retain their existing host runtime/virtual environment and startup configuration. Starting, editing or installing dependencies for an existing server does not resolve the latest version. A managed server keeps its exact saved pin after a later upstream release. This release does not provide an automatic in-place runtime upgrade or downgrade. Runtime pins also bind the CPU architecture. To move a project from x86-64 to ARM64 or back, create an application on the target node, restore its project files and reinstall dependencies there. Do not copy the managed interpreter cache or an existing `.venv` between architectures. Vortex does not add an emulator or rewrite old pins.
 
 ## Project management
 
@@ -56,10 +58,12 @@ Application backups preserve project files, data and configuration files. Startu
 
 ## Tiếng Việt
 
-Chọn **Tạo → Node.js/Python**, VPS và tài nguyên. VPS tự cấp cổng TCP trống ngẫu nhiên; tùy chọn nâng cao cho phép nhập cổng riêng. Ứng dụng mới tự tra bản ổn định mới nhất từ Node.js/Python chính thức và ghim bản đó riêng cho server. Server cũ giữ nguyên runtime/cấu hình đang có; không tự nâng cấp. Python được biên dịch không có quyền root trong volume/cgroup tạm có giới hạn, nên lần cài đầu có thể lâu hơn. Màn hình dự án có manifest, script, danh sách gói và trạng thái cài thư viện; ứng dụng đang chạy chỉ hiển thị bản kiểm tra đã lưu có nhãn rõ. Ứng dụng web dùng `PORT` và lắng nghe trên `0.0.0.0`. Mỗi ô tham số là một phần tử riêng. Bot/tác vụ nền chọn kiểm tra tiến trình; ứng dụng web có thể kiểm tra cổng TCP.
+Ứng dụng Node.js/Python hỗ trợ native trên Ubuntu x86-64 và ARM64. Chọn **Tạo → Node.js/Python**, VPS và tài nguyên. VPS tự cấp cổng TCP trống ngẫu nhiên; tùy chọn nâng cao cho phép nhập cổng riêng. Ứng dụng mới tự tra bản ổn định mới nhất từ Node.js/Python chính thức và ghim bản đó riêng cho server. Server cũ giữ nguyên runtime/cấu hình đang có; không tự nâng cấp. Python được biên dịch không có quyền root trong volume/cgroup tạm có giới hạn, nên lần cài đầu có thể lâu hơn. Màn hình dự án có manifest, script, danh sách gói và trạng thái cài thư viện; ứng dụng đang chạy chỉ hiển thị bản kiểm tra đã lưu có nhãn rõ. Ứng dụng web dùng `PORT` và lắng nghe trên `0.0.0.0`. Mỗi ô tham số là một phần tử riêng. Bot/tác vụ nền chọn kiểm tra tiến trình; ứng dụng web có thể kiểm tra cổng TCP.
 
 Ứng dụng và công cụ cài thư viện chạy trong sandbox không có quyền root, cùng giới hạn CPU/RAM/đĩa và tối đa 128 tiến trình. Mạng vẫn dùng chung host. Dừng ứng dụng để thao tác tệp, sửa khởi chạy, cài thư viện hoặc tạo/khôi phục bản sao. Biến bí mật giữ nguyên khi không nhập lại; **Xóa giá trị** là thao tác xóa rõ ràng. Sao lưu chứa tệp dự án, dữ liệu và tệp cấu hình, không kèm `node_modules`, `.venv`, `.home`; cài lại thư viện sau khôi phục. Thiết lập khởi chạy và biến môi trường lưu tại panel, không nằm trong ZIP; khôi phục giữ nguyên thiết lập ứng dụng hiện tại. Chưa hỗ trợ nhân bản ứng dụng.
 
 ## Primary references
+
+Architecture availability follows the [official Node.js platform list](https://github.com/nodejs/node/blob/main/BUILDING.md#platform-list) and [CPython build configuration](https://docs.python.org/3/using/configure.html). Runtime artifact URLs and checksums are resolved from those publishers at creation time.
 
 The startup/variable separation was informed by [Pterodactyl egg variables](https://docs.pterodactyl.io/v1/guides/egg-creation/egg-variables). Vortex uses its own typed application settings and does not import arbitrary egg startup commands. Dependency behavior follows the official [npm ci documentation](https://docs.npmjs.com/cli/commands/npm-ci/) and [Python venv documentation](https://docs.python.org/3/library/venv.html). The filesystem/namespace implementation uses [Bubblewrap's documented primitives](https://github.com/containers/bubblewrap); Bubblewrap alone is not a complete security policy, so the actual bindings, identity, environment and cgroup checks remain part of Vortex's implementation.

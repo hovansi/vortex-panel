@@ -74,9 +74,7 @@ export async function collectPublicFiles(sourceRoot = process.cwd()) {
       return;
     }
     need(info.isFile(), 'SOURCE_SPECIAL_ENTRY_REFUSED');
-    const workflow = /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml$/.test(name);
-    need(ROOT_FILES.includes(name) || workflow || !name.split('/').some(part => part.startsWith('.')), 'UNEXPECTED_HIDDEN_SOURCE_ENTRY');
-    if (name.startsWith('.github/')) need(workflow, 'UNEXPECTED_WORKFLOW_ENTRY');
+    need(ROOT_FILES.includes(name) || !name.split('/').some(part => part.startsWith('.')), 'UNEXPECTED_HIDDEN_SOURCE_ENTRY');
     need(!names.has(name.toLowerCase()), 'SOURCE_CASE_COLLISION');
     names.add(name.toLowerCase());
     const content = await sourceBytes(filename);
@@ -95,12 +93,6 @@ export async function collectPublicFiles(sourceRoot = process.cwd()) {
   for (const name of [...BUILD_FILES, ...DOCUMENT_FILES.map(name => `docs/${name}`)]) await add(name);
   await directory(path.join(root, 'docs/assets'));
   await add('docs/assets');
-  try {
-    await fs.lstat(path.join(root, '.github'));
-    await directory(path.join(root, '.github'));
-    await directory(path.join(root, '.github/workflows'));
-    await add('.github/workflows');
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   assertProductionFiles(files);
   return files;

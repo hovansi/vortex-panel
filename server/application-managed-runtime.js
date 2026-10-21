@@ -10,6 +10,11 @@ export const PYTHON_BUILD_TOOLS = Object.freeze(['/usr/bin/gcc', '/usr/bin/make'
 export const PYTHON_BUILD_HEADERS = Object.freeze(['/usr/include/openssl/ssl.h', '/usr/include/zlib.h', '/usr/include/bzlib.h', '/usr/include/readline/readline.h', '/usr/include/sqlite3.h', '/usr/include/lzma.h', '/usr/include/ncurses.h', '/usr/include/gdbm.h', '/usr/include/uuid/uuid.h', '/usr/include/zstd.h']);
 const noFile = error => error?.code === 'ENOENT';
 
+export function assertRuntimeELF(header, arch) {
+  const machine = { x64: 62, arm64: 183 }[arch];
+  if (!machine || !Buffer.isBuffer(header) || header.length < 64 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || header[4] !== 2 || header[5] !== 1 || header[6] !== 1 || ![2, 3].includes(header.readUInt16LE(16)) || header.readUInt16LE(18) !== machine || header.readUInt32LE(20) !== 1 || header.readUInt16LE(52) !== 64) throw applicationIssue('APPLICATION_RUNTIME_PIN');
+}
+
 // Cache contents are immutable, root-owned and read-only inside every sandbox.
 // The only downloaded code ever executed is launched by the caller after UID
 // drop, through its existing cgroup/private-mount/bubblewrap control path.
@@ -37,6 +42,15 @@ export function createManagedRuntimeStore({ dataDir, fs: io = fs, fetch: request
       else if ((bytes += stat.size) > 2 * 1024 ** 3) throw applicationIssue('APPLICATION_PATH');
     }
   }
+  async function verifyExecutable(selected, pin) {
+    await trustedFile(selected.hostExecutable, true);
+    const file = await io.open(selected.hostExecutable, 'r');
+    try {
+      const header = Buffer.alloc(64); let bytesRead = 0;
+      while (bytesRead < header.length) { const part = await file.read(header, bytesRead, header.length - bytesRead, bytesRead); if (!part.bytesRead) break; bytesRead += part.bytesRead; }
+      assertRuntimeELF(header.subarray(0, bytesRead), pin.arch);
+    } finally { await file.close(); }
+  }
   async function installed(input) {
     const pin = pinOf(input), target = path.join(root, keyOf(pin));
     if (!await exists(target)) return null;
@@ -45,7 +59,7 @@ export function createManagedRuntimeStore({ dataDir, fs: io = fs, fetch: request
     const saved = pinOf(manifest.pin);
     if (saved.kind !== pin.kind || saved.version !== pin.version || saved.sha256 !== pin.sha256 || manifest.schema !== 1 || manifest.validated !== true) throw applicationIssue('APPLICATION_RUNTIME_PIN');
     const selected = descriptor(pin, path.join(target, 'prefix'));
-    await canonical(selected.prefix); await trustedFile(selected.hostExecutable, true);
+    await canonical(selected.prefix); await verifyExecutable(selected, pin);
     if (pin.kind === 'nodejs') await trustedFile(path.join(selected.prefix, 'lib/node_modules/npm/bin/npm-cli.js'));
     // The private cache was verified as a whole on promotion. Revalidate every
     // start too: app processes cannot replace writable libraries under a pin.
@@ -106,7 +120,8 @@ export function createManagedRuntimeStore({ dataDir, fs: io = fs, fetch: request
           await options.beforePromote?.();
           await artifact(['promote', source, path.join(staging, 'prefix'), volume?.path || workspace, String(maximum)]); await verifyTree(path.join(staging, 'prefix'));
           if (typeof options.validate !== 'function') throw applicationIssue('APPLICATION_RUNTIME_BUILD');
-          await options.validate(descriptor(pin, path.join(staging, 'prefix')));
+          const selected = descriptor(pin, path.join(staging, 'prefix')); await verifyExecutable(selected, pin);
+          await options.validate(selected);
           await io.writeFile(path.join(staging, '.runtime.json'), JSON.stringify({ schema: 1, pin, validated: true, installedAt: new Date().toISOString() }) + '\n', { flag: 'wx', mode: 0o644 });
           if (await exists(path.join(root, key))) throw applicationIssue('APPLICATION_RUNTIME_PIN');
           await io.rename(staging, path.join(root, key));

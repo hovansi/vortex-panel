@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,6 +32,21 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+      - name: Confirm native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ endsWith(matrix.os, '-arm') && 'arm64' || 'x64' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          const arm = process.env.EXPECTED_ARCH === 'arm64';
+          const kernel = execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
+          const userspace = execFileSync('dpkg', ['--print-architecture'], { encoding: 'utf8' }).trim();
+          if (process.platform !== 'linux' || process.arch !== process.env.EXPECTED_ARCH
+              || kernel !== (arm ? 'aarch64' : 'x86_64') || userspace !== (arm ? 'arm64' : 'amd64')) {
+            throw new Error('The Node interpreter, kernel and Ubuntu userspace must run natively on the expected architecture.');
+          }
+          console.log(JSON.stringify({ platform: process.platform, node: process.arch, kernel, userspace }));
+          NODE
       - name: Install locked dependencies
         run: npm ci
       - name: Validate production source
@@ -43,3 +58,9 @@ jobs:
           node scripts/release.js --repository "$GITHUB_REPOSITORY" --output output/validation
           cd output/validation
           sha256sum --check --strict SHA256SUMS
+
+  native-arm:
+    name: Native ARM64 installation and applications
+    uses: ./.github/workflows/native-arm.yml
+    with:
+      python_managed: ${{ github.ref == 'refs/heads/codex/arm64-support' }}

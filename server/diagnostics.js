@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { normalizeArchitecture } from '../public/runtime-platform.js';
 
 const execute = promisify(execFile);
 const MiB = 1024 ** 2;
@@ -58,7 +59,7 @@ export async function collectDiagnostics({ dataDir, host }) {
     try { release = Object.fromEntries((await fs.readFile('/etc/os-release', 'utf8')).split('\n').filter(line => /^[A-Z_]+=/.test(line)).map(line => { const split = line.indexOf('='); return [line.slice(0, split), line.slice(split + 1).replace(/^"|"$/g, '')]; })); } catch {}
   }
   const ubuntuSupported = release.ID === 'ubuntu' && Number.parseFloat(release.VERSION_ID) >= 22.04;
-  add('platform', 'Ubuntu x86_64', linux && process.arch === 'x64' && ubuntuSupported ? 'ok' : 'warning', linux ? `${release.PRETTY_NAME || host.release || 'Linux'} · ${process.arch}${!ubuntuSupported ? '. Runtime được hỗ trợ trên Ubuntu 22.04 trở lên.' : ''}` : 'Host hiện tại dùng Windows/macOS; chỉ preview panel, không chạy runtime Bedrock Linux.');
+  add('platform', 'Ubuntu · x64 / ARM64', linux && normalizeArchitecture(process.arch) && ubuntuSupported ? 'ok' : 'warning', linux ? `${release.PRETTY_NAME || host.release || 'Linux'} · ${process.arch}${!ubuntuSupported ? '. Runtime được hỗ trợ trên Ubuntu 22.04 trở lên.' : ''}` : 'Host hiện tại dùng Windows/macOS; chỉ preview panel, không chạy runtime Bedrock Linux.');
   add('node', 'Node.js', Number(process.versions.node.split('.')[0]) >= 22 ? 'ok' : 'error', `${process.version} · yêu cầu Node.js 22 trở lên.`);
   try { await fs.access(dataDir, fs.constants.W_OK); add('data', 'Thư mục dữ liệu', 'ok', 'Tài khoản dịch vụ có quyền ghi dữ liệu.'); } catch { add('data', 'Thư mục dữ liệu', 'error', 'Tài khoản dịch vụ không có quyền ghi thư mục dữ liệu.'); }
   const freeBytes = Math.max(0, host.diskTotal - host.diskUsed);
@@ -74,7 +75,7 @@ export async function collectDiagnostics({ dataDir, host }) {
     linux ? tool('/usr/bin/systemctl', ['show', 'vortex-panel.service', '--property=ActiveState,SubState,MainPID', '--no-pager']) : Promise.resolve({ available: false, output: '' }),
     processes(),
   ]);
-  if (linux) add('dependencies', 'Thư viện Bedrock', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'ok' : 'warning', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'libcurl và libstdc++ đã được ghi nhận trên host.' : 'Chưa xác nhận libcurl/libstdc++. Chạy installer Ubuntu để cài dependency.');
+  if (linux && normalizeArchitecture(process.arch)==='x64') add('dependencies', 'Thư viện Bedrock', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'ok' : 'warning', libraries.available && /libcurl\.so/.test(libraries.output) && /libstdc\+\+\.so/.test(libraries.output) ? 'libcurl và libstdc++ đã được ghi nhận trên host.' : 'Chưa xác nhận libcurl/libstdc++. Chạy installer Ubuntu để cài dependency.');
   const serviceFields = Object.fromEntries(serviceResult.output.trim().split('\n').filter(line => line.includes('=')).map(line => line.split('=')));
   const addresses = Object.entries(os.networkInterfaces()).flatMap(([name, items]) => (items || []).filter(item => !item.internal).map(item => ({ name, address: item.address, family: item.family }))).slice(0, 32);
   return {

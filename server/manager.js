@@ -1,4 +1,5 @@
 import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
+import {bedrockRuntimeSupport,BEDROCK_PLATFORM_MESSAGE} from '../public/runtime-platform.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -48,6 +49,7 @@ const appRevision = server => createHash('sha256').update(JSON.stringify([server
 const MUTABLE = ['worlds/', 'config/', 'keys/', 'server.properties', 'allowlist.json', 'permissions.json', 'valid_known_packs.json', 'server_identity_key.pem'];
 const mutable = name => MUTABLE.some(prefix => name === prefix || (prefix.endsWith('/') && name.startsWith(prefix)));
 const now = () => new Date().toISOString();
+function assertBedrockRuntime(){if(!bedrockRuntimeSupport({platform:process.platform,arch:process.arch}).supported)fail(BEDROCK_PLATFORM_MESSAGE.vi,409);}
 function invalidateConsoleRules(runtime, command) {
   if (!runtime?.gameRules || !/^\/?(?:gamerule\s+\S+\s+\S+|(?:execute|function|script)\b)/i.test(String(command).trim())) return;
   runtime.gameRules.clear(); runtime.rulesRefresh = createGameRuleRefresh();
@@ -633,7 +635,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     validateNetwork(networkServers(), server.id, server);
     assertMemoryHeadroom({ host: await capacityHostInfo(), servers: capacityServers(), reserveRatio, minimumMemoryMiB: resourceControl.memory?.minMiB ?? 256 });
     if (closed) fail('Panel đang tắt.', 503);
-    if (!isApp(server) && (process.platform !== 'linux' || process.arch !== 'x64')) fail('Bedrock Linux yêu cầu Ubuntu 22.04+ x86-64. Hãy triển khai panel trên Ubuntu.', 409);
+    if (!isApp(server)) assertBedrockRuntime();
     const workingDirectory = runDirectory(server);
     let executable, plan, properties = {};
     if (isApp(server)) {
@@ -1807,7 +1809,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     async dashboard() {
       resourceControl = await resourceController.capabilities();
-      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
+      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { bedrockRuntime: bedrockRuntimeSupport({platform:process.platform,arch:process.arch}), linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
     },
     listServers: () => store.data.servers.map(publicServer),
     getServer: id => publicServer(get(id)),
@@ -1828,6 +1830,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await applicationRuntime.assertNoPendingBuilds?.();
       if (input && ['nodejs', 'python'].includes(input.kind)) return createApplicationServer(input);
       if (input?.kind !== undefined && input.kind !== 'bedrock') throw applicationIssue('APPLICATION_INPUT', 400);
+      assertBedrockRuntime();
       if (!input || input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA và Điều khoản trước khi cài đặt.');
       if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 || /[\r\n\0]/.test(input.name)) fail('Tên server phải có 1–80 ký tự.');
       const selection = await resolveVersion(input.version, input.channel || 'stable');
@@ -1930,6 +1933,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await applicationRuntime.assertNoPendingBuilds?.();
       const source = get(id); assertStopped(source);
       if (isApp(source)) fail('Application cloning is not available. Create a new application and restore its source files.', 409);
+      assertBedrockRuntime();
       if (input.eula !== true) fail('Bạn cần chấp nhận Minecraft EULA trước khi nhân bản.');
       if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80 || /[\r\n\0]/.test(input.name)) fail('Tên server phải có 1–80 ký tự.');
       const maxPlayers = source.maxPlayers;
@@ -2162,7 +2166,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     async setBackupLocked(id, backupId, input) { const server = get(id); const record = backupRecord(server, backupId); if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'locked') || typeof input.locked !== 'boolean') fail('Trạng thái khóa sao lưu phải là boolean.'); if (input.locked && record.locked !== true && (server.backups || []).filter(item => item.locked === true).length >= 50) fail('Mỗi server được khóa tối đa 50 bản sao lưu; hãy mở khóa bản không còn cần giữ.', 409); const updated = commitBackupFields(server, record, { locked: input.locked }, input.locked ? 'backup.lock' : 'backup.unlock'); return { backup: publicBackup(server, updated) }; },
     async deleteBackup(id, backupId) { const server = get(id); assertIdle(server); return deleteBackupRecord(server, backupRecord(server, backupId)); },
-    async upgrade(id, input) { const server = get(id); assertStopped(server); const selection = await resolveVersion(input.version, input.channel || server.channel); assertStopped(server); return job('update', server, progress => install(server, selection, progress, true)); },
+    async upgrade(id, input) { const server = get(id); assertStopped(server); assertBedrockRuntime(); const selection = await resolveVersion(input.version, input.channel || server.channel); assertStopped(server); return job('update', server, progress => install(server, selection, progress, true)); },
     versions: () => versionService.metadata(),
     refreshVersions: () => { assertOpen(); return versionService.refresh(); },
     reserveDiskWorkspace,
