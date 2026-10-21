@@ -116,8 +116,14 @@ jobs:
             });
           }
           async function assertRedirect(port){
-            const result=await new Promise((resolve,reject)=>{const req=http.get({hostname:'127.0.0.1',port:80,path:'/https-audit?query=1',headers:{Host:ip}},response=>{response.resume();response.on('end',()=>resolve({status:response.statusCode,location:response.headers.location}));});req.setTimeout(10000,()=>req.destroy(Error('HTTP redirect timeout.')));req.on('error',reject);});
-            assert.equal(result.status,308);assert.equal(result.location,origin(port)+'/https-audit?query=1');
+            const expected=origin(port)+'/https-audit?query=1',deadline=Date.now()+5000;let result;
+            for(let attempt=0;attempt<20;attempt++){
+              if(attempt>0&&Date.now()>=deadline)break;
+              result=await new Promise((resolve,reject)=>{const req=http.get({hostname:'127.0.0.1',port:80,path:'/https-audit?query=1',headers:{Host:ip}},response=>{response.resume();response.on('end',()=>resolve({status:response.statusCode,location:response.headers.location}));});req.setTimeout(1000,()=>req.destroy(Error('HTTP redirect timeout.')));req.on('error',reject);});
+              if(result.status===308&&result.location===expected)return;
+              if(attempt<19)await delay(250);
+            }
+            assert.equal(result.status,308);assert.equal(result.location,expected);
           }
           async function assertPortClosed(port){
             for(let attempt=0;attempt<20;attempt++){if(command('/usr/bin/ss',['-H','-ltnp','( sport = :'+port+' )']).trim()==='')return;await delay(250);}throw Error('The retired HTTPS port is still listening.');
