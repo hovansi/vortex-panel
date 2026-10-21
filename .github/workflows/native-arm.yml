@@ -61,13 +61,21 @@ jobs:
           import assert from 'node:assert/strict';
           import { execFileSync } from 'node:child_process';
           import { randomBytes } from 'node:crypto';
-          import { openSync, readSync, closeSync } from 'node:fs';
+          import { openSync, readSync, closeSync, lstatSync, realpathSync } from 'node:fs';
+          import { dirname, basename } from 'node:path';
           import { setTimeout as delay } from 'node:timers/promises';
           assert.equal(process.platform, 'linux');
           assert.equal(process.arch, 'arm64');
           assert.ok(['0', '1'].includes(process.argv[2]));
           assert.equal(execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim(), 'aarch64');
           const pythonManaged = process.argv[2] === '1';
+          function trustMetadata(filename, scope) {
+            try { const value = lstatSync(filename); return { scope, uid: value.uid, gid: value.gid, mode: value.mode & 0o7777, nlink: value.nlink, type: value.isDirectory() ? 'directory' : value.isFile() ? 'file' : value.isSymbolicLink() ? 'symlink' : 'other', canonical: realpathSync(filename) === filename }; }
+            catch (error) { return { scope, available: false, code: ['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code) ? error.code : 'INSPECTION_FAILED' }; }
+          }
+          const nodePrefix = dirname(dirname(process.execPath)), ancestry = [];
+          for (let cursor = process.execPath; ancestry.length < 16; cursor = dirname(cursor)) { ancestry.unshift(cursor); if (cursor === dirname(cursor)) break; }
+          console.log(JSON.stringify({ stage: 'native-node-trust', executable: process.execPath, prefixLayout: basename(process.execPath) === 'node' && basename(dirname(process.execPath)) === 'bin' && (['/usr', '/usr/local'].includes(nodePrefix) || /^node-v?\d+\.\d+\.\d+-linux-(?:x64|arm64)$/.test(basename(nodePrefix))), version: execFileSync(process.execPath, ['--version'], { encoding: 'utf8' }).trim(), ancestors: ancestry.map((filename, index) => trustMetadata(filename, 'node-ancestor-' + index)), npm: trustMetadata(nodePrefix + '/lib/node_modules/npm/bin/npm-cli.js', 'npm-cli') }));
           const hostPython = JSON.parse(execFileSync('/usr/bin/python3', ['-I', '-c', 'import json,platform,ssl,sqlite3,venv; print(json.dumps({"arch":platform.machine(),"version":platform.python_version(),"ssl":ssl.OPENSSL_VERSION}))'], { encoding: 'utf8' }));
           assert.equal(hostPython.arch, 'aarch64');
           console.log(JSON.stringify({ stage: 'native-host', node: process.version, nodeArch: process.arch, hostPython, managedPythonRequested: pythonManaged }));

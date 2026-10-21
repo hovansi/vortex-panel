@@ -589,6 +589,8 @@ if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VOR
   }
   install -d -m 0755 -- "$PANEL_NODE_DIR"
   tar -xJf "$NODE_TEMP/$NODE_FILE" --no-same-owner --no-same-permissions --strip-components=1 -C "$PANEL_NODE_DIR"
+  chown -hR -- root:root "$PANEL_NODE_DIR"
+  chmod -R a+rX,go-w -- "$PANEL_NODE_DIR"
   export PATH="$PANEL_NODE_DIR/bin:$PATH"
 fi
 

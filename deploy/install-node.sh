@@ -266,6 +266,55 @@ else
   install -m 0755 "$SOURCE_DIR/deploy/application-isolation.py" "$ISOLATION_HELPER"
   NEW_ISOLATION_HELPER=true
 fi
+# BEGIN previous worker interpreter
+# Reuse only the native private interpreter already proven by this worker's
+# fixed service and exclusive installer receipt. Never adopt a shared runtime.
+if [[ -f $UNIT_FILE ]]; then
+  PREVIOUS_NODE_BIN=$(python3 - "$UNIT_FILE" "$TLS_DIR/install-manifest.json" "$CONFIG_FILE" "$INSTALL_ROOT" "$VORTEX_NODE_ARCH" <<'PY'
+import hashlib, json, os, pathlib, re, stat, sys
+unit, manifest, config, root = map(pathlib.Path, sys.argv[1:5])
+arch = sys.argv[5]
+def trusted(path, private=False, maximum=256 * 1024 ** 2):
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise SystemExit('Previous worker interpreter evidence has unsafe ancestors.')
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0 or info.st_mode & (0o077 if private else 0o022) or info.st_size > maximum:
+        raise SystemExit('Previous worker interpreter evidence is unsafe.')
+    return info
+trusted(unit, maximum=65536)
+starts = [line[len('ExecStart='):] for line in unit.read_text().splitlines() if line.startswith('ExecStart=')]
+if len(starts) != 1:
+    raise SystemExit('Previous worker service start command is ambiguous.')
+pattern = '(' + re.escape(str(root)) + r'/tools/runtime-[0-9]{8}T[0-9]{6}Z-[1-9][0-9]*/node-v22\.[0-9]+\.[0-9]+-linux-' + re.escape(arch) + '/bin/node) ' + re.escape(str(root / 'current/server/node-cli.js')) + ' serve'
+match = re.fullmatch(pattern, starts[0])
+if not match or not manifest.exists() or not config.exists():
+    raise SystemExit(0)
+trusted(manifest, private=True, maximum=16 * 1024 ** 2)
+trusted(config, private=True, maximum=65536)
+receipt, settings = json.loads(manifest.read_text()), json.loads(config.read_text())
+uuid_pattern = r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}'
+if receipt.get('schemaVersion') != 1 or receipt.get('product') != 'vortex-node' or receipt.get('role') != 'worker' or not re.fullmatch(uuid_pattern, str(receipt.get('installId', '')), re.I) or not re.fullmatch(uuid_pattern, str(settings.get('nodeId', '')), re.I) or receipt.get('nodeId') != settings.get('nodeId') or settings.get('schemaVersion') != 1 or not isinstance(receipt.get('components'), list) or len(receipt['components']) > 50000:
+    raise SystemExit('Previous worker interpreter ownership receipt does not match this node.')
+target = pathlib.Path(match[1])
+info = trusted(target)
+if not os.access(target, os.X_OK):
+    raise SystemExit('Previous worker interpreter is not executable.')
+hasher = hashlib.sha256()
+with target.open('rb') as stream:
+    for block in iter(lambda: stream.read(1024 ** 2), b''):
+        hasher.update(block)
+expected = {'path': str(target), 'kind': 'file', 'dev': info.st_dev, 'ino': info.st_ino, 'mode': stat.S_IMODE(info.st_mode), 'uid': 0, 'sha256': hasher.hexdigest(), 'existedBefore': False, 'createdByInstallId': receipt['installId']}
+rows = [row for row in receipt['components'] if isinstance(row, dict) and row.get('path') == str(target)]
+if len(rows) != 1 or any(rows[0].get(key) != value for key, value in expected.items()):
+    raise SystemExit('Previous worker interpreter differs from its exclusive installer receipt.')
+print(target)
+PY
+  )
+  if [[ -n $PREVIOUS_NODE_BIN ]]; then export PATH="${PREVIOUS_NODE_BIN%/node}:$PATH"; fi
+fi
+# END previous worker interpreter
 NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
 NODE_ARCH=$(node -p 'process.arch' 2>/dev/null || true)
 if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VORTEX_NODE_ARCH" ]]; then
