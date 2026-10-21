@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.23.2'
+        default: 'v0.23.5'
         type: string
 
 permissions:
@@ -224,7 +224,7 @@ jobs:
           }
           checkTag();
           const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
-          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nProduction source validation passed with Node.js 22 on Ubuntu 22.04 and 24.04. The release contains the operational panel and installation tooling. Validation is distinct from live gameplay and a fresh VPS installation.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
+          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nNative x86-64 and ARM64 support for the panel, linked agents, Node.js and Python applications. Installers select the host architecture automatically; existing application runtime pins remain unchanged. Official Minecraft Bedrock runs on x86-64 nodes, including nodes managed by an ARM64 panel.\n\nRelease checks validate production source and packages with Node.js 22 on Ubuntu 22.04 x64 and Ubuntu 24.04 x64/ARM64. Native ARM64 checks install the panel and worker, exercise managed Node.js HTTP start/restart/stop, and verify resource controls, agent credentials and pinned TLS. No live Minecraft gameplay validation is implied.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
           const creation = join(process.env.RUNNER_TEMP, 'vortex-release-create.json');
           writeFileSync(creation, JSON.stringify({ tag_name: tag, target_commitish: head, name: `Vortex Panel ${pkg.version}`,
             body: readFileSync(notes, 'utf8'), draft: true, prerelease: false }), { flag: 'wx' });

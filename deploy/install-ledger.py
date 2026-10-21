@@ -109,6 +109,28 @@ def packages():
     return rows
 
 
+
+def ownership_context(path, row):
+    component = 'other'
+    for layout in LAYOUT.values():
+        source = layout['source']
+        if path == source:
+            component = 'source-root'
+        elif path == source + '/releases' or path.startswith(source + '/releases/'):
+            component = 'source-release'
+        elif path == source + '/runtime' or path.startswith(source + '/runtime/'):
+            component = 'source-runtime'
+        elif path == source + '/.npm-cache' or path.startswith(source + '/.npm-cache/'):
+            component = 'source-cache'
+        elif path == layout['config'] or path.startswith(layout['config'] + '/'):
+            component = 'config'
+        elif path == '/etc/systemd/system/' + layout['unit']:
+            component = 'fixed-helper'
+    if path in EXTRA or path in ['/etc/vortex-panel.env', '/etc/vortex-node.json']:
+        component = 'fixed-helper'
+    return {'component': component, 'uid': row['uid'], 'mode': row['mode']}
+
+
 def identity(path, content=True):
     path = Path(path)
     info = path.lstat()
@@ -226,7 +248,11 @@ def finalize(args):
     rows = {row['path']: row for row in (previous or {}).get('components', [])}
     def record(path, origin):
         row = identity(path)
-        require(row['uid'] == 0 and (row['kind'] == 'symlink' or not row['mode'] & 0o022), 'Installed source ownership is unsafe.')
+        try:
+            require(row['uid'] == 0 and (row['kind'] == 'symlink' or not row['mode'] & 0o022), 'Installed source ownership is unsafe.')
+        except EvidenceError as error:
+            error.ownership = ownership_context(str(path), row)
+            raise
         row.update(createdByInstallId=install_id, existedBefore=False, origin=origin)
         rows[str(path)] = row
         require(len(rows) <= 150000, 'Installer evidence exceeds component bound.')
@@ -315,6 +341,12 @@ def failure_payload(error):
     # can contain package output, paths or private file contents and stay hidden.
     if isinstance(error, EvidenceError):
         value['reason'] = str(error)
+        ownership = getattr(error, 'ownership', None)
+        if (isinstance(ownership, dict) and set(ownership) == {'component', 'uid', 'mode'}
+                and ownership['component'] in ['source-root', 'source-release', 'source-runtime', 'source-cache', 'fixed-helper', 'config', 'other']
+                and type(ownership['uid']) is int and 0 <= ownership['uid'] < 2 ** 32
+                and type(ownership['mode']) is int and 0 <= ownership['mode'] <= 0o7777):
+            value['ownership'] = dict(ownership)
     else:
         value['category'] = ('filesystem' if isinstance(error, OSError) else
                              'command' if isinstance(error, subprocess.SubprocessError) else
