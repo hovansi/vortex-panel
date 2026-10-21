@@ -28,16 +28,20 @@ EXTRA = ['/usr/local/libexec/vortex-host-zram.py', '/usr/local/libexec/vortex-ap
 MAINTENANCE_CAPTURE = ['/etc/sysctl.d/70-vortex-panel-network.conf', '/etc/sysctl.d/70-vortex-node-network.conf',
                        '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer']
 UUID = re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$', re.I)
-INSTALLER_PACKAGES = set('ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev nginx'.split())
+INSTALLER_PACKAGES = set('ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev nginx'.split())
 # Optional shared access packages lack an exact per-APT transaction receipt;
 # conservatively leave them unproven instead of adopting a concurrent install.
 ROLE_PACKAGES = {'worker': INSTALLER_PACKAGES - {'nginx'},
-                 'panel': set('ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod iproute2 gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev'.split())}
+                 'panel': set('ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod iproute2 gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev'.split())}
+
+
+class EvidenceError(ValueError):
+    pass
 
 
 def require(condition, text):
     if not condition:
-        raise ValueError(text)
+        raise EvidenceError(text)
 
 
 def run(args):
@@ -304,6 +308,26 @@ def finalize(args):
     return {'ok': True, 'manifest': str(target), 'installId': install_id, 'baselineUnknown': value['baselineUnknown']}
 
 
+
+def failure_payload(error):
+    value = {'ok': False, 'error': 'Private installer evidence could not be verified; baseline restoration was not claimed.'}
+    # Only require() supplies a fixed source message. Other exception strings
+    # can contain package output, paths or private file contents and stay hidden.
+    if isinstance(error, EvidenceError):
+        value['reason'] = str(error)
+    else:
+        value['category'] = ('filesystem' if isinstance(error, OSError) else
+                             'command' if isinstance(error, subprocess.SubprocessError) else
+                             'json' if isinstance(error, json.JSONDecodeError) else
+                             'value' if isinstance(error, ValueError) else 'unexpected')
+        trace = error.__traceback__
+        while trace:
+            if trace.tb_frame.f_code.co_filename == __file__:
+                value['inspection'] = {'function': trace.tb_frame.f_code.co_name, 'line': trace.tb_lineno}
+            trace = trace.tb_next
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('operation', choices=['capture', 'finalize', 'validate-capture', 'capture-resume'])
@@ -324,6 +348,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        print(json.dumps({'ok': False, 'error': 'Private installer evidence could not be verified; baseline restoration was not claimed.'}))
+    except Exception as error:
+        print(json.dumps(failure_payload(error)))
         raise SystemExit(1)
