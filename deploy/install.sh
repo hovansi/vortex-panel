@@ -602,7 +602,7 @@ rsync -a --exclude node_modules --exclude data --exclude .env --exclude .git --e
 # rsync -a also copies the source root's mode (for example a private 0700 upload).
 chmod 0755 "$INSTALL_DIR"
 cd -- "$INSTALL_DIR"
-npm ci --cache "$INSTALL_ROOT/.npm-cache" --omit=dev --ignore-scripts
+npm ci --cache "$RECOVERY_DIR/npm-cache" --omit=dev --ignore-scripts
 apply_tree_ownership root root "$INSTALL_DIR"
 chmod -R go-w "$INSTALL_DIR"
 chmod a+r "$INSTALL_DIR/package.json"

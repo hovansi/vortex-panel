@@ -342,7 +342,7 @@ for (const relative of NODE_RUNTIME_FILES) {
 }
 NODE
 cd -- "$INSTALL_DIR"
-npm ci --cache "$INSTALL_ROOT/.npm-cache" --omit=dev --ignore-scripts
+npm ci --cache "$RECOVERY_DIR/npm-cache" --omit=dev --ignore-scripts
 chown -hR root:root "$INSTALL_DIR"
 chmod 0755 "$INSTALL_DIR"
 chmod -R go-w "$INSTALL_DIR"
