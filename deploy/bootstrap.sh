@@ -78,9 +78,31 @@ bootstrap_architecture() {
   }
 }
 
+# BEGIN fixed source parent
+# Native runtimes must never descend from a shared-writable system directory.
+# Inspect the existing parents before creating locks, receipts or source files.
+vortex_source_parent_preflight() {
+  local source_parent source_parent_info source_parent_owner source_parent_mode
+  for source_parent in / /opt; do
+    if [[ $source_parent == /opt && ! -e $source_parent && ! -L $source_parent ]]; then continue; fi
+    [[ -d $source_parent && ! -L $source_parent ]] || {
+      printf 'Source parent %s must already exist as a real directory without symlinks.\n' "$source_parent" >&2; return 1;
+    }
+    source_parent_info=$(LC_ALL=C stat -c '%u:%a' -- "$source_parent") || {
+      printf 'Unable to inspect source parent %s; no installation changes were made.\n' "$source_parent" >&2; return 1;
+    }
+    IFS=: read -r source_parent_owner source_parent_mode <<< "$source_parent_info"
+    [[ $source_parent_owner == 0 && $source_parent_mode =~ ^[0-7]{3,4}$ ]] && (( (8#$source_parent_mode & 0022) == 0 )) || {
+      printf 'Source parent %s must be root-owned without group or other write access. Review its existing ownership and permissions before installing.\n' "$source_parent" >&2; return 1;
+    }
+  done
+}
+# END fixed source parent
+
 bootstrap_preflight() {
   [[ $(id -u) == 0 ]] || { bootstrap_fail 'Run this bootstrap with sudo bash (or as root).'; return 1; }
   bootstrap_architecture || return 1
+  vortex_source_parent_preflight || return 1
   [[ -r /etc/os-release ]] || { bootstrap_fail 'Unable to identify Ubuntu.'; return 1; }
   # shellcheck disable=SC1091
   source /etc/os-release

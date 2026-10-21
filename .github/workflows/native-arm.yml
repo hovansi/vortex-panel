@@ -35,6 +35,20 @@ jobs:
           test "$(uname -m)" = aarch64
           test "$(dpkg --print-architecture)" = arm64
           test -d /run/systemd/system
+      - name: Prepare trusted runtime ancestry on the disposable runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Hosted runner tooling exposes shared directories. This disposable VM
+          # uses the root-owned 0755 ancestry required on a production Ubuntu host.
+          for directory in /opt /mnt; do
+            test -d "$directory"
+            test ! -L "$directory"
+            test "$(stat -c '%u' -- "$directory")" = 0
+            printf 'Disposable runner %s: %s -> 0:755\n' "$directory" "$(stat -c '%u:%a' -- "$directory")"
+            sudo chmod 0755 -- "$directory"
+            test "$(stat -c '%u:%a' -- "$directory")" = 0:755
+          done
       - name: Install the panel with its production installer
         shell: bash
         run: |
@@ -259,4 +273,57 @@ jobs:
           assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-node.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[3]);
           console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, rejectedInvalidCredential: true, translatedBedrockRejectedWithoutAllocation: true, panelUninterrupted: true, passed: true }));
+          NODE
+      - name: Verify native worker update preserves interpreter and configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          runtime_count() {
+            if sudo test -d /opt/vortex-node/tools; then
+              sudo find -P /opt/vortex-node/tools -mindepth 1 -maxdepth 1 -type d -name 'runtime-*' -printf . | wc -c
+            else printf '0'; fi
+          }
+          PANEL_PID=$(sudo systemctl show vortex-panel.service --property=MainPID --value)
+          BEFORE_PID=$(sudo systemctl show vortex-node.service --property=MainPID --value)
+          [[ $BEFORE_PID =~ ^[1-9][0-9]*$ ]]
+          BEFORE_NODE=$(sudo readlink -f "/proc/$BEFORE_PID/exe")
+          BEFORE_COUNT=$(runtime_count)
+          BEFORE_CONFIG=$(sudo sha256sum -- /etc/vortex-node.json)
+          BEFORE_CERT=$(sudo sha256sum -- /etc/vortex-node/tls.crt)
+          if ! sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install-node.sh \
+            --endpoint https://127.0.0.1:8443 \
+            > "$RUNNER_TEMP/vortex-native-worker-update.log" 2>&1; then
+            echo 'Native ARM64 worker update failed; private connection details remain in the disposable VM.' >&2
+            sudo systemctl show vortex-node.service --property=ActiveState --property=SubState --property=Result >&2
+            exit 1
+          fi
+          sudo systemctl is-active --quiet vortex-node.service
+          AFTER_PID=$(sudo systemctl show vortex-node.service --property=MainPID --value)
+          [[ $AFTER_PID =~ ^[1-9][0-9]*$ && $AFTER_PID != "$BEFORE_PID" ]]
+          AFTER_NODE=$(sudo readlink -f "/proc/$AFTER_PID/exe")
+          [[ $AFTER_NODE == "$BEFORE_NODE" && $(runtime_count) == "$BEFORE_COUNT" ]]
+          [[ $(sudo sha256sum -- /etc/vortex-node.json) == "$BEFORE_CONFIG" ]]
+          [[ $(sudo sha256sum -- /etc/vortex-node/tls.crt) == "$BEFORE_CERT" ]]
+          sudo "$AFTER_NODE" --input-type=module - "$PANEL_PID" "$AFTER_PID" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readNodeConfig, nodeConnection } from '/opt/vortex-node/current/server/node-cli.js';
+          import { requestNode } from '/opt/vortex-node/current/server/node-transport.js';
+          assert.equal(process.arch, 'arm64');
+          const config = readNodeConfig('/etc/vortex-node.json');
+          const connection = nodeConnection(config, 'https://127.0.0.1:' + config.port);
+          assert.match(connection.fingerprint, /^[A-F0-9]{64}$/);
+          const identity = await requestNode(connection);
+          assert.equal(identity.service, 'vortex-node');
+          assert.equal(identity.protocol, 1);
+          assert.equal(identity.nodeId, config.nodeId);
+          assert.equal(identity.processId, Number(process.argv[3]));
+          const snapshot = await requestNode(connection, { path: '/api/node/snapshot' });
+          assert.equal(snapshot.host.arch, 'arm64');
+          assert.equal(snapshot.capabilities.applicationRuntime.supported, true);
+          assert.equal(snapshot.capabilities.bedrockRuntime.supported, false);
+          assert.equal(snapshot.servers.length, 0);
+          assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
+          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualWorkerUpdated: true, interpreterPreserved: true, runtimeDirectoryCountPreserved: true, configurationPreserved: true, pinnedTLSIdentityPassed: true, panelUninterrupted: true, passed: true }));
           NODE

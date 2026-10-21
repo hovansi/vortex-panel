@@ -34,6 +34,27 @@ vortex_host_architecture() {
 }
 vortex_host_architecture
 # END host architecture
+# BEGIN fixed source parent
+# Native runtimes must never descend from a shared-writable system directory.
+# Inspect the existing parents before creating locks, receipts or source files.
+vortex_source_parent_preflight() {
+  local source_parent source_parent_info source_parent_owner source_parent_mode
+  for source_parent in / /opt; do
+    if [[ $source_parent == /opt && ! -e $source_parent && ! -L $source_parent ]]; then continue; fi
+    [[ -d $source_parent && ! -L $source_parent ]] || {
+      printf 'Source parent %s must already exist as a real directory without symlinks.\n' "$source_parent" >&2; return 1;
+    }
+    source_parent_info=$(LC_ALL=C stat -c '%u:%a' -- "$source_parent") || {
+      printf 'Unable to inspect source parent %s; no installation changes were made.\n' "$source_parent" >&2; return 1;
+    }
+    IFS=: read -r source_parent_owner source_parent_mode <<< "$source_parent_info"
+    [[ $source_parent_owner == 0 && $source_parent_mode =~ ^[0-7]{3,4}$ ]] && (( (8#$source_parent_mode & 0022) == 0 )) || {
+      printf 'Source parent %s must be root-owned without group or other write access. Review its existing ownership and permissions before installing.\n' "$source_parent" >&2; return 1;
+    }
+  done
+}
+# END fixed source parent
+vortex_source_parent_preflight
 # BEGIN installer transaction lock
 # Serialize the complete installer with host memory and native erasure. Never
 # replace or unlink this shared lock inode, including after failed installation.
