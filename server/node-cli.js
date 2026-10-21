@@ -87,6 +87,12 @@ export async function runNodeCli(args = process.argv.slice(2)) {
   return runtime;
 }
 
-if (process.argv[1] && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))) {
+function isDirectInvocation(filename = process.argv[1]) {
+  if (typeof filename !== 'string' || !filename || filename === '-') return false;
+  try { return fs.realpathSync(path.resolve(filename)) === fs.realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+}
+
+if (isDirectInvocation()) {
   try { await runNodeCli(); } catch { console.error('Node command failed. Check private configuration, file permissions, arguments and node service journal.'); process.exitCode = 1; }
 }
