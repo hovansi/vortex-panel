@@ -84,7 +84,14 @@ jobs:
           const {WebSocket}=require('ws');
           const certFile='/etc/vortex-panel/tls/ip.crt',keyFile='/etc/vortex-panel/tls/ip.key';
           const environment='/etc/vortex-panel.env',receiptFile='/etc/vortex-panel/access.json',proxyFile='/etc/nginx/conf.d/vortex-panel.conf';
+          const captureFile='/run/vortex-install-ledger-panel.json',resumeFile='/run/vortex-install-ledger-panel-resume.json';
           const sha=value=>createHash('sha256').update(value).digest('hex');
+          function assertAbsent(file){assert.throws(()=>fs.lstatSync(file),error=>error.code==='ENOENT','Unexpected preserved installer evidence.');}
+          function reviewedCapture(){
+            const info=fs.lstatSync(captureFile);assert.ok(info.isFile()&&info.uid===0&&info.nlink===1&&(info.mode&0o777)===0o600&&info.size>0&&info.size<16*1024*1024,'The expected private installer baseline is not trusted.');assertAbsent(resumeFile);
+            const bytes=fs.readFileSync(captureFile),value=JSON.parse(bytes);assert.equal(value.schemaVersion,1);assert.equal(value.role,'panel');assert.equal(value.freshInstall,false);const fingerprint=sha(bytes);
+            const validation=JSON.parse(command('/usr/bin/python3',['-I','-B',path.join(source,'deploy/install-ledger.py'),'validate-capture','--role','panel','--capture-sha256',fingerprint]));assert.equal(validation.ok,true);assert.equal(validation.captureSHA256,fingerprint);return fingerprint;
+          }
           const sensitive=new Set();
           function diagnostics(label,text){let safe=String(text||'');for(const value of sensitive)if(value)safe=safe.replaceAll(value,'[redacted]');const lines=safe.split('\n').slice(-80).map(line=>/(?:setup token|password|authorization|set-cookie|csrf|session token)/i.test(line)?'[redacted credential-related diagnostic line]':line);console.error('Bounded diagnostics: '+label+'\n'+lines.join('\n'));}
           function command(file,args,timeout=30000){try{return execFileSync(file,args,{encoding:'utf8',timeout,maxBuffer:2*1024*1024});}catch(error){diagnostics(path.basename(file),error.stderr);throw Error('A fixed HTTPS verification command failed: '+path.basename(file));}}
@@ -158,8 +165,9 @@ jobs:
             const signedOut=await request(port,'/api/auth/logout',{method:'POST',headers,body:{}});assert.equal(signedOut.status,200);
             console.log(JSON.stringify({stage:'authenticated-https',publicPort:port,cookieAndCsrfPassed:true,webSocketPassed:true,accountPreserved:!first}));
           }
-          function install(label,port,allowFailure=false){
-            const args=[path.join(source,'deploy/install.sh'),'--self-signed','--no-network-tuning',...(port===undefined?[]:['--public-port',String(port)])];
+          function install(label,port,allowFailure=false,resumeLedger=''){
+            assert.ok(resumeLedger===''||/^[a-f0-9]{64}$/.test(resumeLedger));
+            const args=[path.join(source,'deploy/install.sh'),'--self-signed','--no-network-tuning',...(port===undefined?[]:['--public-port',String(port)]),...(resumeLedger?['--resume-ledger',resumeLedger]:[])];
             const result=spawnSync('/usr/bin/bash',args,{encoding:'utf8',timeout:20*60*1000,maxBuffer:16*1024*1024,env:{PATH:'/usr/sbin:/usr/bin:/sbin:/bin',HOME:'/root',LANG:'C',LC_ALL:'C'}});fs.writeFileSync(path.join(temporary,'vortex-https-'+label+'.log'),String(result.stdout||'')+String(result.stderr||''),{mode:0o600});
             if(result.error||!allowFailure&&result.status!==0){diagnostics(label,String(result.stdout||'')+String(result.stderr||''));throw Error('The installer did not complete; its private log was retained.');}return result.status;
           }
@@ -191,14 +199,19 @@ jobs:
           assert.doesNotThrow(()=>assertAvailablePanelPorts({port:19191,portV6:19192,transport:'raknet'},[19191]));
           assert.throws(()=>assertAvailablePanelPorts({port:19132,portV6:19133,transport:'raknet',debugPort:19191},[19191]),error=>error.status===409);
           await assertState(19191,'fresh-default');await assertPortClosed(443);await assertForwardedHeaders(19191);await assertAuthentication(19191,true);
+          assertAbsent(captureFile);assertAbsent(resumeFile);
           const beforeConflict=snapshot();const blocker=net.createServer();await new Promise((resolve,reject)=>{blocker.once('error',reject);blocker.listen(443,'0.0.0.0',resolve);});
           try{assert.notEqual(install('conflict',443,true),0,'A foreign target listener was overwritten.');const after=snapshot();for(const key of ['environment','proxy','receiptBytes','pid'])assert.equal(after[key],beforeConflict[key],'Conflict detection changed an existing component.');assertIdentity(after);}finally{await new Promise(resolve=>blocker.close(resolve));}
+          const reviewedCaptureSHA=reviewedCapture(),beforeRetry=snapshot();
+          assert.notEqual(install('pending-baseline',443,true),0,'An ordinary retry overwrote preserved installer evidence.');assert.ok(fs.readFileSync(path.join(temporary,'vortex-https-pending-baseline.log'),'utf8').includes('A previous installer baseline exists.'));assert.equal(reviewedCapture(),reviewedCaptureSHA);const afterRetry=snapshot();for(const key of ['environment','proxy','receiptBytes','pid'])assert.equal(afterRetry[key],beforeRetry[key],'A refused retry changed an existing component.');assertIdentity(afterRetry);
           await assertState(19191,'conflict-preserved');
           await assertInjectedRollback();
-          install('to-443',443);await assertState(443,'explicit-legacy-port');await assertPortClosed(19191);await assertAuthentication(443);
+          assert.equal(reviewedCapture(),reviewedCaptureSHA);
+          install('to-443',443,false,reviewedCaptureSHA);assertAbsent(captureFile);assertAbsent(resumeFile);await assertState(443,'explicit-legacy-port');await assertPortClosed(19191);await assertAuthentication(443);
           install('ordinary-preserve');await assertState(443,'ordinary-upgrade-preserves-443');await assertAuthentication(443);
           install('to-19191',19191);await assertState(19191,'explicit-public-port');await assertPortClosed(443);await assertForwardedHeaders(19191);await assertAuthentication(19191);
-          console.log(JSON.stringify({passed:true,freshDefault:19191,legacy443Preserved:true,ownedRoundTripPassed:true,listenerConflictPreserved:true,injectedReloadRollbackPassed:true,backendUnchanged:3000,automaticCertificateIssuance:false,externalReachabilityClaimed:false}));
+          assertAbsent(captureFile);assertAbsent(resumeFile);
+          console.log(JSON.stringify({passed:true,freshDefault:19191,legacy443Preserved:true,ownedRoundTripPassed:true,listenerConflictPreserved:true,reviewedBaselineRecoveryPassed:true,injectedReloadRollbackPassed:true,backendUnchanged:3000,automaticCertificateIssuance:false,externalReachabilityClaimed:false}));
           NODE
       - name: Bounded public service diagnostics on failure
         if: failure()
