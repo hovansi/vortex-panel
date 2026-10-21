@@ -1,6 +1,6 @@
 # Vortex Panel Nodes
 
-Nodes let one Vortex control panel manage Bedrock servers on several Ubuntu VPS machines. The panel's own machine remains **Local**. Existing local server IDs, files, settings and ports are not migrated when Nodes is enabled.
+Nodes let one Vortex control panel manage Minecraft Bedrock servers and Node.js/Python applications on several Ubuntu VPS machines. The panel's own machine remains **Local**. Existing local server IDs, files, settings and ports are not migrated when Nodes is enabled.
 
 ## Connect a VPS
 
@@ -14,11 +14,13 @@ An existing healthy agent can be linked again without reinstalling it or changin
 
 ### Manual installation
 
-1. Open **Nodes → Install node agent** as an administrator and download the authenticated agent source bundle. Copy and extract it on the target Ubuntu 22.04+ x86_64 VPS.
+1. Open **Nodes → Install node agent** as an administrator and download the authenticated agent source bundle. Copy and extract it on the target Ubuntu 22.04+ x86-64 or ARM64 (`aarch64`) VPS with matching 64-bit userspace.
 2. Run `sudo bash deploy/install-node.sh --endpoint https://YOUR_VPS_IP:8443` there. The installer creates a separate `vortex-node.service`, private configuration, TLS key/certificate and data directory. It leaves the control panel service/data separate.
 3. The target VPS terminal intentionally prints a private connection record: endpoint, token, certificate SHA-256 fingerprint and agent identity. Keep the token private. Allow the central panel to reach TCP 8443; game ports must also be allowed for players. Prefer restricting agent traffic to the panel's IP or a private VPN.
 4. Back in **Nodes → Add node**, enter its name, endpoint, game/public address, optional location, token and exact fingerprint. The panel verifies the TLS connection, credential and agent identity before storing the link.
 5. Choose this node in **Create server**. Its own version catalog, resource capabilities and occupied ports determine the available choices. Players connect to the selected node's game address and server port.
+
+The panel, agent and Node.js/Python applications run natively on both architectures. The official Linux Bedrock server requires an x86-64 node; an ARM64 panel can manage Bedrock on a linked x86-64 node.
 
 The default agent uses a self-signed certificate pinned explicitly by SHA-256, so a domain is optional. A certificate trusted by the operating system can instead use normal CA validation without a pin. The certificate's validity period is checked in both cases. Certificate replacement requires intentionally updating the pin. See [agent configuration and renewal](NODE-AGENT.md).
 

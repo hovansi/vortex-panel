@@ -1,12 +1,14 @@
 # Vortex Panel · Node agent
 
-Node là dịch vụ điều khiển Bedrock trên một VPS riêng. Panel trung tâm giữ tài khoản, quyền và danh sách kết nối; mỗi node giữ runtime, world, backup, lịch và tiến trình của chính nó. Mất kết nối hoặc dừng panel trung tâm không gửi lệnh dừng node. Dừng/restart `vortex-node.service` mới thực hiện shutdown sạch các instance tại node, theo cơ chế resume/autostart hiện có.
+Node là dịch vụ điều khiển Minecraft Bedrock, ứng dụng Node.js và Python trên một VPS riêng. Panel trung tâm giữ tài khoản, quyền và danh sách kết nối; mỗi node giữ runtime, world, backup, lịch và tiến trình của chính nó. Mất kết nối hoặc dừng panel trung tâm không gửi lệnh dừng node. Dừng/restart `vortex-node.service` mới thực hiện shutdown sạch các instance tại node, theo cơ chế resume/autostart hiện có.
 
 VPS liên kết chỉ cung cấp tài nguyên chạy server. Gói tự cài từ panel và bản cài thủ công chỉ chép các tệp trong `server/node-runtime.js`: có API điều khiển được xác thực và thư viện Bedrock, không có trang panel, mã đăng nhập, thiết lập tài khoản hay chương trình khởi chạy panel. Chỉ VPS chạy panel chính giữ lại 10% ngân sách CPU/RAM/ổ đĩa. VPS liên kết không giữ lại tỷ lệ 10%; vẫn kiểm tra tài nguyên thực tế, dung lượng đang dùng và ngăn khởi chạy khi RAM trống thấp nghiêm trọng. Giới hạn của nhà cung cấp VPS vẫn được tôn trọng.
 
 ## Cài riêng trên Ubuntu
 
-Yêu cầu Ubuntu 22.04 trở lên, x86_64, Node.js 22 trở lên và quyền sudo. Installer cài Node 22 từ nodejs.org nếu cần, đối chiếu SHA-256 archive, chuẩn bị dependency trước khi đổi dịch vụ. Từ source đã giải nén:
+Yêu cầu Ubuntu 22.04 trở lên, x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc, Node.js 22 trở lên và quyền sudo. Installer cài Node 22 từ nodejs.org nếu cần, đối chiếu SHA-256 archive, chuẩn bị dependency trước khi đổi dịch vụ.
+
+Agent và ứng dụng Node.js/Python chạy trực tiếp trên cả hai kiến trúc. Bedrock Linux chính thức cần node x86-64; panel ARM64 có thể quản lý Bedrock trên node x86-64 liên kết. Từ source đã giải nén:
 
 Installer chuẩn bị các thư viện chạy Bedrock, công cụ tải/giải nén, mạng và theo dõi tiến trình, quản lý lưu trữ, UFW và bộ đếm mạng. Mọi công cụ bắt buộc được kiểm tra trước khi chuyển sang bản dịch vụ mới; chờ khóa trình cài gói tối đa 120 giây khi hệ điều hành đang cập nhật. Dịch vụ có tự khởi động lại khi lỗi, giới hạn tệp mở 65.536 và thống kê CPU/RAM/I/O. Việc cài đặt không tự bật hay đặt lại firewall và không thay đổi thông số nhân toàn hệ thống trên VPS đang sử dụng.
 

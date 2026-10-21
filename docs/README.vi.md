@@ -8,13 +8,15 @@ Vortex Panel quản lý **Minecraft Bedrock, ứng dụng Node.js và Python** t
 
 ## Cài bằng một lệnh
 
-Trên VPS **Ubuntu 22.04+ x86_64**, có systemd và quyền sudo/root:
+Trên VPS **Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`)**, có userspace 64-bit đúng kiến trúc, systemd và quyền sudo/root:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
 ```
 
 Installer tải release ổn định mới nhất, kiểm tra checksum/archive, cài dependency và dịch vụ. Bản cài mới tự chuẩn bị HTTPS theo IP công khai; kết thúc sẽ in URL và hướng dẫn tạo Admin bằng setup token riêng. Không có mật khẩu `admin` dùng chung.
+
+Panel, node agent và ứng dụng Node.js/Python chạy trực tiếp trên cả x86-64 và ARM64. Bedrock Linux chính thức cần VPS x86-64; panel ARM64 có thể quản lý Bedrock trên VPS x86-64 liên kết.
 
 HTTPS theo IP tự yêu cầu chứng chỉ công khai từ Let’s Encrypt và cài timer gia hạn. Cần mở TCP 80/443 chiều vào. Thao tác tự động tạo tài khoản ACME riêng không kèm email và chấp nhận thỏa thuận của CA; dùng `--self-signed` nếu muốn giữ chứng chỉ tự ký. Khi cấp chứng chỉ thất bại, HTTPS hiện có được giữ và cảnh báo còn được hiển thị đúng. Xem [quản lý HTTPS](HTTPS.md).
 
@@ -63,7 +65,7 @@ Thao tác tệp và backup của Node.js/Python yêu cầu dừng ứng dụng. 
 
 ## Chạy từ source đã kiểm tra
 
-Môi trường vận hành hỗ trợ là Ubuntu 22.04+ x86_64, Node.js 22 trở lên:
+Môi trường vận hành hỗ trợ là Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc và Node.js 22 trở lên:
 
 ```bash
 npm ci
