@@ -540,10 +540,14 @@ class Host:
             firewall_scope = str(self.path('/var/lib/bedrock-panel'))
         scope = hashlib.sha256(firewall_scope.encode()).hexdigest()[:16]
         server_pattern = re.compile(r'^vortex:' + scope + r':([a-f0-9-]{36})$')
-        # No receipt and no servers can mean UFW was never installed. An
-        # existing binary must still be inspected; its inactive rules matter.
+        # Access receipts describe possible web tuples, even when UFW was never
+        # installed. Actual enrollment rules or surviving UFW configuration still
+        # require the inspection tool; never infer that their policy is gone.
         if not self.path('/usr/sbin/ufw').exists() and self.root is None:
-            require(not expected, 'UFW ownership exists but its inspection tool is missing.')
+            require(self.role != 'worker' or not expected, 'UFW ownership exists but its inspection tool is missing.')
+            remnants = ('/etc/ufw', '/etc/default/ufw', '/lib/ufw/user.rules', '/lib/ufw/user6.rules',
+                        '/usr/lib/ufw/user.rules', '/usr/lib/ufw/user6.rules', '/var/lib/ufw', '/run/ufw')
+            require(not any(os.path.lexists(self.path(name)) for name in remnants), 'UFW configuration remains but its inspection tool is missing; firewall policy was preserved.')
             return []
         commands = []
         for line in self.run(['ufw', 'show', 'added']).splitlines():
