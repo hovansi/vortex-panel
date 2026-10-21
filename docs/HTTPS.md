@@ -4,7 +4,9 @@ Vortex supports a public Let’s Encrypt certificate for the managed panel’s I
 
 Fresh and maintenance installer runs attempt this automatically after the panel and its IP reverse proxy are healthy. Use `--self-signed` to retain self-signed access, or `--local-only` on a fresh installation for a local-only panel. A source-only update preserves access; use **Settings → Panel administration → Trusted HTTPS** to enable the feature afterward. The request shows the public IP, certificate authority terms and current Admin password confirmation.
 
-The VPS must accept inbound **TCP 80 and 443**. HTTP challenge files are served from a dedicated path; other HTTP traffic redirects to HTTPS. Check provider firewall/NAT rules as well as UFW. Validation and CA rate limits can prevent issuance. Vortex reports the failure and preserves the previously serving configuration instead of reporting a trusted certificate prematurely. Custom reverse proxies and certificates are preserved rather than rewritten.
+The VPS must accept inbound **TCP 80 and the configured HTTPS port (19191 by default)**. HTTP challenge files are served from a dedicated path; other HTTP traffic redirects to HTTPS. Check provider firewall/NAT rules as well as UFW. Validation and CA rate limits can prevent issuance. Vortex reports the failure and preserves the previously serving configuration instead of reporting a trusted certificate prematurely. Custom reverse proxies and certificates are preserved rather than rewritten.
+
+Fresh installations open at **`https://IP:19191`**. TCP 80 remains available for HTTP certificate challenges and redirects other requests to that HTTPS endpoint. Existing installations keep their endpoint during ordinary updates; see [the explicit port migration command](INSTALL.md#installation-options) to move a verified Vortex-owned IP proxy. Certificate renewal verifies the certificate on the configured public port.
 
 ## Ownership and renewal
 

@@ -54,6 +54,7 @@ class TLSManager:
     def __init__(self, root='/', runner=None):
         self.root = Path(root).resolve()
         self.runner = runner or self.command
+        self.public_port = 443
 
     def path(self, name):
         need(name.startswith('/') and '..' not in Path(name).parts)
@@ -137,11 +138,15 @@ class TLSManager:
                 key, value = row.split('=', 1)
                 need(key not in values)
                 values[key] = value.strip('"')
-        match = re.fullmatch(r'https://([0-9.]+)(?::443)?/?', values.get('PUBLIC_URL', ''))
+        match = re.fullmatch(r'https://([0-9.]+)(?::([1-9][0-9]{0,4}))?/?', values.get('PUBLIC_URL', ''))
         need(match and values.get('HOST') == '127.0.0.1' and values.get('TRUST_PROXY') == '1', 'TLS_ACCESS')
         address = ipaddress.ip_address(match[1])
+        https_port = int(match[2] or 443)
+        need(1 <= https_port <= 65535 and https_port != 80, 'TLS_ACCESS')
         need(address.version == 4 and address.is_global and str(address) == match[1], 'TLS_ACCESS')
         need(re.fullmatch(r'[0-9]{1,5}', values.get('PORT', '')) and 1024 <= int(values['PORT']) <= 65535, 'TLS_ACCESS')
+        need(int(values['PORT']) != https_port, 'TLS_ACCESS')
+        self.public_port = https_port
         return str(address), int(values['PORT'])
 
     def baseline(self, address, port):
@@ -149,16 +154,17 @@ class TLSManager:
         spec = importlib.util.spec_from_file_location('vortex_access_template', filename)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.AccessSetup().nginx_config(address, port)
+        return module.AccessSetup(public_port=self.public_port).nginx_config(address, port)
 
     def challenge_config(self, raw, address):
-        old = '    return 308 https://' + address + '$request_uri;'
+        target = 'https://' + address + (':' + str(self.public_port) if self.public_port != 443 else '')
+        old = '    return 308 ' + target + '$request_uri;'
         replacement = '''    location ^~ /.well-known/acme-challenge/ {
         root /var/lib/vortex-panel-acme/challenges;
         default_type text/plain;
         try_files $uri =404;
     }
-    location / { return 308 https://''' + address + '''$request_uri; }'''
+    location / { return 308 ''' + target + '''$request_uri; }'''
         text = raw.decode()
         need(text.count(old) == 1, 'TLS_ACCESS')
         return text.replace(old, replacement).encode()
@@ -166,7 +172,7 @@ class TLSManager:
     def configurations(self, state, address, port):
         original = base64.b64decode(state['originalConfig'], validate=True) if state.get('originalConfig') else self.baseline(address, port)
         if state.get('originalConfig'):
-            need(state.get('address') == address and state.get('port') == port, 'TLS_CHANGED')
+            need(state.get('address') == address and state.get('port') == port and state.get('publicPort', 443) == self.public_port, 'TLS_CHANGED')
         challenge = self.challenge_config(original, address)
         active = challenge.replace(b'/etc/vortex-panel/tls/ip.crt', (MANAGED + '/active/fullchain.pem').encode()).replace(b'/etc/vortex-panel/tls/ip.key', (MANAGED + '/active/privkey.pem').encode())
         return original, challenge, active
@@ -323,7 +329,7 @@ class TLSManager:
             cert = self.certificate(self.certificate_path(raw, active), address)
             timer = self.runner(['systemctl', 'is-enabled', '--quiet', UNIT + '.timer'], check=False).returncode == 0
             running = self.runner(['systemctl', 'is-active', '--quiet', UNIT + '.timer'], check=False).returncode == 0
-            return {'available': True, 'address': address, 'mode': 'public-ca' if raw == active else 'self-signed', 'certificate': cert, 'automaticRenewal': timer and running, 'renewal': state.get('renewal'), 'revision': digest(raw + json.dumps(state, sort_keys=True).encode()), 'jobs': state['jobs'], 'recoveryRequired': bool(self.pending(state)), 'observedAt': timestamp()}
+            return {'available': True, 'address': address, 'publicPort': self.public_port, 'mode': 'public-ca' if raw == active else 'self-signed', 'certificate': cert, 'automaticRenewal': timer and running, 'renewal': state.get('renewal'), 'revision': digest(raw + json.dumps(state, sort_keys=True).encode()), 'jobs': state['jobs'], 'recoveryRequired': bool(self.pending(state)), 'observedAt': timestamp()}
         except (OSError, ValueError, TLSError) as error:
             return {'available': False, 'mode': 'unmanaged', 'reasonCode': getattr(error, 'code', 'TLS_ACCESS'), 'revision': digest(json.dumps(state, sort_keys=True).encode()), 'jobs': state['jobs'], 'renewal': state.get('renewal'), 'recoveryRequired': bool(self.pending(state)), 'observedAt': timestamp()}
 
@@ -409,7 +415,7 @@ class TLSManager:
         deadline = time.monotonic() + 12
         while True:
             try:
-                with socket.create_connection(('127.0.0.1', 443), timeout=3) as connection:
+                with socket.create_connection(('127.0.0.1', self.public_port), timeout=3) as connection:
                     with context.wrap_socket(connection, server_hostname=address) as secured:
                         raw = secured.getpeercert(binary_form=True)
                         need(raw and (fingerprint is None or digest(raw) == fingerprint), 'TLS_VERIFY')
@@ -529,6 +535,7 @@ class TLSManager:
         state['originalConfig'] = base64.b64encode(original).decode()
         state['address'] = address
         state['port'] = port
+        state['publicPort'] = self.public_port
         job = {'id': request['requestId'], 'status': 'running', 'phase': 'preparing', 'progress': 5, 'startedAt': timestamp(), 'previousGeneration': self.active_generation(), 'previousConfig': base64.b64encode(raw).decode()}
         state['jobs'] = [*state['jobs'][-15:], job]
 

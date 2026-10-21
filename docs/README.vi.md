@@ -14,15 +14,15 @@ Trên VPS **Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`)**, có userspace 64-bi
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash
 ```
 
-Installer tải release ổn định mới nhất, kiểm tra checksum/archive, cài dependency và dịch vụ. Bản cài mới tự chuẩn bị HTTPS theo IP công khai; kết thúc sẽ in URL và hướng dẫn tạo Admin bằng setup token riêng. Không có mật khẩu `admin` dùng chung.
+Installer tải release ổn định mới nhất, kiểm tra checksum/archive, cài dependency và dịch vụ. Bản cài mới tự chuẩn bị HTTPS tại **`https://IP:19191`**; kết thúc sẽ in URL và hướng dẫn tạo Admin bằng setup token riêng. Không có mật khẩu `admin` dùng chung.
 
 Panel, node agent và ứng dụng Node.js/Python chạy trực tiếp trên cả x86-64 và ARM64. Bedrock Linux chính thức cần VPS x86-64; panel ARM64 có thể quản lý Bedrock trên VPS x86-64 liên kết.
 
-HTTPS theo IP tự yêu cầu chứng chỉ công khai từ Let’s Encrypt và cài timer gia hạn. Cần mở TCP 80/443 chiều vào. Thao tác tự động tạo tài khoản ACME riêng không kèm email và chấp nhận thỏa thuận của CA; dùng `--self-signed` nếu muốn giữ chứng chỉ tự ký. Khi cấp chứng chỉ thất bại, HTTPS hiện có được giữ và cảnh báo còn được hiển thị đúng. Xem [quản lý HTTPS](HTTPS.md).
+HTTPS theo IP tự yêu cầu chứng chỉ công khai từ Let’s Encrypt và cài timer gia hạn. Cần mở TCP 80 để xác thực chứng chỉ và TCP 19191 để truy cập panel. Thao tác tự động tạo tài khoản ACME riêng không kèm email và chấp nhận thỏa thuận của CA; dùng `--self-signed` nếu muốn giữ chứng chỉ tự ký. Khi cấp chứng chỉ thất bại, HTTPS hiện có được giữ và cảnh báo còn được hiển thị đúng. Xem [quản lý HTTPS](HTTPS.md).
 
 Chứng chỉ IP công khai có hạn **sáu ngày**; Vortex kiểm tra gia hạn mỗi sáu giờ và xác minh chứng chỉ đang phục vụ sau khi NGINX reload. Chứng chỉ tự ký dự phòng có hạn 365 ngày và vẫn cần quyết định tin cậy riêng. Cập nhật source trong panel giữ nguyên cấu hình truy cập. Múi giờ VPS, trạng thái phục hồi sau crash và [cấu hình mạng có thể khôi phục](NETWORK-TUNING.md) có trong phần quản trị; không thay đổi phiên bản runtime đã ghim của server.
 
-Lệnh mặc định bật quyền quản trị host root cho bản cài mới. Ứng dụng Node.js/Python vẫn chạy bằng tài khoản riêng không có quyền root, trong sandbox. Bản nâng cấp giữ chế độ dịch vụ và cấu hình truy cập đã có. Installer dừng khi gặp dịch vụ web không thuộc quyền quản lý hoặc cổng xung đột; firewall nhà cung cấp/NAT cần cho phép truy cập phù hợp. Xem [chi tiết cài đặt, tùy chọn và cập nhật](INSTALL.md).
+Lệnh mặc định bật quyền quản trị host root cho bản cài mới. Ứng dụng Node.js/Python vẫn chạy bằng tài khoản riêng không có quyền root, trong sandbox. Bản nâng cấp thông thường giữ chế độ dịch vụ và cấu hình truy cập đã có. Muốn chuyển proxy IP do Vortex quản lý sang cổng 19191, thêm `--public-port 19191` vào [lệnh bảo trì](INSTALL.md#installation-options). Installer dừng khi gặp dịch vụ web không thuộc quyền quản lý hoặc cổng xung đột; firewall nhà cung cấp/NAT cần cho phép truy cập phù hợp. Xem [chi tiết cài đặt, tùy chọn và cập nhật](INSTALL.md).
 
 ## Các công cụ chính
 

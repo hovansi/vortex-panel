@@ -180,6 +180,13 @@ export function networkPortReservations(server) {
   return [...new Map(rows.map(row => [`${row.protocol}:${row.port}`, row])).values()].sort((a, b) => a.protocol.localeCompare(b.protocol) || a.port - b.port);
 }
 
+// Public panel listeners remain reserved while the proxy is being reloaded.
+// Workers pass no panel reservation; UDP game ports use a separate namespace.
+export function assertAvailablePanelPorts(server, protectedTcpPorts = []) {
+  const conflict = networkPortReservations(server).find(row => row.protocol === 'tcp' && protectedTcpPorts.includes(row.port));
+  if (conflict) fail(`Cổng TCP ${conflict.port} được dành cho truy cập panel. Chọn cổng khác.`, 409);
+}
+
 export function validateNetwork(servers, id, input) {
   const kind = networkKind(input);
   if (kind !== 'bedrock') {

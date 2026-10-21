@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Vortex Panel. The legacy managed layout is migrated offline with a private recovery receipt.
-# Run from source: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]
+# Run from source: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--public-port PORT] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]
 # BEGIN installer options
 vortex_ipv4_shape() {
   local value=$1 part
@@ -18,6 +18,8 @@ parse_installer_options() {
   VORTEX_MODE_EXPLICIT=false
   VORTEX_ACCESS_MODE=auto
   VORTEX_PUBLIC_IP=
+  VORTEX_PUBLIC_PORT=19191
+  VORTEX_PUBLIC_PORT_EXPLICIT=false
   VORTEX_MANAGED_TLS=true
   VORTEX_NETWORK_TUNING=true
   RESUME_LEDGER_SHA=
@@ -29,11 +31,14 @@ parse_installer_options() {
         if [[ $1 == --root-mode ]]; then MODE=root; else MODE=service; fi
         shift;;
       --local-only)
-        [[ $VORTEX_ACCESS_MODE == auto && -z $VORTEX_PUBLIC_IP ]] || { echo 'Choose one access mode.' >&2; return 1; }
+        [[ $VORTEX_ACCESS_MODE == auto && -z $VORTEX_PUBLIC_IP && $VORTEX_PUBLIC_PORT_EXPLICIT == false ]] || { echo 'Choose one access mode.' >&2; return 1; }
         VORTEX_ACCESS_MODE=local; shift;;
       --public-ip)
         [[ $VORTEX_ACCESS_MODE == auto && -z $VORTEX_PUBLIC_IP && $# -ge 2 ]] && vortex_ipv4_shape "$2" || { echo '--public-ip requires one canonical IPv4 address.' >&2; return 1; }
         VORTEX_PUBLIC_IP=$2; shift 2;;
+      --public-port)
+        [[ $VORTEX_ACCESS_MODE == auto && $VORTEX_PUBLIC_PORT_EXPLICIT == false && $# -ge 2 && $2 =~ ^[1-9][0-9]{0,4}$ ]] && ((10#$2 <= 65535 && 10#$2 != 80)) || { echo '--public-port requires one TCP port from 1 to 65535 except 80 and cannot be combined with --local-only.' >&2; return 1; }
+        VORTEX_PUBLIC_PORT=$2; VORTEX_PUBLIC_PORT_EXPLICIT=true; shift 2;;
       --resume-ledger)
         [[ $# -ge 2 && $2 =~ ^[a-f0-9]{64}$ && -z $RESUME_LEDGER_SHA ]] || { echo '--resume-ledger requires one reviewed SHA-256 of the private preserved capture.' >&2; return 1; }
         RESUME_LEDGER_SHA=$2; shift 2;;
@@ -43,7 +48,7 @@ parse_installer_options() {
       --no-network-tuning)
         [[ $VORTEX_NETWORK_TUNING == true ]] || { echo 'Duplicate --no-network-tuning option.' >&2; return 1; }
         VORTEX_NETWORK_TUNING=false; shift;;
-      *) echo 'Usage: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; return 1;;
+      *) echo 'Usage: sudo bash deploy/install.sh [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--public-port PORT] [--self-signed] [--no-network-tuning] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; return 1;;
     esac
   done
 }
@@ -405,6 +410,7 @@ trap 'rollback "$LINENO"' ERR
 FRESH_INSTALL=true
 if [[ $CURRENT_EXISTED == true || -f $RECOVERY_DIR/environment || -f $RECOVERY_DIR/service || -e $DATA_DIR/panel.json ]]; then FRESH_INSTALL=false; fi
 VORTEX_AUTO_ACCESS=false
+VORTEX_UPGRADE_ACCESS=false
 if [[ $FRESH_INSTALL == true ]]; then
   if [[ $VORTEX_MODE_EXPLICIT == false ]]; then MODE=root; fi
   if [[ $VORTEX_ACCESS_MODE == auto ]]; then
@@ -414,13 +420,18 @@ if [[ $FRESH_INSTALL == true ]]; then
       apt-get update
       DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends --no-remove iproute2
     fi
-    ACCESS_ARGS=(preflight --plan "$RECOVERY_DIR/public-access.json")
+    ACCESS_ARGS=(preflight --plan "$RECOVERY_DIR/public-access.json" --public-port "$VORTEX_PUBLIC_PORT")
     if [[ -n $VORTEX_PUBLIC_IP ]]; then ACCESS_ARGS+=(--public-ip "$VORTEX_PUBLIC_IP"); fi
     python3 "$SOURCE_DIR/deploy/configure-access.py" "${ACCESS_ARGS[@]}"
   fi
 elif [[ $VORTEX_ACCESS_MODE != auto || -n $VORTEX_PUBLIC_IP ]]; then
-  echo 'An existing installation keeps its access configuration. Access flags apply only to a fresh installation.' >&2
+  echo 'An existing installation keeps its access configuration. IP and local-only flags apply only to a fresh installation.' >&2
   false
+elif [[ $VORTEX_PUBLIC_PORT_EXPLICIT == true ]]; then
+  # The helper accepts only an exact Vortex-owned endpoint. A customer proxy or
+  # occupied destination is preserved before any core package/source update.
+  python3 "$SOURCE_DIR/deploy/configure-access.py" preflight-upgrade --plan "$RECOVERY_DIR/public-access.json" --public-port "$VORTEX_PUBLIC_PORT"
+  VORTEX_UPGRADE_ACCESS=true
 fi
 # END automatic access plan
 apt-get update
@@ -727,6 +738,18 @@ if [[ -f $MIGRATION_TRANSACTION ]]; then
 fi
 INSTALL_COMPLETED=true
 CHANGED_SERVICE=false
+# BEGIN existing access migration
+# Endpoint migration has its own bounded rollback. A failed access change must
+# not restore old source beneath the committed new core and installer ledger.
+if [[ $VORTEX_UPGRADE_ACCESS == true ]]; then
+  if ! python3 "$SOURCE_DIR/deploy/configure-access.py" apply-upgrade --plan "$RECOVERY_DIR/public-access.json"; then
+    echo 'The core panel update completed, but HTTPS port migration was not verified. Review the diagnostics above for the endpoint and any required recovery.' >&2
+    echo "Private migration plan retained for review: $RECOVERY_DIR/public-access.json" >&2
+    RECOVERY_DIR=
+    exit 1
+  fi
+fi
+# END existing access migration
 # Commit core installation before optional host changes. A later receipt or
 # migration failure must not roll source back underneath a new renewal timer.
 # CA/kernel refusals preserve the healthy panel and its existing access.

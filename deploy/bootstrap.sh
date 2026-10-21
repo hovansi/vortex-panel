@@ -22,6 +22,7 @@ bootstrap_parse_args() {
   INSTALL_MODE=
   ACCESS_MODE=
   PUBLIC_IP=
+  PUBLIC_PORT=
   SELF_SIGNED=
   SKIP_NETWORK=
   while [[ $# -gt 0 ]]; do
@@ -36,11 +37,14 @@ bootstrap_parse_args() {
         [[ -z $INSTALL_MODE ]] || { bootstrap_fail 'Choose only one service mode.'; return 1; }
         INSTALL_MODE=$1; shift;;
       --local-only)
-        [[ -z $ACCESS_MODE && -z $PUBLIC_IP ]] || { bootstrap_fail 'Choose one access mode.'; return 1; }
+        [[ -z $ACCESS_MODE && -z $PUBLIC_IP && -z $PUBLIC_PORT ]] || { bootstrap_fail 'Choose one access mode.'; return 1; }
         ACCESS_MODE=local; shift;;
       --public-ip)
         [[ $# -ge 2 && -z $ACCESS_MODE && -z $PUBLIC_IP ]] && bootstrap_ipv4_shape "$2" || { bootstrap_fail '--public-ip requires one canonical IPv4 address.'; return 1; }
         PUBLIC_IP=$2; shift 2;;
+      --public-port)
+        [[ -z $ACCESS_MODE && -z $PUBLIC_PORT && $# -ge 2 && $2 =~ ^[1-9][0-9]{0,4}$ ]] && ((10#$2 <= 65535 && 10#$2 != 80)) || { bootstrap_fail '--public-port requires one TCP port from 1 to 65535 except 80 and cannot be combined with --local-only.'; return 1; }
+        PUBLIC_PORT=$2; shift 2;;
       --self-signed)
         [[ -z $SELF_SIGNED ]] || { bootstrap_fail 'Duplicate --self-signed option.'; return 1; }
         SELF_SIGNED=--self-signed; shift;;
@@ -48,8 +52,8 @@ bootstrap_parse_args() {
         [[ -z $SKIP_NETWORK ]] || { bootstrap_fail 'Duplicate --no-network-tuning option.'; return 1; }
         SKIP_NETWORK=--no-network-tuning; shift;;
       --help|-h)
-        printf '%s\n' 'Usage: sudo bash install.sh [--repository OWNER/REPO] [--version X.Y.Z] [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--self-signed] [--no-network-tuning]' \
-          'Default: latest stable; fresh root service and public-IP HTTPS; preserve existing installations.'
+        printf '%s\n' 'Usage: sudo bash install.sh [--repository OWNER/REPO] [--version X.Y.Z] [--root-mode|--service-user] [--local-only|--public-ip IPv4] [--public-port PORT] [--self-signed] [--no-network-tuning]' \
+          'Default: latest stable; fresh root service and public-IP HTTPS on TCP 19191; preserve existing access unless --public-port is supplied.'
         return 2;;
       *) bootstrap_fail "Unknown option: $1"; return 1;;
     esac
@@ -162,7 +166,7 @@ bootstrap_main() {
   [[ $parsed == 0 ]] || return "$parsed"
   bootstrap_preflight
   bootstrap_dependencies
-  /usr/bin/python3 -I -B - "$REPOSITORY" "$BOOTSTRAP_VERSION" "$INSTALL_MODE" "$ACCESS_MODE" "$PUBLIC_IP" "$SELF_SIGNED" "$SKIP_NETWORK" <<'VORTEX_BOOTSTRAP_PYTHON'
+  /usr/bin/python3 -I -B - "$REPOSITORY" "$BOOTSTRAP_VERSION" "$INSTALL_MODE" "$ACCESS_MODE" "$PUBLIC_IP" "$SELF_SIGNED" "$SKIP_NETWORK" "$PUBLIC_PORT" <<'VORTEX_BOOTSTRAP_PYTHON'
 import hashlib
 import io
 import json
@@ -362,7 +366,9 @@ def archive_members(bundle, version):
     return entries
 
 
-def install_release(opener, repository, requested, mode, access_mode='', public_ip='', self_signed='', skip_network=''):
+def install_release(opener, repository, requested, mode, access_mode='', public_ip='', self_signed='', skip_network='', public_port=''):
+    if public_port:
+        need(isinstance(public_port, str) and re.fullmatch(r'[1-9][0-9]{0,4}', public_port) and int(public_port) <= 65535 and int(public_port) != 80 and access_mode != 'local', 'Invalid public HTTPS port.')
     version, assets = resolve_release(opener, repository, requested)
     print('Downloading Vortex Panel ' + version + ' from ' + repository + '...', flush=True)
     archive = verified_archive(opener, version, assets)
@@ -393,17 +399,19 @@ def install_release(opener, repository, requested, mode, access_mode='', public_
             if skip_network:
                 need(skip_network == '--no-network-tuning', 'Invalid network mode.')
                 command.append('--no-network-tuning')
+            if public_port:
+                command.extend(['--public-port', public_port])
             print('Starting the existing Ubuntu installer...', flush=True)
             result = subprocess.run(command, cwd=workspace, check=False)
             need(result.returncode == 0, 'The Ubuntu installer failed (exit%s); review its output.' % result.returncode)
     print('Vortex installation finished. Use the panel URL and setup instructions printed above.\n'
-          'Fresh installs configure public-IP HTTPS unless --local-only is selected; updates preserve existing access.', flush=True)
+          'Fresh installs use public-IP HTTPS on TCP 19191 unless --local-only is selected; updates retain existing access unless --public-port is supplied.', flush=True)
 
 
 def main():
     try:
         values = sys.argv[1:]
-        need(len(values) in (5, 7), 'Invalid installer argument count.')
+        need(len(values) in (5, 7, 8), 'Invalid installer argument count.')
         repository, requested, mode, access_mode, public_ip = values[:5]
         install_release(normal_opener(), repository, requested, mode, access_mode, public_ip, *(values[5:] or ['', '']))
     except (BootstrapError, zipfile.BadZipFile, OSError, ValueError) as error:

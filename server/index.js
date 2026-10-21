@@ -87,7 +87,9 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     }
   };
   try {
-    manager = await createManager({ store, dataDir, emit });
+    const publicEndpoint = process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL) : null;
+    const protectedTcpPorts = publicEndpoint ? [Number(publicEndpoint.port || (publicEndpoint.protocol === 'https:' ? 443 : 80))] : [];
+    manager = await createManager({ store, dataDir, emit, protectedTcpPorts });
     systemTimezone = timezoneController || createHostTimezoneController({ role: 'panel', nodeId: 'local', dataDir, store });
     await systemTimezone.read({ includeZones: false });
     timezoneTimer = setInterval(() => { timezoneFlight ||= systemTimezone.read({ includeZones: false }).catch(() => {}).finally(() => { timezoneFlight = null; }); }, 60000); timezoneTimer.unref();

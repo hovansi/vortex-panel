@@ -8,7 +8,7 @@ The public installer downloads a complete, versioned Vortex Panel release and in
 
 - Ubuntu 22.04 or later on x86-64 (`x86_64`/`amd64`) or ARM64 (`aarch64`/`arm64`), matching 64-bit userspace, a running systemd and root/sudo access.
 - Working HTTPS access to GitHub, Ubuntu repositories and the official runtime providers. The initial command requires `curl` and a working HTTPS CA trust store.
-- For automatic public setup: a globally routable IPv4 address and available TCP 80/443. Provider firewall/NAT access must allow the intended traffic.
+- For automatic public setup: a globally routable IPv4 address and available TCP 80 and 19191. Provider firewall/NAT access must allow the intended traffic.
 - Sufficient CPU, memory and storage for the intended workloads. Creating Python runtimes additionally requires a capped 1 GiB RAM build and temporary 3 GiB build volume, plus admission overhead. The panel reports missing sandbox/resource capabilities rather than silently dropping enforcement.
 
 Windows and macOS are development/UI preview environments; this installer targets the supported Ubuntu host.
@@ -37,13 +37,13 @@ The final output includes the panel URL and first-Admin setup instructions. No s
 5. Verify `/healthz` against the service’s actual MainPID. Prepare NGINX, initial IP TLS and the loopback reverse proxy. Attempt a trusted IP certificate and install its renewal timer; keep working access if the CA request fails. Apply only supported, conservative owned network settings.
 6. Print access/setup guidance and remove temporary bootstrap files.
 
-The panel binds to `127.0.0.1:3000`; NGINX terminates HTTPS on port 443. Public setup sets `PUBLIC_URL` and `TRUST_PROXY` appropriately. When UFW is already active, the helper adds only its missing web-port allowances. It does not enable/reset UFW or manage the VPS provider's firewall. Minecraft and application ports are configured separately in the panel's network tools.
+The panel binds to `127.0.0.1:3000`; NGINX terminates HTTPS on port 19191, giving the public address `https://IP:19191`. Public setup sets `PUBLIC_URL` and `TRUST_PROXY` appropriately. When UFW is already active, the helper adds only its missing web-port allowances. It does not enable/reset UFW or manage the VPS provider's firewall. Minecraft and application ports are configured separately in the panel's network tools.
 
 The bootstrap's checksum detects a source archive that differs from its published release. The HTTPS repository/publisher is the trust source; checksums do not independently authenticate the bootstrap script you have already chosen to run.
 
 ## HTTPS and first login
 
-Automatic IP setup attempts a **publicly trusted Let’s Encrypt IP certificate**. IP certificates last six days; the owned timer checks renewal every six hours. Inbound TCP 80 and 443 must remain reachable. See [HTTPS lifecycle and verification](HTTPS.md). The installer creates a private ACME account without a contact email and accepts the CA subscriber agreement as part of this automatic setup; use `--self-signed` to opt out before installation.
+Automatic IP setup attempts a **publicly trusted Let’s Encrypt IP certificate**. IP certificates last six days; the owned timer checks renewal every six hours. Inbound TCP 80 and the configured HTTPS port (19191 by default) must remain reachable. See [HTTPS lifecycle and verification](HTTPS.md). The installer creates a private ACME account without a contact email and accepts the CA subscriber agreement as part of this automatic setup; use `--self-signed` to opt out before installation.
 
 If public issuance fails, the initial self-signed certificate remains available and the installer prints a warning. A self-signed fallback lasts 365 days and remains untrusted until the administrator explicitly trusts it; it is not a substitute for verified public issuance. Existing custom proxies/certificates are preserved. Inspect the actual HTTPS status in **Settings → Panel administration**.
 
@@ -66,6 +66,7 @@ Pass options after `bash -s --`. They are optional for the standard command.
 | Option | Purpose |
 | --- | --- |
 | `--version X.Y.Z` | Install one exact stable Vortex release instead of latest stable |
+| `--public-port PORT` | Choose the public HTTPS port (default 19191 on a fresh installation); explicitly migrate an existing, verified Vortex-owned IP proxy |
 | `--public-ip IPV4` | Supply the globally routable IPv4 to use for a fresh public setup when automatic discovery is unsuitable |
 | `--self-signed` | Retain self-signed IP access; do not request a public CA certificate |
 | `--no-network-tuning` | Skip automatic host network profile changes |
@@ -73,7 +74,13 @@ Pass options after `bash -s --`. They are optional for the standard command.
 | `--root-mode` | Explicitly select root service mode for host terminal and local storage administration |
 | `--service-user` | Select the dedicated service account and disable the host terminal |
 
-An existing installation's public access is preserved; these access options are not an implicit migration of a configured proxy. Read the installer's `--help` for accepted combinations.
+An ordinary upgrade preserves the current endpoint. To move an existing Vortex-owned IP proxy to port 19191, stop workloads for installer maintenance, allow inbound TCP 19191 at the provider firewall, then run:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/hovansi/vortex-panel/releases/latest/download/install.sh | sudo bash -s -- --public-port 19191
+```
+
+The installer verifies ownership and port availability before updating. After the core update succeeds, it moves the endpoint as a separate transaction and verifies access; a failed port change restores the previous endpoint. Custom or modified proxies require deliberate administrator configuration. A source-only update in Settings preserves the endpoint. Read the installer's `--help` for accepted combinations.
 
 For a local-only installation:
 

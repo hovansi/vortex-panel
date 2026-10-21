@@ -19,6 +19,7 @@ import { NETWORK_TUNING_MESSAGES } from './host-network-tuning.js';
 import { TLS_MESSAGES } from './host-tls.js';
 import { BEDROCK_PLATFORM_MESSAGE } from '../public/runtime-platform.js';
 export const PANEL_MESSAGES = Object.freeze([
+  { id: 'panel.ports.panel-reserved', vi: 'Cổng TCP {0} được dành cho truy cập panel. Chọn cổng khác.', en: 'TCP port {0} is reserved for panel access. Choose another port.' },
   BEDROCK_PLATFORM_MESSAGE,
   { id: 'panel.host.maintenance', vi: 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.', en: 'System changes are being applied. Wait for completion.' },
   { id: 'panel.host.realadmin', vi: 'Thao tác hệ thống cần tài khoản quản trị thật.', en: 'System changes require a real administrator account.' },

@@ -1,12 +1,12 @@
-# Vortex Panel. Set PUBLIC_URL=https://vortex.example.com and TRUST_PROXY=1 in /etc/vortex-panel.env.
+# Vortex Panel. Set PUBLIC_URL=https://vortex.example.com:19191 and TRUST_PROXY=1 in /etc/vortex-panel.env.
 # TLS certificates must already exist. Replace hostname and paths below.
 server {
     listen 80;
     server_name vortex.example.com;
-    return 301 https://$host$request_uri;
+    return 301 https://vortex.example.com:19191$request_uri;
 }
 server {
-    listen 443 ssl;
+    listen 19191 ssl;
     server_name vortex.example.com;
     ssl_certificate /etc/letsencrypt/live/vortex.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/vortex.example.com/privkey.pem;
@@ -17,7 +17,7 @@ server {
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -25,7 +25,7 @@ server {
     location /ws {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -527,7 +527,8 @@ class Host:
             value = self.load(access, 65536, private=True)
             require(value.get('schema') == 1 and re.fullmatch('[a-f0-9]{24}', str(value.get('id', ''))), 'The access firewall receipt is invalid.')
             access_id = value['id']
-            for port in [80, 443]:
+            _address, _port, public_ports = self.access_endpoint(value)
+            for port in sorted({80, *public_ports}):
                 expected.append(['ufw', 'allow', str(port) + '/tcp', 'comment', 'vortex-panel-' + access_id + '-' + str(port)])
         firewall_scope = str(self.data)
         marker = self.data / '.vortex-layout.json'
@@ -718,24 +719,50 @@ class Host:
         if self.role == 'panel' and nginx.exists() and not any(row['path'] == str(nginx) for row in rows):
             try:
                 receipt = self.load(self.config_root / 'access.json', 65536, private=True)
-                address = receipt.get('url', '').removeprefix('https://')
-                require(receipt.get('schema') == 1 and receipt.get('url') == 'https://' + str(ipaddress.IPv4Address(address)) and re.fullmatch('[a-f0-9]{24}', str(receipt.get('id', ''))), 'The legacy IP access receipt is invalid.')
+                address, https_port, _public_ports = self.access_endpoint(receipt)
+                require(receipt.get('schema') == 1 and re.fullmatch('[a-f0-9]{24}', str(receipt.get('id', ''))), 'The legacy IP access receipt is invalid.')
                 env = self.read(self.config, 65536, private=True).decode()
                 ports = [line.split('=', 1)[1].strip('"\r') for line in env.splitlines() if line.startswith('PORT=')]
                 require(len(ports) == 1 and ports[0].isdigit() and 1024 <= int(ports[0]) <= 65535, 'The proxy upstream port is ambiguous.')
                 certificate = self.read(self.config_root / 'tls/ip.crt', 512 * 1024, private=True).decode()
                 fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest().upper()
                 require(str(receipt.get('fingerprint', '')).split('=')[-1].replace(':', '').upper() == fingerprint, 'The legacy access certificate identity changed.')
-                require(self.read(nginx, 65536) == self.access_config(address, int(ports[0])), 'The Vortex nginx configuration was changed.')
+                require(self.read(nginx, 65536) == self.access_config(address, int(ports[0]), https_port), 'The Vortex nginx configuration was changed.')
                 rows.append(self.stamp(nginx))
                 retained = [row for row in retained if row.get('path') != str(nginx)]
             except (RemovalError, OSError, ValueError):
                 if not any(row.get('path') == str(nginx) for row in retained):
                     retained.append({'kind': 'proxy-configuration', 'path': str(nginx), 'reason': 'The proxy has no exact installer or managed-access content proof.'})
+        if self.role == 'panel' and any(row['path'] == str(nginx) for row in rows):
+            # An explicit, post-core-commit endpoint migration replaces this
+            # private environment file after the installer ledger was finalized.
+            # The fixed layout independently verifies/removes it. Retire only
+            # its stale content warning when current access is also proven by
+            # the exact feature receipt and proxy/TLS template above.
+            try:
+                receipt = self.load(self.config_root / 'access.json', 65536, private=True)
+                _address, https_port, _public_ports = self.access_endpoint(receipt)
+                env = self.read(self.config, 65536, private=True).decode()
+                urls = [line.split('=', 1)[1].strip('"\r') for line in env.splitlines() if line.startswith('PUBLIC_URL=')]
+                require(urls == [receipt['url']] and receipt.get('publicPort') == https_port and bool(receipt.get('previousPublicPorts')), 'No exact migrated endpoint proof.')
+                retained = [row for row in retained if row.get('path') != str(self.config)]
+            except (RemovalError, OSError, ValueError):
+                pass
         return rows, retained
 
     @staticmethod
-    def access_config(address, port):
+    def access_endpoint(receipt):
+        match = re.fullmatch(r'https://([0-9.]+)(?::([1-9][0-9]{0,4}))?', str(receipt.get('url', '')))
+        require(match and str(ipaddress.IPv4Address(match[1])) == match[1], 'The IP access URL is invalid.')
+        port = int(match[2] or 443)
+        require(1 <= port <= 65535 and port != 80 and (port != 443 or match[2] is None), 'The IP access HTTPS port is invalid.')
+        require('publicPort' not in receipt or type(receipt['publicPort']) is int and receipt['publicPort'] == port, 'The access HTTPS port receipt changed.')
+        previous = receipt.get('previousPublicPorts', [])
+        require(isinstance(previous, list) and len(previous) <= 16 and all(type(value) is int and 1 <= value <= 65535 and value != 80 and value != port for value in previous) and len(set(previous)) == len(previous), 'The prior access port ownership history is invalid.')
+        return match[1], port, [port, *previous]
+
+    @staticmethod
+    def access_config(address, port, https_port=443):
         return ('''# Vortex Panel fresh-install IP HTTPS; managed by configure-access.py.
 map $http_upgrade $vortex_connection_upgrade { default upgrade; '' close; }
 server {
@@ -767,7 +794,10 @@ server {
         proxy_request_buffering off;
     }
 }
-'''.replace('ADDRESS', address).replace(':PORT;', ':' + str(port) + ';')).encode()
+'''.replace('https://ADDRESS', 'https://' + address + (':' + str(https_port) if https_port != 443 else ''))
+            .replace('ADDRESS', address).replace('listen 443 ssl;', 'listen ' + str(https_port) + ' ssl;')
+            .replace('proxy_set_header Host $host;', 'proxy_set_header Host ' + ('$host' if https_port == 443 else '$http_host') + ';')
+            .replace(':PORT;', ':' + str(port) + ';')).encode()
 
     def other_installation(self):
         units = ['vortex-panel.service', 'bedrock-panel.service'] if self.role == 'worker' else ['vortex-node.service']

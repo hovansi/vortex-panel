@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.23.5'
+        default: 'v0.23.6'
         type: string
 
 permissions:
@@ -105,9 +105,14 @@ jobs:
     with:
       python_managed: false
 
+  https:
+    name: Public HTTPS port and upgrade compatibility
+    needs: verify
+    uses: ./.github/workflows/https.yml
+
   publish:
     name: Build and publish verified assets
-    needs: [verify, native-arm]
+    needs: [verify, native-arm, https]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -224,7 +229,7 @@ jobs:
           }
           checkTag();
           const notes = join(process.env.RUNNER_TEMP, 'vortex-release-notes.md');
-          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nNative x86-64 and ARM64 support for the panel, linked agents, Node.js and Python applications. Installers select the host architecture automatically; existing application runtime pins remain unchanged. Official Minecraft Bedrock runs on x86-64 nodes, including nodes managed by an ARM64 panel.\n\nRelease checks validate production source and packages with Node.js 22 on Ubuntu 22.04 x64 and Ubuntu 24.04 x64/ARM64. Native ARM64 checks install the panel and worker, exercise managed Node.js HTTP start/restart/stop, and verify resource controls, agent credentials and pinned TLS. No live Minecraft gameplay validation is implied.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
+          writeFileSync(notes, `Vortex Panel ${pkg.version}\n\nFresh installations now open at https://IP:19191. The public HTTPS port is handled consistently by NGINX, redirects, authentication, certificate verification, renewal and owned firewall cleanup. The internal service remains on loopback port 3000; linked agents and workload ports retain their settings.\n\nOrdinary upgrades preserve an existing endpoint. To move a verified Vortex-owned IP proxy to 19191, allow inbound TCP 19191 and run the installer with --public-port 19191. The migration preserves certificates and restores the previous endpoint if access verification fails. Custom proxies are preserved.\n\nRelease checks validate production source and packages with Node.js 22 on Ubuntu 22.04 x64 and Ubuntu 24.04 x64/ARM64. Native ARM64 checks install the panel and worker, exercise managed Node.js HTTP start/restart/stop, and verify resource controls, agent credentials and pinned TLS. HTTPS integration checks install the real proxy, exercise authenticated requests and WebSocket over TLS, and verify default, preserved and explicitly migrated endpoints. No live Minecraft gameplay validation is implied.\n\nAssets include the full source ZIP, checksums, one-command installer, and release manifest. Read README.md before installation. The HTTPS installer trusts this repository's publisher; checksums verify downloaded asset integrity.\n\nInstall on a supported Ubuntu host:\n\n\`\`\`sh\ncurl --proto '=https' --tlsv1.2 -fsSL https://github.com/${repo}/releases/latest/download/install.sh | sudo bash\n\`\`\`\n`, { flag: 'wx' });
           const creation = join(process.env.RUNNER_TEMP, 'vortex-release-create.json');
           writeFileSync(creation, JSON.stringify({ tag_name: tag, target_commitish: head, name: `Vortex Panel ${pkg.version}`,
             body: readFileSync(notes, 'utf8'), draft: true, prerelease: false }), { flag: 'wx' });

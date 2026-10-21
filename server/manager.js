@@ -15,7 +15,7 @@ import { inspectPacks, importPacks, setPackEnabled, removePack, reorderPacks } f
 import { inspectWorldExperiments, saveWorldExperiments, parseLevelDatTags } from './world-experiments.js';
 import { readBounded, BEDROCK_WORLD_LIMITS } from './bedrock-world-format.js';
 import { validateServerSettings, validateBedrockProperties, debuggerPort } from './configuration.js';
-import { fail, safePath, cleanRelative, atomicWrite, walkFiles, parseProperties, serializeProperties, validateProperties, validateNetwork, parseUdpPorts, defaultUdpPorts } from './safety.js';
+import { fail, safePath, cleanRelative, atomicWrite, walkFiles, parseProperties, serializeProperties, validateProperties, validateNetwork, assertAvailablePanelPorts, parseUdpPorts, defaultUdpPorts } from './safety.js';
 import { validatePlayerLists, playerListFiles, commitPlayerListFiles, playerListsRevision, assertPlayerListRevision } from './player-lists.js';
 import { createFileOperations, readTextFile, fileRevision, filePath, FILE_LIMITS } from './file-operations.js';
 import { bedrockLogLevel } from './bedrock-log.js';
@@ -85,9 +85,9 @@ export async function ensureServerIdentity(runRoot) {
   return destination;
 }
 
-export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, hostReader, portAllocator }) {
+export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, hostReader, portAllocator, protectedTcpPorts = [] }) {
   const applicationRuntime = applicationController || createApplicationRuntime({dataDir,resourceController,storageController});
-  const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
+  const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [...protectedTcpPorts, Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
   let applicationControl = {supported:false,engine:'bubblewrap',runtimes:[],reason:'Application runtime has not been checked.'};
   const versionService = createVersionService({ store, dataDir, emit, audit: (...args) => audit(...args), reserveDisk: bytes => reservePackageWorkspace(bytes) });
   const processes = new Map();
@@ -573,6 +573,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   }
 
   async function probePorts(server) {
+    assertAvailablePanelPorts(server, protectedTcpPorts);
     for (const port of [...(isApp(server) || ['nethernet', 'auto'].includes(server.transport) ? [server.port] : []), ...(server.debugPort == null ? [] : [server.debugPort])]) {
       const probe = address => new Promise((resolve, reject) => {
         const listener = net.createServer();
@@ -605,6 +606,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     for (let attempt = 0; attempt < 8; attempt++) {
       if (mode === 'auto') Object.assign(server, await allocatePorts({ kind: appKind(server), transport: isApp(server) ? 'auto' : server.transport, maxPlayers: server.maxPlayers, servers: networkServers, excludedPorts }));
       assertOpen(); validateNetwork(networkServers(), server.id, server);
+      assertAvailablePanelPorts(server, protectedTcpPorts);
       pendingNetworks.set(server.id, { kind: appKind(server), port: server.port, portV6: server.portV6, transport: server.transport, udpPorts: server.udpPorts, debugPort: server.debugPort });
       try {
         if (mode === 'auto' || isApp(server)) await probePorts(server);
