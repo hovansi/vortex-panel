@@ -37,7 +37,7 @@ jobs:
           PUBLIC_IP=''
           for provider in https://api.ipify.org https://checkip.amazonaws.com; do
             if candidate=$(curl --ipv4 --proto '=https' --tlsv1.2 --fail --silent --show-error --connect-timeout 5 --max-time 15 "$provider") &&
-              python3 -I -c 'import ipaddress,sys; value=ipaddress.ip_address(sys.argv[1]); assert value.version == 4 and value.is_global and str(value) == sys.argv[1]' "$candidate"; then
+              python3 -I -B -c 'import ipaddress,sys; value=ipaddress.ip_address(sys.argv[1]); assert value.version == 4 and value.is_global and str(value) == sys.argv[1]' "$candidate"; then
               PUBLIC_IP=$candidate
               break
             fi
@@ -62,6 +62,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          umask 077
           PANEL_PID=$(sudo systemctl show vortex-panel.service --property=MainPID --value)
           [[ $PANEL_PID =~ ^[1-9][0-9]*$ ]]
           PANEL_NODE=$(sudo readlink -f "/proc/$PANEL_PID/exe")
@@ -131,7 +132,7 @@ jobs:
             const current=snapshot();assertIdentity(current);assert.equal(current.values.HOST,'127.0.0.1');assert.equal(current.values.PORT,'3000');assert.equal(current.values.TRUST_PROXY,'1');assert.equal(current.values.PUBLIC_URL,origin(port));assert.equal(current.receipt.url,origin(port));assert.equal(current.receipt.publicPort??443,port);
             const health=await request(port,'/healthz');assert.equal(health.status,200);assert.equal(health.fingerprint,baselineFingerprint);const value=JSON.parse(health.content);assert.equal(value.service,'vortex-panel');assert.equal(String(value.processId),current.pid);await assertRedirect(port);
             const inspection=JSON.parse(command('/usr/bin/python3',['-I','-B','/opt/vortex-panel/current/server/host-tls.py','inspect']));assert.equal(inspection.ok,true);assert.equal(inspection.tls.mode,'self-signed');assert.equal(inspection.tls.publicPort,port);assert.equal(inspection.tls.automaticRenewal,false);
-            const verification=JSON.parse(command('/usr/bin/python3',['-I','-c',"import importlib.util,json; s=importlib.util.spec_from_file_location('owned_tls','/opt/vortex-panel/current/server/host-tls.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); t=m.TLSManager(); address,backend=t.identity(); cert=t.certificate('/etc/vortex-panel/tls/ip.crt',address); t.tls_health(address,cert['fingerprint'],'/etc/vortex-panel/tls/ip.crt'); print(json.dumps({'publicPort':t.public_port,'backend':backend,'generation':t.active_generation()}))"]));assert.equal(verification.publicPort,port);assert.equal(verification.backend,3000);assert.equal(verification.generation,baseline.generation);
+            const verification=JSON.parse(command('/usr/bin/python3',['-I','-B','-c',"import importlib.util,json; s=importlib.util.spec_from_file_location('owned_tls','/opt/vortex-panel/current/server/host-tls.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); t=m.TLSManager(); address,backend=t.identity(); cert=t.certificate('/etc/vortex-panel/tls/ip.crt',address); t.tls_health(address,cert['fingerprint'],'/etc/vortex-panel/tls/ip.crt'); print(json.dumps({'publicPort':t.public_port,'backend':backend,'generation':t.active_generation()}))"]));assert.equal(verification.publicPort,port);assert.equal(verification.backend,3000);assert.equal(verification.generation,baseline.generation);
             console.log(JSON.stringify({stage:label,publicPort:port,backendPort:3000,servedFingerprint:health.fingerprint,certificatePreserved:true,renewalVerificationPort:verification.publicPort}));
           }
           async function assertForwardedHeaders(port){
@@ -191,7 +192,7 @@ jobs:
               "assert state['restored']",
               'print(json.dumps(state))',
             ].join('\n');
-            const result=JSON.parse(command('/usr/bin/python3',['-I','-c',program],60000));assert.equal(result.injected,true);assert.equal(result.restored,true);
+            const result=JSON.parse(command('/usr/bin/python3',['-I','-B','-c',program],60000));assert.equal(result.injected,true);assert.equal(result.restored,true);
             const after=snapshot();for(const key of ['environment','proxy','receiptBytes'])assert.equal(after[key],before[key],'Rollback changed an original access file.');assertIdentity(after);await assertPortClosed(443);await assertState(19191,'injected-reload-failure-restored');
           }
           const {assertAvailablePanelPorts}=await import('file:///opt/vortex-panel/current/server/safety.js');

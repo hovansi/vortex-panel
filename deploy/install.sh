@@ -422,7 +422,7 @@ if [[ $FRESH_INSTALL == true ]]; then
     fi
     ACCESS_ARGS=(preflight --plan "$RECOVERY_DIR/public-access.json" --public-port "$VORTEX_PUBLIC_PORT")
     if [[ -n $VORTEX_PUBLIC_IP ]]; then ACCESS_ARGS+=(--public-ip "$VORTEX_PUBLIC_IP"); fi
-    python3 "$SOURCE_DIR/deploy/configure-access.py" "${ACCESS_ARGS[@]}"
+    python3 -I -B "$SOURCE_DIR/deploy/configure-access.py" "${ACCESS_ARGS[@]}"
   fi
 elif [[ $VORTEX_ACCESS_MODE != auto || -n $VORTEX_PUBLIC_IP ]]; then
   echo 'An existing installation keeps its access configuration. IP and local-only flags apply only to a fresh installation.' >&2
@@ -430,7 +430,7 @@ elif [[ $VORTEX_ACCESS_MODE != auto || -n $VORTEX_PUBLIC_IP ]]; then
 elif [[ $VORTEX_PUBLIC_PORT_EXPLICIT == true ]]; then
   # The helper accepts only an exact Vortex-owned endpoint. A customer proxy or
   # occupied destination is preserved before any core package/source update.
-  python3 "$SOURCE_DIR/deploy/configure-access.py" preflight-upgrade --plan "$RECOVERY_DIR/public-access.json" --public-port "$VORTEX_PUBLIC_PORT"
+  python3 -I -B "$SOURCE_DIR/deploy/configure-access.py" preflight-upgrade --plan "$RECOVERY_DIR/public-access.json" --public-port "$VORTEX_PUBLIC_PORT"
   VORTEX_UPGRADE_ACCESS=true
 fi
 # END automatic access plan
@@ -730,7 +730,7 @@ for attempt in {1..30}; do
 done
 [[ $READY == true ]] || { echo 'Readiness check failed. Rolling back service and source.' >&2; false; }
 if [[ $VORTEX_AUTO_ACCESS == true ]]; then
-  python3 "$SOURCE_DIR/deploy/configure-access.py" apply --plan "$RECOVERY_DIR/public-access.json"
+  python3 -I -B "$SOURCE_DIR/deploy/configure-access.py" apply --plan "$RECOVERY_DIR/public-access.json"
 fi
 python3 "$SOURCE_DIR/deploy/install-ledger.py" finalize --role panel --data-dir "$DATA_DIR" --source-dir "$INSTALL_ROOT" --service-user "$SERVICE_USER"
 if [[ -f $MIGRATION_TRANSACTION ]]; then
@@ -742,7 +742,7 @@ CHANGED_SERVICE=false
 # Endpoint migration has its own bounded rollback. A failed access change must
 # not restore old source beneath the committed new core and installer ledger.
 if [[ $VORTEX_UPGRADE_ACCESS == true ]]; then
-  if ! python3 "$SOURCE_DIR/deploy/configure-access.py" apply-upgrade --plan "$RECOVERY_DIR/public-access.json"; then
+  if ! python3 -I -B "$SOURCE_DIR/deploy/configure-access.py" apply-upgrade --plan "$RECOVERY_DIR/public-access.json"; then
     echo 'The core panel update completed, but HTTPS port migration was not verified. Review the diagnostics above for the endpoint and any required recovery.' >&2
     echo "Private migration plan retained for review: $RECOVERY_DIR/public-access.json" >&2
     RECOVERY_DIR=
