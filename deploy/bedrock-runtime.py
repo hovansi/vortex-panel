@@ -399,6 +399,19 @@ def publish(candidate, target):
         raise OSError(code, os.strerror(code), str(target))
 
 
+def prepare_candidate_directories(candidate):
+    """Normalize each newly owned directory before any trust or ELF checks."""
+    candidate.chmod(0o755)
+    trusted(candidate, directory=True)
+    # Path.mkdir(parents=True) applies mode only to the final component. Make
+    # every component explicitly and chmod it independently of caller umask.
+    for relative in ('bin', 'lib', 'lib/x86_64', 'licenses'):
+        directory = candidate / relative
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+        trusted(directory, directory=True)
+
+
 def install(role):
     require(os.geteuid() == 0, 'Run the Bedrock runtime installer as root.')
     require(sys.platform == 'linux' and platform.machine().lower() in ('aarch64', 'arm64') and struct.calcsize('P') == 8,
@@ -444,9 +457,7 @@ def install(role):
                 print('Preparing ' + ('verified prebuilt' if bundle is not None else 'pinned source') + ' Box64 ' + VERSION +
                       ' for Minecraft Bedrock on ARM64…', file=sys.stderr, flush=True)
                 download(archive)
-                (candidate / 'bin').mkdir(mode=0o755)
-                (candidate / 'lib/x86_64').mkdir(parents=True, mode=0o755)
-                (candidate / 'licenses').mkdir(mode=0o755)
+                prepare_candidate_directories(candidate)
                 if bundle is not None:
                     extract_runtime_files(archive, source)
                     (candidate / 'bin/box64').write_bytes(bundle['files']['bin/box64'])

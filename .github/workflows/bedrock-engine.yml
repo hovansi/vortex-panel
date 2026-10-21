@@ -163,6 +163,7 @@ jobs:
           assert 0 < manifest.stat().st_size <= 64 * 1024
           for filename in [archive, manifest]:
               filename.chmod(0o644)
+          assert recipe.bundled_runtime(output) is not None
           print(json.dumps({'nativeArchitecture': 'arm64', 'baseline': metadata['baseline'], 'compiler': subprocess.check_output(['gcc-11', '-dumpfullversion'], text=True).strip(), 'requiredGLIBC': sorted(required), 'archive': metadata['archive'], 'executable': metadata['executable'], 'exactFileInventory': [name for name, _ in inventory], 'nativeVersionOutput': version_output.strip(), 'passed': True}))
           PY
           BUILD

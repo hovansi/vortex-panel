@@ -20,7 +20,7 @@ jobs:
 
   installed-bedrock:
     needs: engine
-    if: ${{ always() && (needs.engine.result == 'success' || needs.engine.result == 'skipped') }}
+    if: ${{ !cancelled() && (needs.engine.result == 'success' || needs.engine.result == 'skipped') }}
     name: Ubuntu ARM64 / official Stable and Preview
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -340,12 +340,25 @@ jobs:
             assert.equal(effective.memoryMaxBytes, 1536 * 1024 ** 2);
             assert.equal(effective.cpuQuotaMicros, 150000);
             assert.equal(effective.cpuPeriodMicros, 100000);
-            assert.ok(effective.cgroupPath.startsWith('/sys/fs/cgroup/'));
-            assert.equal(readFileSync(join(effective.cgroupPath, 'memory.max'), 'utf8').trim(), String(1536 * 1024 ** 2));
-            assert.equal(readFileSync(join(effective.cgroupPath, 'cpu.max'), 'utf8').trim(), '150000 100000');
+            assert.ok(Number.isSafeInteger(value.pid) && value.pid > 1);
+            assert.match(value.id, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i);
+            const relative = effective.cgroupPath;
+            assert.equal(typeof relative, 'string');
+            assert.match(relative, /^\/(?:[A-Za-z0-9_.@:-]+\/)*[A-Za-z0-9_.@:-]+$/);
+            assert.ok(relative.split('/').slice(1).every(part => part !== '.' && part !== '..'));
+            const unitGroup = execFileSync('systemctl', ['show', unit, '--property=ControlGroup', '--value'], { encoding: 'utf8' }).trim();
+            assert.ok(unitGroup.startsWith('/') && unitGroup.endsWith('/' + unit));
+            const prefix = unitGroup + '/vortex-managed-pool/vortex-server-' + value.id.toLowerCase() + '-';
+            assert.ok(relative.startsWith(prefix));
+            assert.match(relative.slice(prefix.length), /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+            const cgroupDirectory = '/sys/fs/cgroup' + relative;
+            assert.equal(realpathSync(cgroupDirectory), cgroupDirectory);
             const membership = readFileSync('/proc/' + value.pid + '/cgroup', 'utf8').trim().split('\n');
-            assert.ok(membership.some(line => line === '0::' + effective.cgroupPath.slice('/sys/fs/cgroup'.length)));
-            return effective;
+            assert.ok(membership.includes('0::' + relative));
+            assert.equal(readFileSync(join(cgroupDirectory, 'memory.max'), 'utf8').trim(), String(1536 * 1024 ** 2));
+            assert.equal(readFileSync(join(cgroupDirectory, 'cpu.max'), 'utf8').trim(), '150000 100000');
+            assert.equal(readFileSync(join(cgroupDirectory, 'memory.swap.max'), 'utf8').trim(), '0');
+            return { ...effective, cgroupDirectory };
           }
           async function exercise(channel) {
             const expected = channel === 'stable' ? refreshed.latest : refreshed.preview;
@@ -393,7 +406,7 @@ jobs:
             assert.equal(checkedBackup.consistency, 'native-online');
             assert.equal(checkedBackup.integrity.status, 'verified');
             assert.equal(checkedBackup.sha256, backups[0].sha256);
-            const peakPath = join(effective.cgroupPath, 'memory.peak');
+            const peakPath = join(effective.cgroupDirectory, 'memory.peak');
             const peakBytes = existsSync(peakPath) ? Number(readFileSync(peakPath, 'utf8').trim()) : null;
             await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped');
             const worldRoot = join(dataDir, 'servers', id, 'run', 'worlds', properties['level-name'] || 'Bedrock level');

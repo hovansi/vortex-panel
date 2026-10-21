@@ -31,7 +31,7 @@ jobs:
 
   installed-applications:
     needs: engine
-    if: ${{ always() && (needs.engine.result == 'success' || needs.engine.result == 'skipped') }}
+    if: ${{ !cancelled() && (needs.engine.result == 'success' || needs.engine.result == 'skipped') }}
     name: Ubuntu ARM64 / native installed applications
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120

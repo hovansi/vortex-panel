@@ -188,6 +188,8 @@ MIB = 1024 ** 2
 MAX_ZIP = 32 * MIB
 MAX_EXPANDED = 64 * MIB
 MAX_MEMBER = 4 * MIB
+BEDROCK_MEMBERS = {'deploy/bedrock-box64-arm64.tar.xz': 16 * MIB,
+                   'deploy/bedrock-box64-arm64.json': 64 * 1024}
 MAX_MEMBERS = 4096
 ROOT_FILES = {'package.json', 'package-lock.json', 'README.md', '.gitignore', '.gitattributes', '.env.example', 'LICENSE', 'LICENSE.md', 'NOTICE'}
 ROOT_DIRS = {'server', 'public', 'deploy', 'scripts', 'docs'}
@@ -344,11 +346,14 @@ def archive_members(bundle, version):
              'Source ZIP contains a link, special file or privileged mode.')
         need(not entry.flag_bits & 1 and entry.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED),
              'Encrypted or unsupported source ZIP entries are not accepted.')
-        need(0 <= entry.file_size <= MAX_MEMBER and (not entry.is_dir() or entry.file_size == 0), 'Source ZIP member exceeds its size limit.')
+        member_limit = BEDROCK_MEMBERS.get(normalized, MAX_MEMBER)
+        need(0 <= entry.file_size <= member_limit and (not entry.is_dir() or entry.file_size == 0), 'Source ZIP member exceeds its size limit.')
         total += entry.file_size
         need(total <= MAX_EXPANDED, 'Expanded source ZIP exceeds its size limit.')
         if not entry.is_dir():
             files.add(normalized)
+    need(not files.intersection(BEDROCK_MEMBERS) or set(BEDROCK_MEMBERS) <= files,
+         'The release ZIP contains an incomplete Bedrock runtime bundle.')
     need(REQUIRED <= files, 'The release ZIP is missing required installer/source files.')
     need(not any('/'.join(pathlib.PurePosixPath(name).parts[:index]) in files
                  for name in names for index in range(1, len(pathlib.PurePosixPath(name).parts))),

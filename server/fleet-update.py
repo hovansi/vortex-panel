@@ -29,6 +29,9 @@ VERSION = re.compile(r'^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{
 SHA = re.compile(r'^[a-f0-9]{64}$')
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_SOURCE = 256 * 1024 * 1024
+MAX_MEMBER = 4 * 1024 * 1024
+BEDROCK_MEMBERS = {'deploy/bedrock-box64-arm64.tar.xz': 16 * 1024 * 1024,
+                   'deploy/bedrock-box64-arm64.json': 64 * 1024}
 ROLES = {'panel': ('/opt/vortex-panel', '/etc/vortex-panel.env', 'vortex-panel.service', 'server/index.js'), 'worker': ('/opt/vortex-node', '/etc/vortex-node.json', 'vortex-node.service', 'server/node-cli.js')}
 
 
@@ -131,8 +134,10 @@ def inspect_manifest(data, version, assets):
     for row in rows:
         require(isinstance(row, dict) and set(row) == {'path', 'bytes', 'sha256', 'mode'}, 'Release inventory schema changed.')
         name = safe_name(row['path'])
-        require(name not in names and isinstance(row['bytes'], int) and 0 <= row['bytes'] <= 16 * 1024 * 1024 and SHA.fullmatch(row['sha256']) and row['mode'] in (0o100644, 0o100755), 'Invalid release inventory member.')
+        member_limit = BEDROCK_MEMBERS.get(name, MAX_MEMBER)
+        require(name not in names and type(row['bytes']) is int and 0 <= row['bytes'] <= member_limit and isinstance(row['sha256'], str) and SHA.fullmatch(row['sha256']) and row['mode'] in (0o100644, 0o100755), 'Invalid release inventory member.')
         names.add(name)
+    require(not names.intersection(BEDROCK_MEMBERS) or set(BEDROCK_MEMBERS) <= names, 'Release contains an incomplete Bedrock runtime bundle.')
     require(sum(row['bytes'] for row in rows) <= MAX_SOURCE and {'package.json', 'package-lock.json', 'server/index.js', 'server/node-cli.js', 'server/node-runtime.js'} <= names, 'Release source is incomplete or oversized.')
     return value
 
