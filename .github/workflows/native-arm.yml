@@ -98,6 +98,8 @@ jobs:
           await request('/auth/setup', 'POST', { token: setupToken, username: 'arm-native', password: randomBytes(32).toString('base64url') });
           assert.ok(cookie && csrf);
           const dashboard = await request('/dashboard');
+          const capabilities = dashboard.capabilities;
+          console.log(JSON.stringify({ stage: 'native-capabilities', application: { supported: capabilities.applicationRuntime.supported, reason: capabilities.applicationRuntime.reason, reasonCode: capabilities.applicationRuntime.reasonCode, diagnosticPhase: capabilities.applicationRuntime.diagnosticPhase, runtimes: capabilities.applicationRuntime.runtimes.map(runtime => ({ kind: runtime.kind, available: runtime.available, managedAvailable: runtime.managedAvailable, missing: runtime.prerequisites?.missing || [] })) }, resources: { supported: capabilities.resourceControl.supported, fixedSupported: capabilities.resourceControl.fixedSupported, pidsSupported: capabilities.resourceControl.pidsSupported, reason: capabilities.resourceControl.reason, configuredUnit: capabilities.resourceControl.configuredUnit }, storage: { supported: capabilities.storageControl.supported, fixedSupported: capabilities.storageControl.fixedSupported, reason: capabilities.storageControl.reason } }));
           assert.equal(dashboard.host.arch, 'arm64');
           assert.equal(dashboard.capabilities.bedrockRuntime.supported, false);
           assert.equal(dashboard.capabilities.applicationRuntime.supported, true);
