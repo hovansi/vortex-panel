@@ -180,7 +180,17 @@ apt-get -o DPkg::Lock::Timeout=120 update
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
 if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
-  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove g++ cmake libjemalloc2
+  VORTEX_BEDROCK_PAGE_SIZE=$(getconf PAGESIZE)
+  if [[ $VORTEX_BEDROCK_PAGE_SIZE == 4096 ]]; then
+    VORTEX_BEDROCK_RUNTIME_MODE=$(python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" bundle-mode --role worker)
+    VORTEX_BEDROCK_PACKAGES=(libjemalloc2)
+    case $VORTEX_BEDROCK_RUNTIME_MODE in
+      source) VORTEX_BEDROCK_PACKAGES+=(g++ cmake);;
+      prebuilt|installed) ;;
+      *) echo 'Invalid ARM64 Bedrock runtime preparation mode.' >&2; exit 1;;
+    esac
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove "${VORTEX_BEDROCK_PACKAGES[@]}"
+  fi
 fi
 # BEGIN optional kernel module
 prepare_memory_module() {

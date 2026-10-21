@@ -33,3 +33,9 @@ export const NODE_RUNTIME_FILES = Object.freeze([
 export const NODE_INSTALLER_FILES = Object.freeze([
   ...NODE_RUNTIME_FILES, 'deploy/install-node.sh', 'deploy/application-isolation.py', 'deploy/install-ledger.py', 'deploy/bedrock-runtime.py',
 ]);
+
+// Generated release assets accompany installers when present; source checkouts
+// retain the bounded source-build path on hosts with enough available memory.
+export const NODE_INSTALLER_OPTIONAL_FILES = Object.freeze([
+  'deploy/bedrock-box64-arm64.tar.xz', 'deploy/bedrock-box64-arm64.json',
+]);

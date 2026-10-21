@@ -11,6 +11,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import lzma
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -41,11 +42,20 @@ GCC_LICENSES = {'COPYING3': (35147, '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165
 ROOTS = {'panel': Path('/opt/vortex-panel'), 'worker': Path('/opt/vortex-node')}
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'HOME': '/nonexistent'}
 WORK_BYTES = 1536 * 1024 ** 2
+BUILD_MEMORY_BYTES = 2 * 1024 ** 3
+BUNDLE_ARCHIVE = 'bedrock-box64-arm64.tar.xz'
+BUNDLE_METADATA = 'bedrock-box64-arm64.json'
+BOX64_LICENSE_SHA256 = '18731c3637a3dfc5859be67db7d315d438c531396a4ed15a9c88421b520e7883'
+BUNDLE_BASELINE = {'os': 'ubuntu', 'version': '22.04', 'glibc': '2.35'}
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def valid_sha(value):
+    return isinstance(value, str) and bool(re.fullmatch('[a-f0-9]{64}', value))
 
 
 def digest(path):
@@ -54,6 +64,78 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(chunk)
     return value.hexdigest()
+
+
+def stable_bytes(path, limit):
+    before = path.lstat()
+    require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and 0 < before.st_size <= limit
+            and (sys.platform == 'win32' or not before.st_mode & 0o022), 'Unsafe or oversized bundled runtime input: ' + str(path))
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        opened = os.fstat(descriptor)
+        require((before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino), 'Bundled runtime input changed while opening.')
+        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+            value = stream.read(limit + 1)
+        after, current = os.fstat(descriptor), path.lstat()
+        def stamp(info):
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                    info.st_ctime_ns if sys.platform != 'win32' else None, info.st_mode, info.st_nlink)
+        require(len(value) == before.st_size and stamp(before) == stamp(after) == stamp(current), 'Bundled runtime input changed while reading.')
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def bundled_runtime(directory=None):
+    directory = directory or Path(__file__).absolute().parent
+    require(directory.resolve(strict=True) == directory, 'Bundled runtime directory must not be linked.')
+    archive, metadata = directory / BUNDLE_ARCHIVE, directory / BUNDLE_METADATA
+    present = [os.path.lexists(path) for path in (archive, metadata)]
+    if not any(present):
+        return None
+    require(all(present), 'The ARM64 runtime bundle is incomplete; both fixed archive and metadata files are required.')
+    value = json.loads(stable_bytes(metadata, 64 * 1024).decode('utf-8'))
+    expected = {'schema': 1, 'engine': 'box64', 'version': VERSION, 'hostArch': 'arm64', 'guestArch': 'x64',
+                'pageSize': 4096, 'profile': 'generic-arm64-v1'}
+    require(isinstance(value, dict) and all(value.get(key) == item for key, item in expected.items()), 'Bundled runtime metadata identity is invalid.')
+    require(value.get('source') == {'commit': COMMIT, 'sha256': SOURCE_SHA256} and value.get('baseline') == BUNDLE_BASELINE,
+            'Bundled runtime source pin or native build baseline is invalid.')
+    require(value.get('license') == {'path': 'licenses/Box64-LICENSE', 'sha256': BOX64_LICENSE_SHA256}, 'Bundled Box64 license inventory is invalid.')
+    compressed, executable = value.get('archive'), value.get('executable')
+    require(isinstance(compressed, dict) and compressed.get('name') == BUNDLE_ARCHIVE and type(compressed.get('bytes')) is int
+            and 0 < compressed['bytes'] <= 16 * 1024 ** 2 and valid_sha(compressed.get('sha256')),
+            'Bundled runtime archive identity is invalid.')
+    require(isinstance(executable, dict) and executable.get('path') == 'bin/box64' and valid_sha(executable.get('sha256')),
+            'Bundled runtime executable identity is invalid.')
+    data = stable_bytes(archive, 16 * 1024 ** 2)
+    require(len(data) == compressed['bytes'] and hashlib.sha256(data).hexdigest() == compressed['sha256'], 'Bundled runtime archive failed size/SHA-256 verification.')
+    payloads = {}
+    expected_files = {'bin/box64': (64 * 1024 ** 2, 0o755, executable['sha256']),
+                      'licenses/Box64-LICENSE': (1064, 0o644, BOX64_LICENSE_SHA256)}
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=128 * 1024 ** 2)
+    unpacked = decoder.decompress(data, max_length=64 * 1024 ** 2 + 64 * 1024 + 1)
+    require(decoder.eof and not decoder.unused_data and len(unpacked) <= 64 * 1024 ** 2 + 64 * 1024,
+            'Bundled runtime exceeds its decompressed archive bound or contains trailing streams.')
+    offset = 0
+    while offset + 512 <= len(unpacked) and any(unpacked[offset:offset + 512]):
+        # Parse each physical header: extended/sparse headers and hidden
+        # concatenated tar payloads are outside the exact two-file contract.
+        member = tarfile.TarInfo.frombuf(unpacked[offset:offset + 512], encoding='utf-8', errors='strict')
+        require(member.name in expected_files and member.name not in payloads and member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                and not member.linkname and not member.sparse, 'The bundled runtime archive contains an unexpected entry or link.')
+        limit, mode, sha256 = expected_files[member.name]
+        require(0 < member.size <= limit and member.mode == mode, 'Bundled runtime file exceeds its size bound or has unexpected permissions.')
+        start, end = offset + 512, offset + 512 + member.size
+        contents = unpacked[start:end]
+        require(len(contents) == member.size and hashlib.sha256(contents).hexdigest() == sha256, 'Bundled runtime file failed SHA-256 verification.')
+        payloads[member.name] = contents
+        offset = start + ((member.size + 511) // 512) * 512
+    require(len(unpacked) - offset >= 1024 and not any(unpacked[offset:]), 'Bundled runtime tar archive has missing end markers or unexpected trailing data.')
+    require(set(payloads) == set(expected_files), 'Bundled runtime archive inventory is incomplete.')
+    header = payloads['bin/box64'][:64]
+    require(len(header) == 64 and header[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', header, 18)[0] == 183,
+            'Bundled Box64 executable must be native little-endian ARM64 ELF.')
+    return {'metadata': value, 'files': payloads}
 
 
 def trusted(path, directory=False):
@@ -161,6 +243,61 @@ def extract(archive, destination):
                 require(member.issym() or member.islnk(), 'Unsupported Box64 archive entry.')
 
 
+def extract_runtime_files(archive, destination):
+    """Copy only the two pinned GCC libraries and MIT notice for binary installs."""
+    root = 'box64-' + COMMIT + '/'
+    wanted = {root + 'x64lib/libstdc++.so.6': ('x64lib/libstdc++.so.6', 2559240, LIBRARIES['libstdc++.so.6']),
+              root + 'x64lib/libgcc_s.so.1': ('x64lib/libgcc_s.so.1', 178760, LIBRARIES['libgcc_s.so.1']),
+              root + 'LICENSE': ('LICENSE', 1064, BOX64_LICENSE_SHA256)}
+    found = set()
+    with tarfile.open(archive, 'r:gz') as source:
+        for member in source:
+            if member.name not in wanted:
+                continue
+            require(member.name not in found and member.isfile() and not member.issym() and not member.islnk(),
+                    'Pinned runtime source contains a duplicate or linked required file.')
+            relative, size, sha256 = wanted[member.name]
+            require(member.size == size, 'Pinned runtime source file has an unexpected size.')
+            with source.extractfile(member) as stream:
+                data = stream.read(size + 1)
+            require(len(data) == size and hashlib.sha256(data).hexdigest() == sha256, 'Pinned runtime library or license failed SHA-256 verification.')
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            with target.open('xb') as output:
+                output.write(data)
+            target.chmod(0o644)
+            found.add(member.name)
+    require(found == set(wanted), 'Pinned source is missing a required runtime library or license.')
+
+
+@contextlib.contextmanager
+def source_workspace(runtime):
+    """Binary installation has only bounded downloads and no build processes."""
+    base = Path(tempfile.mkdtemp(prefix='.box64-source-', dir=runtime))
+    base.chmod(0o700)
+    try:
+        yield base
+    finally:
+        original = sys.exc_info()[1]
+        try:
+            require(base.parent == runtime and base.name.startswith('.box64-source-') and base.resolve() == base,
+                    'Refusing to clean an unexpected runtime source workspace.')
+            shutil.rmtree(base)
+        except (OSError, ValueError) as cleanup:
+            print('Bedrock ARM64 cleanup warning: ' + str(cleanup) + '. Private source tree preserved at ' + str(base), file=sys.stderr, flush=True)
+            if original is None:
+                raise
+
+
+def source_build_headroom():
+    memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+              if line.startswith(('MemAvailable:', 'MemTotal:'))}
+    reserve = max(256 * 1024 ** 2, (memory.get('MemTotal', 0) + 9) // 10)
+    require(memory.get('MemTotal', 0) > 0 and memory.get('MemAvailable', 0) >= BUILD_MEMORY_BYTES + reserve,
+            'A source-only ARM64 Box64 build requires 2 GiB of available physical RAM plus a host reserve of 10% (at least 256 MiB). '
+            'Use the official Vortex release installer with its prebuilt ARM64 runtime on smaller hosts.')
+
+
 def unmount_owned(mount, image):
     deadline = time.monotonic() + 30
     def budget(limit):
@@ -226,7 +363,7 @@ def build_volume(runtime):
 def build(command, work):
     unit = 'vortex-box64-build-' + uuid.uuid4().hex
     arguments = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect', '--service-type=exec', '--unit=' + unit,
-                 '--property=WorkingDirectory=' + str(work), '--property=MemoryMax=768M', '--property=MemorySwapMax=0',
+                 '--property=WorkingDirectory=' + str(work), '--property=MemoryMax=2G', '--property=MemorySwapMax=0',
                  '--property=CPUQuota=90%', '--property=TasksMax=128', '--property=RuntimeMaxSec=3600',
                  '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TimeoutStopSec=30',
                  '--property=Nice=10', '--property=IOWeight=10', '--property=NoNewPrivileges=yes',
@@ -267,6 +404,9 @@ def install(role):
     require(sys.platform == 'linux' and platform.machine().lower() in ('aarch64', 'arm64') and struct.calcsize('P') == 8,
             'The private Box64 runtime requires native ARM64 Linux userspace.')
     require(os.sysconf('SC_PAGE_SIZE') == 4096, 'Bedrock on ARM64 currently requires a 4 KiB page-size kernel.')
+    # Incomplete or altered release assets always fail closed, even when a
+    # previous compatible engine is already installed. They never cause a build.
+    bundle = bundled_runtime()
     runtime = ROOTS[role] / 'runtime'
     for path in (ROOTS[role], runtime):
         if not os.path.lexists(path):
@@ -276,13 +416,16 @@ def install(role):
     target = prefix(role)
     if os.path.lexists(target):
         return inspect(role)
-    for tool in ('cmake', 'gcc', 'g++', 'make', 'systemd-run', 'mkfs.ext4', 'mount', 'umount', 'findmnt', 'losetup'):
-        require(shutil.which(tool, path=ENV['PATH']), 'Missing ARM64 Bedrock build dependency (' + tool + '). Run the full Vortex installer to prepare this host.')
-    require(Path('/run/systemd/system').is_dir(), 'The bounded Bedrock runtime build requires systemd.')
-    available = next((int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:')), 0)
-    require(available >= 1024 * 1024 ** 2, 'At least 1 GiB of currently available physical RAM is required to prepare Bedrock ARM64 safely. Stop workloads and retry the full installer.')
-    require(shutil.disk_usage(runtime).free >= WORK_BYTES + 512 * 1024 ** 2,
-            'At least 2 GiB of free installation storage is required to build Bedrock ARM64 safely.')
+    if bundle is None:
+        for tool in ('cmake', 'gcc', 'g++', 'make', 'systemd-run', 'mkfs.ext4', 'mount', 'umount', 'findmnt', 'losetup'):
+            require(shutil.which(tool, path=ENV['PATH']), 'Missing ARM64 Bedrock build dependency (' + tool + '). Run the full Vortex installer to prepare this host.')
+        require(Path('/run/systemd/system').is_dir(), 'The bounded Bedrock runtime build requires systemd.')
+        source_build_headroom()
+        require(shutil.disk_usage(runtime).free >= WORK_BYTES + 512 * 1024 ** 2,
+                'At least 2 GiB of free installation storage is required to build Bedrock ARM64 safely.')
+    else:
+        require(shutil.disk_usage(runtime).free >= 64 * 1024 ** 2 + len(bundle['files']['bin/box64']),
+                'Insufficient free installation storage for the verified prebuilt ARM64 runtime.')
     lock_path = runtime / '.box64-install.lock'
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
@@ -295,21 +438,29 @@ def install(role):
         candidate = Path(tempfile.mkdtemp(prefix='.box64-candidate-', dir=runtime))
         candidate.chmod(0o755)
         try:
-            with build_volume(runtime) as work:
+            with (source_workspace(runtime) if bundle is not None else build_volume(runtime)) as work:
                 archive, source, output = work / 'source.tar.gz', work / 'source', work / 'build'
                 source.mkdir(mode=0o755)
-                print('Preparing pinned Box64 ' + VERSION + ' for Minecraft Bedrock on ARM64…', file=sys.stderr, flush=True)
+                print('Preparing ' + ('verified prebuilt' if bundle is not None else 'pinned source') + ' Box64 ' + VERSION +
+                      ' for Minecraft Bedrock on ARM64…', file=sys.stderr, flush=True)
                 download(archive)
-                extract(archive, source)
-                # Keep upstream's O2 runtime optimization without generating
-                # large debug records on memory-constrained production hosts.
-                build(['cmake', '-S', str(source), '-B', str(output), '-DARM_DYNAREC=ON', '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
-                       '-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG', '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG', '-DNOGIT=1'], work)
-                build(['cmake', '--build', str(output), '--parallel', '1'], work)
                 (candidate / 'bin').mkdir(mode=0o755)
                 (candidate / 'lib/x86_64').mkdir(parents=True, mode=0o755)
                 (candidate / 'licenses').mkdir(mode=0o755)
-                shutil.copyfile(output / 'box64', candidate / 'bin/box64')
+                if bundle is not None:
+                    extract_runtime_files(archive, source)
+                    (candidate / 'bin/box64').write_bytes(bundle['files']['bin/box64'])
+                    require((source / 'LICENSE').read_bytes() == bundle['files']['licenses/Box64-LICENSE'],
+                            'Bundled Box64 MIT license differs from the pinned upstream source.')
+                else:
+                    extract(archive, source)
+                    # Source checkouts keep O2 execution performance and use a
+                    # 2 GiB bounded build. Official releases use native CI output.
+                    build(['cmake', '-S', str(source), '-B', str(output), '-DARM_DYNAREC=ON', '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
+                           '-DCMAKE_C_COMPILER=/usr/bin/gcc', '-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG',
+                           '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g0 -DNDEBUG', '-DNOGIT=1'], work)
+                    build(['cmake', '--build', str(output), '--parallel', '1'], work)
+                    shutil.copyfile(output / 'box64', candidate / 'bin/box64')
                 (candidate / 'bin/box64').chmod(0o755)
                 elf(candidate / 'bin/box64', 183)
                 for name in LIBRARIES:
@@ -334,7 +485,7 @@ def install(role):
                 # host Box64 configuration remain outside this transaction.
                 result = subprocess.run([str(candidate / 'bin/box64'), '--version'], env={**ENV, 'BOX64_NORCFILES': '1', 'BOX64_DYNACACHE': '0'},
                                         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
-                require(result.returncode == 0 and VERSION in result.stdout, 'The compiled Box64 executable failed its native version check.')
+                require(result.returncode == 0 and VERSION in result.stdout, 'The prepared Box64 executable failed its native version check.')
                 value = {'schema': 1, 'engine': 'box64', 'version': VERSION, 'hostArch': 'arm64', 'guestArch': 'x64',
                          'pageSize': 4096, 'profile': 'generic-arm64-v1', 'source': {'commit': COMMIT, 'sha256': SOURCE_SHA256},
                          'executable': {'path': 'bin/box64', 'sha256': digest(candidate / 'bin/box64')},
@@ -357,7 +508,7 @@ def install(role):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('install', 'inspect'))
+    parser.add_argument('operation', choices=('install', 'inspect', 'bundle-mode'))
     parser.add_argument('--role', choices=tuple(ROOTS), required=True)
     args = parser.parse_args()
     os.umask(0o022)
@@ -366,8 +517,17 @@ def main():
     for termination in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(termination, interrupted)
     try:
+        if args.operation == 'bundle-mode':
+            if bundled_runtime() is not None:
+                print('prebuilt')
+            elif os.path.lexists(prefix(args.role)):
+                inspect(args.role)
+                print('installed')
+            else:
+                print('source')
+            return 0
         print(json.dumps(install(args.role) if args.operation == 'install' else inspect(args.role), separators=(',', ':')))
-    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError, lzma.LZMAError) as error:
         print('Bedrock ARM64 runtime: ' + str(error), file=sys.stderr)
         return 1
     return 0

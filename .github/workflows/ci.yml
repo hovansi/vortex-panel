@@ -59,15 +59,24 @@ jobs:
           cd output/validation
           sha256sum --check --strict SHA256SUMS
 
+  bedrock-engine:
+    name: Build pinned Bedrock ARM64 engine
+    uses: ./.github/workflows/bedrock-engine.yml
+
   native-arm:
     name: Native ARM64 installation and applications
+    needs: bedrock-engine
     uses: ./.github/workflows/native-arm.yml
     with:
       python_managed: false
+      runtime_artifact: ${{ needs.bedrock-engine.outputs.artifact_name }}
 
   bedrock-arm:
     name: Minecraft Bedrock on ARM64
+    needs: bedrock-engine
     uses: ./.github/workflows/bedrock-arm.yml
+    with:
+      runtime_artifact: ${{ needs.bedrock-engine.outputs.artifact_name }}
 
   https:
     name: Managed HTTPS and public port

@@ -3,6 +3,11 @@ name: Native ARM64
 on:
   workflow_call:
     inputs:
+      runtime_artifact:
+        description: Validated Bedrock engine artifact from this workflow run
+        type: string
+        required: false
+        default: ''
       python_managed:
         description: Build and exercise the latest pinned Python from official source
         type: boolean
@@ -20,7 +25,13 @@ permissions:
   contents: read
 
 jobs:
+  engine:
+    if: ${{ !inputs.runtime_artifact }}
+    uses: ./.github/workflows/bedrock-engine.yml
+
   installed-applications:
+    needs: engine
+    if: ${{ always() && (needs.engine.result == 'success' || needs.engine.result == 'skipped') }}
     name: Ubuntu ARM64 / native installed applications
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -30,6 +41,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Download the validated ARM64 engine bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.runtime_artifact || needs.engine.outputs.artifact_name }}
+          path: deploy
       - name: Verify native ARM64 kernel and userspace
         run: |
           test "$(uname -m)" = aarch64

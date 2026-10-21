@@ -1,0 +1,185 @@
+name: Build Bedrock ARM64 engine
+
+on:
+  workflow_call:
+    outputs:
+      artifact_name:
+        description: Immutable artifact containing the two private runtime bundle files
+        value: ${{ jobs.engine.outputs.artifact_name }}
+      artifact_id:
+        description: GitHub artifact ID for the validated engine bundle
+        value: ${{ jobs.engine.outputs.artifact_id }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: Native ARM64 / Ubuntu 22.04 baseline
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ steps.bundle.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and validate the pinned native engine
+        id: bundle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          test "$(getconf PAGESIZE)" = 4096
+          [[ $GITHUB_RUN_ID =~ ^[0-9]+$ && $GITHUB_RUN_ATTEMPT =~ ^[0-9]+$ ]]
+          output=$(mktemp -d "$RUNNER_TEMP/vortex-bedrock-engine.XXXXXXXX")
+          container="vortex-bedrock-engine-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          # Canonical's official ubuntu:22.04 ARM64 manifest, resolved directly
+          # from Docker Hub. The manifest and its config both identify arm64.
+          image=ubuntu@sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591
+          docker pull --platform linux/arm64 "$image"
+          test "$(docker image inspect --format '{{.Architecture}}' "$image")" = arm64
+          docker run --rm --init -i --name "$container" --platform linux/arm64 \
+            --memory=4g --memory-swap=4g --cpus=2 --pids-limit=256 \
+            --tmpfs /work:rw,exec,nodev,nosuid,size=1536m \
+            --tmpfs /tmp:rw,exec,nodev,nosuid,size=256m \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/deploy/bedrock-runtime.py,dst=/recipe/bedrock-runtime.py,readonly" \
+            --mount "type=bind,src=$output,dst=/output" \
+            --env DEBIAN_FRONTEND=noninteractive --env LC_ALL=C.UTF-8 \
+            --env SOURCE_DATE_EPOCH=1785663119 \
+            "$image" bash -se <<'BUILD'
+          set -Eeuo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          test "$(getconf PAGESIZE)" = 4096
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 22.04
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          apt-get -o Acquire::Retries=3 update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl cmake gcc-11 g++-11 make binutils python3 xz-utils
+          test "$(gcc-11 -dumpversion)" = 11
+          test "$(g++-11 -dumpversion)" = 11
+          python3 -I -B - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('vortex_bedrock_recipe', '/recipe/bedrock-runtime.py')
+          recipe = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(recipe)
+          assert recipe.VERSION == '0.4.4'
+          assert recipe.COMMIT == '2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a'
+          assert recipe.SOURCE_SHA256 == 'ce844041092de3f44316bd1c033a3cc10024e5f798c1a8e8a58f046c6d967981'
+          source = Path('/work/source')
+          source.mkdir(mode=0o755)
+          recipe.download(Path('/work/source.tar.gz'))
+          recipe.extract(Path('/work/source.tar.gz'), source)
+          PY
+          # Use upstream's generic ARM64 target without local source patches,
+          # host-specific CPU flags, function GC or experimental build modes.
+          cmake -S /work/source -B /work/build \
+            -DCMAKE_C_COMPILER=gcc-11 -DCMAKE_CXX_COMPILER=g++-11 \
+            -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=Release \
+            '-DCMAKE_C_FLAGS_RELEASE=-O2 -g0 -DNDEBUG' \
+            '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -g0 -DNDEBUG' \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DNOGIT=1 \
+            -DNO_CONF_INSTALL=ON -DNO_LIB_INSTALL=ON
+          python3 -I -B - <<'PY'
+          import json, re
+          from pathlib import Path
+          commands = json.loads(Path('/work/build/compile_commands.json').read_text())
+          assert commands
+          assert not any(re.search(r'-m(?:arch|cpu)=native\b', row.get('command', '')) for row in commands)
+          PY
+          cmake --build /work/build --parallel 1
+          mkdir -p /work/stage/bin /work/stage/licenses
+          install -m 0755 /work/build/box64 /work/stage/bin/box64
+          strip --strip-unneeded /work/stage/bin/box64
+          install -m 0644 /work/source/LICENSE /work/stage/licenses/Box64-LICENSE
+          BOX64_NORCFILES=1 BOX64_DYNACACHE=0 /work/stage/bin/box64 --version
+          python3 -I -B - <<'PY'
+          import hashlib, importlib.util, json, os, re, stat, struct, subprocess, tarfile
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('vortex_bedrock_recipe', '/recipe/bedrock-runtime.py')
+          recipe = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(recipe)
+          stage, output = Path('/work/stage'), Path('/output')
+          executable = stage / 'bin/box64'
+          license_file = stage / 'licenses/Box64-LICENSE'
+          digest = lambda filename: hashlib.sha256(filename.read_bytes()).hexdigest()
+          binary = executable.read_bytes()
+          assert 0 < len(binary) <= 64 * 1024 ** 2
+          assert binary[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', binary, 18)[0] == 183
+          assert executable.stat().st_mode & 0o777 == 0o755
+          assert digest(license_file) == '18731c3637a3dfc5859be67db7d315d438c531396a4ed15a9c88421b520e7883'
+          versions = subprocess.check_output(['readelf', '--version-info', '--wide', str(executable)], text=True)
+          required = set(re.findall(r'Name: (GLIBC_[A-Za-z0-9_.]+)', versions))
+          assert required
+          for version in required:
+              assert re.fullmatch(r'GLIBC_[0-9]+\.[0-9]+(?:\.[0-9]+)?', version), version
+              assert tuple(map(int, version[6:].split('.'))) <= (2, 35), version
+          libraries = subprocess.check_output(['ldd', str(executable)], text=True)
+          assert 'not found' not in libraries
+          native_env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C.UTF-8', 'HOME': '/nonexistent', 'BOX64_NORCFILES': '1', 'BOX64_DYNACACHE': '0'}
+          version_output = subprocess.check_output([str(executable), '--version'], env=native_env, stderr=subprocess.STDOUT, text=True, timeout=30)
+          assert recipe.VERSION in version_output
+          inventory = [('bin/box64', 0o755), ('licenses/Box64-LICENSE', 0o644)]
+          archive = output / 'bedrock-box64-arm64.tar.xz'
+          with tarfile.open(archive, mode='w:xz', format=tarfile.USTAR_FORMAT, preset=6) as target:
+              for name, mode in inventory:
+                  filename = stage / name
+                  info = filename.lstat()
+                  assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                  member = tarfile.TarInfo(name)
+                  member.size, member.mode, member.uid, member.gid, member.mtime = info.st_size, mode, 0, 0, 0
+                  member.uname, member.gname = '', ''
+                  with filename.open('rb') as contents:
+                      target.addfile(member, contents)
+          assert 0 < archive.stat().st_size <= 16 * 1024 ** 2
+          with tarfile.open(archive, mode='r:xz') as source:
+              members = source.getmembers()
+              assert [(member.name, member.mode) for member in members] == inventory
+              assert all(member.isfile() and not member.issym() and not member.islnk() for member in members)
+              for member in members:
+                  assert hashlib.sha256(source.extractfile(member).read()).hexdigest() == digest(stage / member.name)
+          metadata = {
+              'schema': 1, 'engine': 'box64', 'version': recipe.VERSION,
+              'hostArch': 'arm64', 'guestArch': 'x64', 'pageSize': 4096,
+              'profile': 'generic-arm64-v1',
+              'source': {'commit': recipe.COMMIT, 'sha256': recipe.SOURCE_SHA256},
+              'baseline': {'os': 'ubuntu', 'version': '22.04', 'glibc': '2.35'},
+              'archive': {'name': archive.name, 'bytes': archive.stat().st_size, 'sha256': digest(archive)},
+              'executable': {'path': 'bin/box64', 'sha256': digest(executable)},
+              'license': {'path': 'licenses/Box64-LICENSE', 'sha256': digest(license_file)},
+          }
+          manifest = output / 'bedrock-box64-arm64.json'
+          manifest.write_text(json.dumps(metadata, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+          assert 0 < manifest.stat().st_size <= 64 * 1024
+          for filename in [archive, manifest]:
+              filename.chmod(0o644)
+          print(json.dumps({'nativeArchitecture': 'arm64', 'baseline': metadata['baseline'], 'compiler': subprocess.check_output(['gcc-11', '-dumpfullversion'], text=True).strip(), 'requiredGLIBC': sorted(required), 'archive': metadata['archive'], 'executable': metadata['executable'], 'exactFileInventory': [name for name, _ in inventory], 'nativeVersionOutput': version_output.strip(), 'passed': True}))
+          PY
+          BUILD
+          test -f "$output/bedrock-box64-arm64.tar.xz"
+          test -f "$output/bedrock-box64-arm64.json"
+          test "$(find "$output" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 2
+          printf 'output_directory=%s\n' "$output" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=bedrock-box64-arm64-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload the immutable validated engine bundle
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.bundle.outputs.artifact_name }}
+          path: |
+            ${{ steps.bundle.outputs.output_directory }}/bedrock-box64-arm64.tar.xz
+            ${{ steps.bundle.outputs.output_directory }}/bedrock-box64-arm64.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false

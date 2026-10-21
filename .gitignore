@@ -2,6 +2,8 @@ node_modules/
 data/
 .env
 output/
+deploy/bedrock-box64-arm64.tar.xz
+deploy/bedrock-box64-arm64.json
 *.log
 .playwright-cli/
 .env.*

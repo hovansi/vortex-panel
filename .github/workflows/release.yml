@@ -98,17 +98,25 @@ jobs:
       - name: Check bootstrap syntax
         run: bash -n deploy/bootstrap.sh
 
+  bedrock-engine:
+    name: Build pinned Bedrock ARM64 engine
+    needs: verify
+    uses: ./.github/workflows/bedrock-engine.yml
+
   native-arm:
     name: Native ARM64 installation and applications
-    needs: verify
+    needs: [verify, bedrock-engine]
     uses: ./.github/workflows/native-arm.yml
     with:
       python_managed: false
+      runtime_artifact: ${{ needs.bedrock-engine.outputs.artifact_name }}
 
   bedrock-arm:
     name: Minecraft Bedrock on ARM64
-    needs: verify
+    needs: [verify, bedrock-engine]
     uses: ./.github/workflows/bedrock-arm.yml
+    with:
+      runtime_artifact: ${{ needs.bedrock-engine.outputs.artifact_name }}
 
   https:
     name: Public HTTPS port and upgrade compatibility
@@ -117,7 +125,7 @@ jobs:
 
   publish:
     name: Build and publish verified assets
-    needs: [verify, native-arm, bedrock-arm, https]
+    needs: [verify, bedrock-engine, native-arm, bedrock-arm, https]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -140,9 +148,14 @@ jobs:
           package-manager-cache: false
       - name: Install locked dependencies
         run: npm ci
+      - name: Download the validated ARM64 engine bundle
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.bedrock-engine.outputs.artifact_name }}
+          path: deploy
       - name: Build public release assets
         run: |
-          node scripts/release.js --repository "$GITHUB_REPOSITORY" --output "output/release/$RELEASE_TAG"
+          node scripts/release.js --require-bedrock-runtime --repository "$GITHUB_REPOSITORY" --output "output/release/$RELEASE_TAG"
           cd "output/release/$RELEASE_TAG"
           sha256sum --check --strict SHA256SUMS
           bash -n install.sh

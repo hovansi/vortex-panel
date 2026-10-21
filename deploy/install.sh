@@ -442,7 +442,17 @@ fi
 # Trusted Ubuntu prerequisites for isolated side-by-side Python source builds.
 DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
 if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-upgrade --no-remove g++ cmake libjemalloc2
+  VORTEX_BEDROCK_PAGE_SIZE=$(getconf PAGESIZE)
+  if [[ $VORTEX_BEDROCK_PAGE_SIZE == 4096 ]]; then
+    VORTEX_BEDROCK_RUNTIME_MODE=$(python3 -I -B "$SOURCE_DIR/deploy/bedrock-runtime.py" bundle-mode --role panel)
+    VORTEX_BEDROCK_PACKAGES=(libjemalloc2)
+    case $VORTEX_BEDROCK_RUNTIME_MODE in
+      source) VORTEX_BEDROCK_PACKAGES+=(g++ cmake);;
+      prebuilt|installed) ;;
+      *) echo 'Invalid ARM64 Bedrock runtime preparation mode.' >&2; exit 1;;
+    esac
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-upgrade --no-remove "${VORTEX_BEDROCK_PACKAGES[@]}"
+  fi
 fi
 # Install prerequisites only. The application capability probe must still prove
 # that this host permits the required namespaces; never disable AppArmor/userns

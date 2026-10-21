@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import archiver from 'archiver';
+import { collectBedrockRuntimeBundle, BEDROCK_RUNTIME_BUNDLE_FILES } from '../server/bedrock-runtime-bundle.js';
 
 const ROOT_FILES = ['package.json', 'package-lock.json', 'README.md', '.gitignore', '.gitattributes', '.env.example'];
 const OPTIONAL_FILES = ['LICENSE', 'LICENSE.md', 'NOTICE'];
@@ -53,10 +54,11 @@ async function sourceBytes(filename) {
   } finally { await handle.close(); }
 }
 
-export async function collectPublicFiles(sourceRoot = process.cwd()) {
+export async function collectPublicFiles(sourceRoot = process.cwd(), { requireBedrockRuntime = false } = {}) {
   const root = path.resolve(sourceRoot);
   await directory(root);
   need(path.resolve(await fs.realpath(root)) === root, 'CANONICAL_SOURCE_ROOT_REQUIRED');
+  const bedrockAssets = new Map((await collectBedrockRuntimeBundle(root, { required: requireBedrockRuntime })).map(file => [file.name, file]));
   const files = [];
   const names = new Set();
   let bytes = 0;
@@ -77,7 +79,8 @@ export async function collectPublicFiles(sourceRoot = process.cwd()) {
     need(ROOT_FILES.includes(name) || !name.split('/').some(part => part.startsWith('.')), 'UNEXPECTED_HIDDEN_SOURCE_ENTRY');
     need(!names.has(name.toLowerCase()), 'SOURCE_CASE_COLLISION');
     names.add(name.toLowerCase());
-    const content = await sourceBytes(filename);
+    if (BEDROCK_RUNTIME_BUNDLE_FILES.includes(name)) need(bedrockAssets.has(name), 'UNVERIFIED_BEDROCK_RUNTIME_ASSET');
+    const content = bedrockAssets.get(name)?.content || await sourceBytes(filename);
     bytes += content.length;
     need(files.length < LIMITS.files && bytes <= LIMITS.expandedBytes, 'PUBLIC_SOURCE_BOUND');
     files.push({ name, content, bytes: content.length, sha256: sha256(content), mode: name.startsWith('deploy/') && name.endsWith('.sh') ? 0o100755 : 0o100644 });
@@ -129,10 +132,10 @@ async function newOutput(root, requested) {
   return destination;
 }
 
-export async function buildRelease({ root: sourceRoot = process.cwd(), repository, output } = {}) {
+export async function buildRelease({ root: sourceRoot = process.cwd(), repository, output, requireBedrockRuntime = false } = {}) {
   need(typeof repository === 'string' && REPOSITORY.test(repository), 'EXPLICIT_GITHUB_REPOSITORY_REQUIRED');
   const root = path.resolve(sourceRoot);
-  const files = await collectPublicFiles(root);
+  const files = await collectPublicFiles(root, { requireBedrockRuntime });
   const version = JSON.parse(files.find(file => file.name === 'package.json').content.toString('utf8')).version;
   need(typeof version === 'string' && version.length <= 64 && VERSION.test(version), 'STABLE_PACKAGE_VERSION_REQUIRED');
   const lock = JSON.parse(files.find(file => file.name === 'package-lock.json').content.toString('utf8'));
@@ -163,10 +166,11 @@ export async function buildRelease({ root: sourceRoot = process.cwd(), repositor
 
 export async function main(argv = process.argv.slice(2)) {
   const options = {};
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length; index++) {
     const key = argv[index];
+    if (key === '--require-bedrock-runtime') { need(!Object.hasOwn(options, 'requireBedrockRuntime'), 'DUPLICATE_BEDROCK_RUNTIME_REQUIREMENT'); options.requireBedrockRuntime = true; continue; }
     need((key === '--repository' || key === '--output') && typeof argv[index + 1] === 'string' && !argv[index + 1].startsWith('--') && !(key.slice(2) in options), 'EXPECTED_REPOSITORY_AND_OPTIONAL_NEW_OUTPUT');
-    options[key.slice(2)] = argv[index + 1];
+    options[key.slice(2)] = argv[++index];
   }
   return buildRelease(options);
 }
