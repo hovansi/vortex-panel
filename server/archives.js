@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { Transform, Writable } from 'node:stream';
 import zlib from 'node:zlib';
 import path from 'node:path';
@@ -145,14 +145,19 @@ export async function validateBedrockPackage(root) {
   await fs.chmod(executable, 0o700);
 }
 
-export async function zipDirectory(root, destination, { exclude = () => false, progress = () => {}, maxBytes = 2 * 1024 ** 3, maxEntries = 50000, includeEmptyDirectories = false } = {}) {
+export async function zipDirectory(root, destination, { exclude = () => false, progress = () => {}, maxBytes = 2 * 1024 ** 3, maxEntries = 50000, includeEmptyDirectories = false, signal } = {}) {
   const files = [], directories = [];
   let bytes = 0, count = 0;
+  const aborted = () => Object.assign(new Error('ZIP creation was cancelled.', { cause: signal?.reason }), { name: 'AbortError', code: 'ABORT_ERR', status: 499 });
+  const check = () => { if (signal?.aborted) throw aborted(); };
+  check();
   async function scan(relative = '', depth = 0) {
+    check();
     if (depth > 128) fail('Thư mục ZIP quá sâu.');
     let children = 0;
     const handle = await fs.opendir(path.join(root, relative));
     for await (const entry of handle) {
+      check();
       children++;
       const name = archiveName(relative ? `${relative}/${entry.name}` : entry.name);
       // Excluded dependency/cache trees must not be traversed: generated
@@ -163,27 +168,66 @@ export async function zipDirectory(root, destination, { exclude = () => false, p
       if (++count > maxEntries) fail(`Dữ liệu ZIP vượt giới hạn ${maxEntries} mục; mặc định 50.000 mục.`);
       if (entry.isDirectory()) await scan(name, depth + 1);
       else if (!exclude(name)) {
-        const stat = await fs.stat(path.join(root, name)); bytes += stat.size;
+        const stat = await fs.stat(path.join(root, name)); check(); bytes += stat.size;
         if (bytes > maxBytes) fail(`Dữ liệu ZIP vượt giới hạn ${maxBytes} byte.`);
-        files.push(name);
+        files.push({ name, stat });
       }
     }
+    check();
     if (!children && relative && includeEmptyDirectories && !exclude(relative)) directories.push(relative);
   }
-  await scan();
+  await scan(); check();
   const output = createWriteStream(destination, { flags: 'wx', mode: 0o600 });
   const archive = archiver('zip', { zlib: { level: 6 } });
-  const completion = new Promise((resolve, reject) => {
-    output.on('close', resolve);
-    output.on('error', reject);
-    archive.on('error', reject);
-    archive.on('warning', reject);
-  });
-  archive.pipe(output);
-  archive.on('progress', ({ entries }) => progress(files.length + directories.length ? Math.round(entries.processed / (files.length + directories.length) * 90) : 90));
-  // archiver.file opens each source lazily rather than exhausting FD limits.
-  for (const file of files) archive.file(path.join(root, file), { name: file });
-  for (const directory of directories) archive.append('', { name: directory + '/', type: 'directory', mode: 0o700 });
-  try { await Promise.all([archive.finalize(), completion]); }
-  catch (error) { archive.abort(); output.destroy(); await finished(output).catch(() => {}); throw error; }
+  let failure = null, input = null, rejectEntry = null;
+  const stop = error => {
+    if (failure) return;
+    failure = error; rejectEntry?.(error);
+    input?.destroy(); archive.abort(); archive.destroy(); output.destroy();
+  };
+  const closed = new Promise(resolve => output.once('close', () => {
+    if (!output.writableFinished && !failure) stop(Object.assign(new Error('ZIP output closed before completion.'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }));
+    resolve();
+  }));
+  const checkWork = () => { if (failure) throw failure; check(); };
+  const abort = () => stop(aborted());
+  const report = ({ entries }) => {
+    if (failure) return;
+    try { progress(files.length + directories.length ? Math.round(entries.processed / (files.length + directories.length) * 90) : 90); }
+    catch (error) { stop(error); }
+  };
+  output.on('error', stop); archive.on('error', stop); archive.on('warning', stop); archive.on('progress', report);
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    checkWork(); archive.pipe(output);
+    // Own one source stream at a time: aborting archiver alone deliberately
+    // lets its active worker finish, which can keep compressing a large file.
+    for (const file of files) {
+      checkWork();
+      input = createReadStream(path.join(root, file.name));
+      const source = input, sourceClosed = new Promise(resolve => source.once('close', resolve));
+      source.on('error', stop);
+      let entry;
+      const processed = new Promise((resolve, reject) => { entry = resolve; rejectEntry = reject; archive.once('entry', entry); });
+      try {
+        archive.append(source, { name: file.name, stats: file.stat });
+        await processed; await sourceClosed; checkWork();
+      } finally {
+        archive.removeListener('entry', entry); rejectEntry = null;
+        if (failure) source.destroy();
+        await sourceClosed; source.removeListener('error', stop); input = null;
+      }
+    }
+    for (let index = 0; index < directories.length; index++) {
+      checkWork(); archive.append('', { name: directories[index] + '/', type: 'directory', mode: 0o700 });
+      if (index % 128 === 127) { await new Promise(resolve => setImmediate(resolve)); checkWork(); }
+    }
+    checkWork();
+    await Promise.race([archive.finalize(), closed]);
+    await closed; checkWork();
+  } catch (error) {
+    stop(error); await closed; throw failure;
+  } finally {
+    signal?.removeEventListener('abort', abort); archive.removeListener('progress', report);
+  }
 }

@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.23.11'
+        default: 'v0.23.12'
         type: string
 
 permissions:

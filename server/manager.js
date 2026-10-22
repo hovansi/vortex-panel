@@ -41,6 +41,7 @@ import { publicRuntimePin, normalizeRuntimePin } from './application-runtime-cat
 import { createPortAllocator, creationPortMode, PORT_ALLOCATION_POLICY } from './port-allocation.js';
 import { validateSchedule, dispatchScheduledCommand } from './schedule-commands.js';
 import { RESTART_POLICY, restartRecoveryState, recordRestartFailure, publicRestartRecovery } from './restart-policy.js';
+import { createDownloadArtifacts } from './download-artifacts.js';
 
 const appKind = server => ['nodejs','python'].includes(server?.kind) ? server.kind : 'bedrock';
 const isApp = server => appKind(server) !== 'bedrock';
@@ -55,6 +56,7 @@ function invalidateConsoleRules(runtime, command) {
   runtime.gameRules.clear(); runtime.rulesRefresh = createGameRuleRefresh();
 }
 const backupVerificationSubject = Symbol('backupVerificationSubject');
+const worldExportRuntime = Symbol('worldExportRuntime');
 const defaultProperties = server => ({ 'server-name': server.name, gamemode: 'survival', difficulty: 'normal', 'allow-cheats': 'false', 'max-players': String(server.maxPlayers), 'online-mode': 'true', 'allow-list': 'false', 'server-port': String(server.port), 'server-portv6': String(server.portV6), 'view-distance': '16', 'tick-distance': '4', 'player-idle-timeout': '30', 'max-threads': '8', 'level-name': 'Bedrock level', 'level-seed': '', 'default-player-permission-level': 'member', 'texturepack-required': 'false', transport: server.transport === 'nethernet' ? 'nethernet' : 'raknet', ...(server.transport === 'nethernet' ? { 'server-udp-ports': server.udpPorts } : {}), 'enable-lan-visibility': 'false' });
 
 async function copyEmptyDirectories(source, destination, { exclude = () => false } = {}) {
@@ -99,6 +101,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
   const logWriters = new Map();
   const resourceCleanup = new Set();
   const gameplayRuns = new Set();
+  const worldExports = createDownloadArtifacts(), worldExportControllers = new Set();
   let resourceControl = await resourceController.capabilities();
   const restartTimers = new Map();
   const runningJobs = new Set();
@@ -1234,7 +1237,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       return { ...entry, protected: Boolean(protection), protection, capabilities: { read: !entry.directory, edit: stopped && editable, download: !entry.directory, copy: stopped && readable && !immutable, move: stopped && !protection, rename: stopped && !protection, delete: stopped && !protection, compress: stopped && readable, extract: stopped && readable && !entry.directory && entry.name.toLowerCase().endsWith('.zip') } };
     };
     const access = fileAccessContext.getStore();
-    const response = entries => ({ path: relative, files: entries.map(describe).sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name)), limits: FILE_LIMITS, fileAccess: actorContext.getStore()?.role === 'admin' && access?.serverId === server.id && access.expires > Date.now() ? { expires: access.expires } : null });
+    const response = entries => ({ path: relative, files: entries.map(describe).sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name)), limits: { ...FILE_LIMITS, uploadMaxBytes: 100 * 1024 ** 2 }, fileAccess: actorContext.getStore()?.role === 'admin' && access?.serverId === server.id && access.expires > Date.now() ? { expires: access.expires } : null });
     const target = await safePath(runDirectory(server), relative);
     if (!(await fs.stat(target)).isDirectory()) fail('Đường dẫn không phải thư mục.');
     const entries = [];
@@ -1358,12 +1361,16 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     if (!runtime || runtime.worldName !== name) await inspectSupportedWorld(target, await worldOptions(server));
     return { target, name: `${name}.mcworld` };
   }
-  async function exportWorld(server, name, { signal } = {}) {
-    const runtime = assertWorldLibraryReady(server);
+  async function exportWorld(server, name, input = {}) {
+    const { signal, progress = () => {} } = input;
+    // A prepared job has already validated and captured this exact session,
+    // before job() installs its own server.jobId admission lock.
+    const runtime = Object.hasOwn(input, worldExportRuntime) ? input[worldExportRuntime] : assertWorldLibraryReady(server);
     validateWorldName(name);
     const archive = path.join(directory(server), `.world-export-${randomUUID()}.mcworld`);
     const active = () => { if (processes.get(server.id) !== runtime || runtime && (!runtime.ready || runtime.expected || server.status !== 'running') || !runtime && server.status !== 'stopped') fail('Phiên server đã thay đổi trong lúc xuất world.', 409); };
     const guard = () => { assertOpen(); active(); if (signal?.aborted) fail('Đã hủy xuất world.', 499); };
+    guard();
     const options = await worldOptions(server);
     let volumeBudget = 0, volumeAvailable;
     const reserveWorkspace = async bytes => {
@@ -1374,7 +1381,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       return () => {};
     };
     const exportData = async live => {
-      try { return await createWorldExport({ runRoot: runDirectory(server), name, destination: archive, options, live, guard, reserveWorkspace }); }
+      try { return await createWorldExport({ runRoot: runDirectory(server), name, destination: archive, options, live, guard, reserveWorkspace, signal, progress }); }
       catch (error) {
         if (error.code === 'BACKUP_SAVE_RESUME_REQUIRED' || /save resume/.test(error.message)) log(server, `Chưa xác minh được native đã tiếp tục lưu sau khi xuất world. Kiểm tra console và gửi save resume: ${error.message}`, 'error');
         throw error;
@@ -1388,6 +1395,39 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       try { return await exportData({ worldName: runtime.worldName, console: control, guard, releaseGuard: canResume }); }
       finally { control.close(); delete runtime.backupConsole; }
     });
+  }
+  async function prepareWorldExport(server, name) {
+    const runtime = assertWorldLibraryReady(server); validateWorldName(name);
+    const reservation = worldExports.reserve(server.id), controller = new AbortController();
+    worldExportControllers.add(controller);
+    try {
+      return job('world-export', server, async progress => {
+        try {
+          progress(1, 'Đang chuẩn bị world Bedrock để xuất', { phase: 'prepare' });
+          const result = await exportWorld(server, name, { [worldExportRuntime]: runtime, signal: controller.signal,
+            progress: (value, message) => progress(value, message, { phase: message === 'Đang nén world Bedrock để tải xuống' ? 'archive' : 'snapshot' }) });
+          const artifact = await reservation.publish(result);
+          return { result: { export: artifact, world: { name } } };
+        } finally { worldExportControllers.delete(controller); await reservation.cancel(); }
+      }, undefined, () => {
+        worldExportControllers.delete(controller);
+        // job() can fail while persisting its running state, before entering
+        // the operation's finally block. Release that pending admission too.
+        void reservation.cancel().catch(error => console.warn(`[Vortex Panel] Export reservation cleanup: ${error.code || 'CLEANUP_FAILED'}`));
+      });
+    } catch (error) { controller.abort(); worldExportControllers.delete(controller); await reservation.cancel(); throw error; }
+  }
+  async function cleanupStaleWorldExports(server) {
+    const folder = await safePath(dataDir, `servers/${server.id}`);
+    const owned = /^\.world-export-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.mcworld(?:\.snapshot)?$/i;
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      if (!owned.test(entry.name) || entry.isSymbolicLink()) continue;
+      const target = path.join(folder, entry.name), stat = await fs.lstat(target);
+      if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) continue;
+      if (stat.isDirectory()) { if (!entry.name.endsWith('.snapshot')) continue; await assertUnmountedTree(target); }
+      else if (entry.name.endsWith('.snapshot')) continue;
+      await fs.rm(target, { recursive: stat.isDirectory(), force: true });
+    }
   }
   async function deleteWorld(server, name, input) {
     const runtime = assertWorldLibraryReady(server); validateWorldName(name);
@@ -1849,6 +1889,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
           server.players = 0; server.memoryMB = 0; server.cpuPercent = 0; delete server.jobId; delete server.cloneJobId;}
           try { await ensureStorage(server); if(!updatingAtBoot)delete server.storageMountError; }
           catch (error) { if(updatingAtBoot)throw error;server.status = 'error'; server.storageMountError = error.message; server.error = error.message; continue; }
+          try { await cleanupStaleWorldExports(server); } catch (error) { console.warn(`[Vortex Panel] Stale world export cleanup ${server.id}: ${error.code || 'CLEANUP_FAILED'}`); }
           if(!updatingAtBoot)try { server.debugPort = isApp(server) ? null : debuggerPort(await properties(server)); } catch {}
           // Disk history is diagnostic history. A new manager process must not
           // repopulate a customer's current console with a previous run.
@@ -2234,7 +2275,13 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     createWorld: (id, input) => selectWorld(get(id), input, true),
     deleteWorld: (id, name, input) => deleteWorld(get(id), name, input),
     exportWorldInfo: (id, name) => exportWorldInfo(get(id), name),
-    exportWorld: (id, name, options) => exportWorld(get(id), name, options),
+    async exportWorld(id, name, options = {}) {
+      const controller = new AbortController(); worldExportControllers.add(controller);
+      try { return await exportWorld(get(id), name, { ...options, signal: options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal }); }
+      finally { worldExportControllers.delete(controller); }
+    },
+    prepareWorldExport: (id, name) => prepareWorldExport(get(id), name),
+    downloadWorldExport(id, artifactId) { assertOpen(); get(id); return worldExports.acquire(id, artifactId); },
     backups: id => { const server = get(id); return (server.backups || []).map(record => publicBackup(server, record)); },
     backupLimits: () => ({ maxLocked: 50, maxRetention: 50, unpackedMB: 2048, entries: 50000 }),
     backup: id => backup(get(id)),
@@ -2293,6 +2340,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     async close() {
       if (closed) return;
       closed = true;
+      for (const controller of worldExportControllers) controller.abort();
       for (const server of maintenance?.action==='update'?[]:store.data.servers) {
         const intent = lifecycleIntents.get(server.id);
         if (!['stop', 'kill'].includes(intent) && (server.resumeOnPanelStart || ['running', 'starting'].includes(server.status) || ['start', 'restart'].includes(intent))) server.resumeOnPanelStart = true;
@@ -2312,7 +2360,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await Promise.allSettled([...operations.values()]);
       // Online backups must release Bedrock's snapshot before the console is
       // closed or stop() checks the active job lock during shutdown.
-      await Promise.allSettled([...jobPromises].filter(([id]) => store.data.jobs.some(job => job.id === id && job.type === 'backup')).map(([, promise]) => promise));
+      await Promise.allSettled([...jobPromises].filter(([id]) => store.data.jobs.some(job => job.id === id && ['backup', 'world-export'].includes(job.type))).map(([, promise]) => promise));
+      try { await worldExports.close(); } catch (error) { persistenceError ||= error; }
       for (const runtime of processes.values()) runtime.gameplay.close();
       await Promise.allSettled([...gameplayRuns]);
       const active = store.data.servers.filter(server => processes.has(server.id));
@@ -2335,7 +2384,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const promise = operationContext.run(id, async () => { await Promise.resolve(); return applicationRead(id, { inspect: true }); }); operations.set(id, promise);
     try { const result = await promise; result.server.busy = false; return result; } finally { operations.delete(id); }
   };
-  for (const name of ['saveAppearance', 'uploadAppearance', 'removeAppearance', 'saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'changeExperiments', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo']) {
+  for (const name of ['saveAppearance', 'uploadAppearance', 'removeAppearance', 'saveApplication', 'installApplicationDependencies', 'deleteServer', 'growStorage', 'saveConfiguration', 'saveProperties', 'writeFile', 'moveFile', 'renameFile', 'copyFiles', 'compressFiles', 'extractFiles', 'createFile', 'mkdir', 'upload', 'deleteFile', 'savePlayers', 'backup', 'restore', 'deleteBackup', 'verifyBackup', 'setBackupLocked', 'downloadBackup', 'upgrade', 'cloneServer', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'changeExperiments', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo', 'prepareWorldExport']) {
     const method = manager[name];
     manager[name] = async (id, ...args) => {
       assertOpen();
@@ -2362,7 +2411,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       try { return await promise; } finally { operations.delete(id); }
     };
   }
-  for (const name of ['properties', 'saveProperties', 'players', 'savePlayers', 'packs', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'experiments', 'changeExperiments', 'worlds', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo', 'upgrade', 'gameplay', 'queryGameRules', 'saveGameRules', 'playerAction', 'announcement', 'changeGameRules']) {
+  for (const name of ['properties', 'saveProperties', 'players', 'savePlayers', 'packs', 'importPacks', 'setPackEnabled', 'removePack', 'reorderPacks', 'experiments', 'changeExperiments', 'worlds', 'importWorld', 'selectWorld', 'createWorld', 'deleteWorld', 'exportWorld', 'exportWorldInfo', 'prepareWorldExport', 'downloadWorldExport', 'upgrade', 'gameplay', 'queryGameRules', 'saveGameRules', 'playerAction', 'announcement', 'changeGameRules']) {
     if (typeof manager[name] !== 'function') continue;
     const method = manager[name];
     manager[name] = (id, ...args) => { if (isApp(get(id))) fail('This tool is available for Minecraft Bedrock servers only.', 409); return method(id, ...args); };

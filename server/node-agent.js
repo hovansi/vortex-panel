@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
+import { installHttpReceivePolicy, authorizeMultipartReceive } from './http-receive.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -125,6 +126,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     if (closing && !['GET', 'HEAD'].includes(req.method)) return res.status(503).json({ error: 'Node is stopping.' });
     try {
       req.session = { user: actorFromHeader(req.headers['x-vortex-actor']) };
+      authorizeMultipartReceive(req);
       if (req.session.user.role === 'admin' && req.headers['x-vortex-file-access']) {
         const grant = JSON.parse(req.headers['x-vortex-file-access']);
         if (typeof grant.serverId === 'string' && Number.isFinite(grant.expires) && grant.expires > Date.now() && grant.expires <= Date.now() + 10 * 60 * 1000) req.fileAccess = grant;
@@ -195,7 +197,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
     else { if (typeof args[1] !== 'string') args.splice(1, 0, host); if (!tls && !['127.0.0.1', '::1'].includes(args[1])) throw new Error('HTTP node listeners must use literal loopback.'); }
     return listen(...args);
   };
-  server.requestTimeout = 5 * 60 * 1000; server.headersTimeout = 30000; server.maxHeadersCount = 64;
+  installHttpReceivePolicy(server); server.maxHeadersCount = 64;
   server.on('upgrade', (_req, socket) => { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); });
   const heartbeat = setInterval(() => { for (const client of clients) { if (client.res.writableLength + 32 > 1024 ** 2) client.res.destroy(); else client.res.write(': keepalive\n\n'); } }, 15000); heartbeat.unref();
   async function close() {

@@ -6,7 +6,7 @@ import { extractZip, zipDirectory } from './archives.js';
 import { inspectBedrockWorld } from './bedrock-world-format.js';
 import { snapshotLiveServer } from './live-backup.js';
 import { parsePackManifest, validatePackScriptEntries } from './packs.js';
-import { fail, safePath, validateProperties } from './safety.js';
+import { cleanRelative, fail, safePath, validateProperties } from './safety.js';
 
 export const WORLD_LIMITS = Object.freeze({ compressedMB: 1024, unpackedMB: 2048, entries: 50000, maxWorlds: 100 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -24,12 +24,12 @@ export function validateWorldSeed(input = '') {
   return input;
 }
 
-async function jsonFile(root, relative, optional = false) {
+async function jsonFile(root, relative, optional = false, maxBytes = 256 * 1024) {
   let file;
   try { file = await safePath(root, relative); }
   catch (error) { if (optional && error.status === 404) return null; throw error; }
   const stat = await fs.lstat(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > 256 * 1024) fail(`${relative}: JSON của world phải là tệp thường không quá 256 KiB.`);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > maxBytes) fail(`${relative}: JSON của world phải là tệp thường không quá ${maxBytes / 1024} KiB.`);
   const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0)); let bytes;
   const unchanged = current => current.isFile() && current.nlink === 1 && current.dev === stat.dev && current.ino === stat.ino && current.size === stat.size && current.mtimeMs === stat.mtimeMs && current.ctimeMs === stat.ctimeMs;
   const changed = () => { throw Object.assign(new Error('Dữ liệu thế giới đã thay đổi trong lúc kiểm tra; hãy dừng server và thử lại.'), { status: 409, code: 'WORLD_METADATA_CHANGED' }); };
@@ -112,6 +112,23 @@ async function inspectWorldPacks(root, { serverVersion, globalPacks = [] } = {})
   return { embeddedPacks: embedded.length, enabledPacks, scriptFolders: embedded.filter(pack => pack.kind === 'behavior' && pack.scripting).map(pack => pack.folder), requiredGlobalPacks: [...requiredGlobalPacks.values()] };
 }
 
+async function inspectPlainContents(root, relative) {
+  const index = await jsonFile(root, relative, false, 4 * 1024 ** 2);
+  const invalid = () => fail(`World chứa chỉ mục pack không hợp lệ hoặc mã hóa chưa được hỗ trợ: ${relative}.`);
+  if (!index || typeof index !== 'object' || Array.isArray(index) || Object.keys(index).some(key => !['content', 'version'].includes(key)) || !Array.isArray(index.content) || index.content.length > WORLD_LIMITS.entries || (index.version !== undefined && (!Number.isSafeInteger(index.version) || index.version < 1))) invalid();
+  const seen = new Set(), directory = path.dirname(await safePath(root, relative));
+  for (const entry of index.content) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).some(key => !['path', 'key'].includes(key)) || typeof entry.path !== 'string' || (Object.hasOwn(entry, 'key') && entry.key !== '')) invalid();
+    let name; try { name = cleanRelative(entry.path, { allowRoot: false }); } catch { invalid(); }
+    if (name !== entry.path || Buffer.byteLength(name) > 4096 || name.split('/').length > 128 || /(?:^|\/)content\.key$/i.test(name) || seen.has(name)) invalid();
+    seen.add(name);
+    let stat;
+    try { stat = await fs.lstat(await safePath(directory, name, { allowRoot: false })); }
+    catch (error) { if (error.code === 'ENOENT' || error.status === 404) invalid(); throw error; }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) invalid();
+  }
+}
+
 async function inspectNames(root, relative = '', state = { entries: 0, bytes: 0, scriptFiles: [] }) {
   if (relative.split('/').length > 128) fail('World có đường dẫn quá sâu.');
   for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
@@ -121,7 +138,8 @@ async function inspectNames(root, relative = '', state = { entries: 0, bytes: 0,
     if (/^(?:keys|server_identity_key\.pem|bedrock_server(?:\.exe)?)$/i.test(entry.name) || (!relative && /^(?:server\.properties|allowlist\.json|permissions\.json)$/i.test(entry.name))) fail('Archive world chứa identity hoặc cấu hình server; hãy chỉ nhập dữ liệu world.');
     const nativeScript = entry.isFile() && entry.name.endsWith('.js');
     if (nativeScript) state.scriptFiles.push(name);
-    if ((executable.test(entry.name) && !nativeScript) || /^(?:content\.key|contents\.json)$/i.test(entry.name)) fail(`World chứa mã chạy hoặc pack mã hóa chưa được hỗ trợ: ${name}.`);
+    if ((executable.test(entry.name) && !nativeScript) || /^content\.key$/i.test(entry.name)) fail(`World chứa mã chạy hoặc pack mã hóa chưa được hỗ trợ: ${name}.`);
+    if (/^contents\.json$/i.test(entry.name)) { if (!entry.isFile()) fail(`World chứa chỉ mục pack không hợp lệ: ${name}.`); await inspectPlainContents(root, name); }
     if (entry.isDirectory()) await inspectNames(root, name, state);
     else {
       if (entry.name === 'level.dat' && relative && (await fs.lstat(path.join(root, relative, 'db')).catch(error => { if (error.code === 'ENOENT') return null; throw error; }))?.isDirectory()) fail('Archive chứa nhiều world; hãy nhập từng world riêng.');
@@ -270,7 +288,8 @@ async function reuseIdenticalImportedPacks(root, options) {
 // whole preparation. Its caller also owns the returned download until cleanup.
 // Active LevelDB files must come from Bedrock's exact save-query byte manifest;
 // a normal filesystem ZIP of a running world is not a consistent export.
-export async function createWorldExport({ runRoot, name, destination, snapshot, options, live = null, guard = () => {}, reserveWorkspace = async () => {}, progress = () => {} }) {
+export async function createWorldExport({ runRoot, name, destination, snapshot, options, live = null, guard: callerGuard = () => {}, reserveWorkspace = async () => {}, progress = () => {}, signal }) {
+  const guard = () => { callerGuard(); if (signal?.aborted) fail('Đã hủy xuất world.', 499); };
   validateWorldName(name); guard();
   const original = await worldTarget(runRoot, name);
   snapshot ||= destination + '.snapshot';
@@ -339,9 +358,9 @@ export async function createWorldExport({ runRoot, name, destination, snapshot, 
     await inspectSupportedWorld(source, { ...options, globalPacks: [] });
     guard();
     // Native saving has already resumed before metadata validation/compression.
-    // ZIP progress callbacks run from an EventEmitter, so cancellation checks
-    // stay at awaited boundaries rather than throwing from an event listener.
-    await zipDirectory(source, destination, { includeEmptyDirectories: true, maxBytes: WORLD_LIMITS.unpackedMB * 1024 ** 2, maxEntries: WORLD_LIMITS.entries,
+    // ZIP cancellation rejects through owned streams; event callbacks never
+    // throw past the archive helper's awaited cleanup boundary.
+    await zipDirectory(source, destination, { includeEmptyDirectories: true, maxBytes: WORLD_LIMITS.unpackedMB * 1024 ** 2, maxEntries: WORLD_LIMITS.entries, signal,
       progress: value => progress(20 + value * 0.8, 'Đang nén world Bedrock để tải xuống') });
     guard();
     if (snapshot) await fs.rm(snapshot, { recursive: true, force: true });

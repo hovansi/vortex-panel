@@ -61,6 +61,7 @@ const recentServer=createRecentServer({storage:preference});
 let settingsNavigationControls=null,settingsSelection='account';
 state.serverLayout=preference.get('vortex-server-layout')==='grid'?'grid':'list';
 let sessionGeneration=0;
+const sessionUploads=new Set();
 let modalSubmit=null,refreshing=false,rendering=false,launching=false,reconnectTimer,logRequest=0,navigationRequest=0,dashboardRequest=0,jobDetailsRequest=0,activeJobTracker=null,renderedDataSignature='',renderedServerResultsSignature='';
 let serverTabFrame=0,serverTabTarget=null,serverTabAnimate=false,createNodeSync=null,viewResourceControls=null,applicationSettingsControls=null;
 const fileWorkspace={serverId:null,path:'',data:null,query:'',sort:'name',page:1,listCache:null,selected:new Set(),clipboard:null,request:0,operation:null};
@@ -118,7 +119,13 @@ async function api(path,options={}) {return runInSession(()=>sessionGeneration,a
   return data;
 },sessionChangedError);}
 function sessionChangedError(){return Object.assign(new Error(nodeText('Your sign-in session changed. Open the action again if you still need it.','Phiên đăng nhập đã thay đổi. Mở lại thao tác nếu bạn vẫn cần thực hiện.')),{code:'UI_SESSION_CHANGED'});}
-async function uploadForSession(path,data,options){return runInSession(()=>sessionGeneration,session=>uploadWithProgress(path,data,{...options,onUnauthorized:()=>{if(session===sessionGeneration)options.onUnauthorized?.();},onProgress:progress=>{if(session===sessionGeneration)options.onProgress?.(progress);}}),sessionChangedError);}
+async function uploadForSession(path,data,options={}){
+  const controller=new AbortController(),cancel=()=>controller.abort();
+  if(options.signal?.aborted)cancel();else options.signal?.addEventListener('abort',cancel,{once:true});
+  sessionUploads.add(controller);
+  try{return await runInSession(()=>sessionGeneration,session=>uploadWithProgress(path,data,{...options,signal:controller.signal,onUnauthorized:()=>{if(session===sessionGeneration)options.onUnauthorized?.();},onProgress:progress=>{if(session===sessionGeneration)options.onProgress?.(progress);}}),sessionChangedError);}
+  finally{sessionUploads.delete(controller);options.signal?.removeEventListener('abort',cancel);}
+}
 async function bootRequest(path){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
   try{return await api(path,{signal:controller.signal});}finally{clearTimeout(timer);}
@@ -127,10 +134,24 @@ function toast(message,error=false,action=null){const item=document.createElemen
 async function download(path,name){return runInSession(()=>sessionGeneration,async(session,assertCurrent)=>{
   const response=await fetch(`/api${path}`,{method:'HEAD',credentials:'same-origin',headers:{'Accept-Language':getLanguage()}}).catch(()=>{throw new Error(t('Không thể kết nối đến panel. Kiểm tra mạng và thử lại.'));});
   assertCurrent();
-  if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(wireText(error.error,error.errorI18n)||ht`Không thể tải xuống (${response.status}).`);}
+  if(!response.ok){
+    if(response.status===401){renderAuth(false);throw sessionChangedError();}
+    const messages={403:nodeText('You do not have permission to download this file.','Bạn không có quyền tải tệp này.'),404:nodeText('This file is no longer available. Refresh the list and try again.','Tệp không còn khả dụng. Làm mới danh sách rồi thử lại.'),409:nodeText('This file is currently unavailable. Check the server task and try again.','Tệp hiện chưa sẵn sàng. Kiểm tra tác vụ máy chủ rồi thử lại.'),410:nodeText('This export has expired. Export the world again to create a new download.','Bản xuất đã hết hạn. Xuất lại thế giới để tạo lượt tải mới.')};
+    throw Object.assign(new Error(messages[response.status]||ht`Không thể tải xuống (${response.status}).`),{status:response.status});
+  }
   const link=document.createElement('a');link.href=`/api${path}${path.includes('?')?'&':'?'}lang=${getLanguage()}`;link.download=name||'';link.hidden=true;document.body.append(link);link.click();link.remove();
 },sessionChangedError);}
 function setTheme(value){const theme=value==='dark'?'dark':'light',root=document.documentElement;root.dataset.theme=theme;root.style.colorScheme=theme;root.style.backgroundColor=theme==='dark'?'#1b1c20':'#f5f5f7';preference.set('bedrock-theme',theme);$('meta[name=theme-color]').content=theme==='dark'?'#1b1c20':'#f5f5f7';$('meta[name=color-scheme]')?.setAttribute('content',theme);}
+const pendingWorldDownloads=new Map();
+async function downloadWorldArtifact(serverId,artifact){
+  const server=state.servers.find(item=>item.id===serverId);
+  if(!server||!canManage(server))throw Error(nodeText('Server management access is required to download this world.','Cần quyền quản lý máy chủ để tải thế giới.'));
+  if(!artifact||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(artifact.id||''))throw Error(nodeText('This export is no longer available. Export the world again.','Bản xuất không còn khả dụng. Hãy xuất lại thế giới.'));
+  const key=`${sessionGeneration}:${serverId}:${artifact.id}`;if(pendingWorldDownloads.has(key))return pendingWorldDownloads.get(key);
+  const buttons=$$('[data-action=job-download-world]').filter(button=>button.dataset.serverId===serverId&&button.dataset.exportId===artifact.id),pending=download(`${serverPath(server)}/world-exports/${encodeURIComponent(artifact.id)}/download`,artifact.name||'world.mcworld');
+  pendingWorldDownloads.set(key,pending);for(const button of buttons){button.disabled=true;button.setAttribute('aria-busy','true');}
+  try{return await pending;}finally{if(pendingWorldDownloads.get(key)===pending)pendingWorldDownloads.delete(key);for(const button of buttons){button.disabled=false;button.removeAttribute('aria-busy');}}
+}
 setTheme(preference.get('bedrock-theme')||document.documentElement.dataset.theme||'light');
 hydrateUI(document);insertUI($('.toolbar-actions'),'afterbegin',languageControl('toolbar-language'));
 document.addEventListener('vortex:languagechange',()=>{fileWorkspace.listCache=null;updateLogs();if(state.auth?.authenticated)connect();});
@@ -154,6 +175,7 @@ function setServers(servers){state.servers=mergeNodeServers(state.servers,server
 function renderAuth(setup,error=''){
   workspaceMotion.reset();workspaceContinuity.reset();recentServer.reset();settingsNavigationControls?.destroy();settingsNavigationControls=null;settingsSelection='account';
   activeJobTracker?.stop();activeJobTracker=null;++jobDetailsRequest;++state.render;++logRequest;++dashboardRequest;++sessionGeneration;++navigationRequest;renderedDataSignature='';renderedServerResultsSignature='';resetWorkspaceNavigation(state);syncConsoleServer(state,null);resetPowerClientState();resetMemoryClientState();
+  for(const controller of sessionUploads)controller.abort();sessionUploads.clear();
   applicationSettingsControls?.destroy();applicationSettingsControls=null;clearPrivateDialogs();modalSubmit=null;fileEditor=null;folderPicker=null;createNodeSync=null;viewResourceControls?.destroy();viewResourceControls=null;
   clearTimeout(reconnectTimer);if(state.ws){state.ws.onopen=null;state.ws.onmessage=null;state.ws.onerror=null;state.ws.onclose=null;state.ws.close();state.ws=null;}
   $('#workspace').replaceChildren();$('#toasts').replaceChildren();const uploadInput=$('#file-upload');uploadInput.value='';for(const key of ['base','path','serverId'])delete uploadInput.dataset[key];$('#host-mini').replaceChildren();$('#navigation').replaceChildren();$('#mobile-nav').replaceChildren();
@@ -328,7 +350,15 @@ function filePaginationMarkup(){const files=filteredFiles();if(files.length<=fil
 function fileSelectionMarkup(){const files=selectedFiles(),writable=fileWritable(),can=action=>files.length>0&&files.every(file=>fileCapability(file,action));if(!files.length)return hStatic('<span class="file-selection-hint">Chọn mục để sao chép, di chuyển hoặc nén ZIP · Tối đa 1.000 mục.</span>');const filtered=new Set(filteredFiles().map(file=>file.path)),visible=new Set(visibleFiles().map(file=>file.path)),outsideFilter=files.filter(file=>!filtered.has(file.path)).length,outsidePage=files.filter(file=>filtered.has(file.path)&&!visible.has(file.path)).length;return ht`<div class="file-selection-summary"><strong>${countUI(files.length,'selectedItems')}</strong>${outsideFilter?ht`<small>${countUI(outsideFilter,'outsideFilterItems')}</small>`:''}${outsidePage?ht`<small>${countUI(outsidePage,'outsidePageItems')}</small>`:''}</div><div class="actions file-batch-actions">${btn(t('Sao chép'),'file-copy',!writable||!can('copy')?'disabled':'','soft','copy')}${btn(t('Cắt'),'file-cut',!writable||!can('move')?'disabled':'','','cut')}${btn(t('Di chuyển'),'file-move-selection',!writable||!can('move')?'disabled':'','','arrow')}${btn(t('Nén ZIP'),'file-compress',!writable||!can('compress')?'disabled':'','','archive')}${btn(t('Bỏ chọn'),'file-clear-selection','','text','close')}</div>`;}
 function fileClipboardMarkup(){const clip=fileWorkspace.clipboard;if(!clip)return '';const same=clip.serverId===fileWorkspace.serverId,writable=fileWritable();return ht`<div class="file-clipboard"><span>${icon(clip.mode==='cut'?'cut':'copy')}<span><strong>${clip.mode==='cut'?t('Đã cắt'):t('Đã sao chép')} ${countUI(clip.sources.length,'items')}</strong><small>${same?t('Chọn thư mục đích rồi dán. Không ghi đè mục có sẵn.'):ht`Clipboard thuộc ${e(clip.serverName)}. Chuyển về máy chủ đó để dán.`}</small></span></span><div class="actions">${btn(t('Dán vào đây'),'file-paste',!same||!writable?'disabled':'','soft','paste')}<button class="icon-button" data-action="file-clear-clipboard" aria-label="Xóa clipboard">${icon('close')}</button></div></div>`;}
 function fileResultsMarkup(){const files=visibleFiles(),writable=fileWritable();if(!files.length)return empty(fileWorkspace.query?t('Không có mục phù hợp'):t('Thư mục trống'),fileWorkspace.query?t('Thử tên khác hoặc xóa tìm kiếm.'):writable?t('Tạo tệp, thư mục hoặc tải dữ liệu vào vị trí này.'):t('Không có tệp trong thư mục này.'),fileWorkspace.query?btn(t('Xóa tìm kiếm'),'file-clear-search','','soft','close'):'','folder');return ht`<div class="file-table-wrap"><table class="file-table"><thead><tr><th class="file-check-cell"><label class="file-checkbox-target"><input id="file-select-all" type="checkbox" aria-label="Chọn tất cả mục trên trang này"></label></th><th>Tên</th><th>Kích thước</th><th>Sửa đổi</th><th><span class="sr-only">Thao tác</span></th></tr></thead><tbody>${files.map(file=>{const selectable=['copy','move','compress'].some(action=>fileCapability(file,action));return ht`<tr data-file-path="${e(file.path)}" class="${fileWorkspace.selected.has(file.path)?'selected':''}"><td class="file-check-cell"><label class="file-checkbox-target"><input type="checkbox" data-file-select="${e(file.path)}" aria-label="Chọn ${e(lm(file,'name'))}" ${fileWorkspace.selected.has(file.path)?'checked':''} ${!selectable?'disabled':''}></label></td><td class="file-title-cell"><button class="file-name" data-action="${file.directory?'open-dir':/\.zip$/i.test(file.name)?'file-menu':'edit-file'}" data-path="${e(file.path)}" aria-label="${e((file.directory?t('Mở thư mục '):t('Mở tệp '))+lm(file,'name'))}" ${!file.directory&&!/\.zip$/i.test(file.name)&&!fileCapability(file,'read')?'disabled':''}><span class="file-type-icon ${file.directory?'folder':/\.zip$/i.test(file.name)?'archive':''}">${icon(file.directory?'folder':/\.zip$/i.test(file.name)?'archive':'file')}</span><span><strong>${e(lm(file,'name'))}</strong>${file.protection||file.protected?ht`<small class="file-protected" title="${e(lm(file,'protection')||t('Được bảo vệ'))}">${icon('shield')}Được bảo vệ</small>`:''}</span></button></td><td class="file-size-cell">${file.directory?t('Thư mục'):byte(file.size)}</td><td class="file-date-cell">${e(date(file.modified))}</td><td class="file-menu-cell"><button class="icon-button" data-action="file-menu" data-path="${e(file.path)}" aria-label="Thao tác với ${e(lm(file,'name'))}" aria-haspopup="dialog" aria-controls="file-actions">${icon('more')}</button></td></tr>`;}).join('')}</tbody></table></div>${filePaginationMarkup()}`;}
-function fileOperationMarkup(){const job=fileWorkspace.operation;if(!job||job.serverId!==fileWorkspace.serverId)return '';return `<div class="file-operation" role="status">${icon('refresh')}<div><strong>${e(job.label)}</strong><small>${e(lm(job,'detail')||t('Đang xử lý yêu cầu…'))}</small>${job.transfer?`<div class="file-transfer"><span>${e(job.transfer.processing?voiceText('Processing…','Đang xử lý…'):job.transfer.percent===null?voiceText('Uploading…','Đang tải lên…'):`${job.transfer.percent}%`)}</span><div class="file-transfer-meter" ${job.transfer.percent===null?'hidden':''}><span style="transform:scaleX(${(job.transfer.percent||0)/100})"></span></div></div>`:''}</div></div>`;}
+function fileOperationMarkup(){const job=fileWorkspace.operation;if(!job||job.serverId!==fileWorkspace.serverId)return '';return `<div class="file-operation" role="status">${icon('refresh')}<div><strong>${e(job.label)}</strong><small>${e(lm(job,'detail')||t('Đang xử lý yêu cầu…'))}</small>${job.transfer?`<div class="file-transfer"><span data-upload-percent>${e(job.transfer.processing?voiceText('Processing…','Đang xử lý…'):job.transfer.percent===null?voiceText('Uploading…','Đang tải lên…'):`${job.transfer.percent}%`)}</span><div class="file-transfer-meter" ${job.transfer.percent===null?'hidden':''}><span style="transform:scaleX(${(job.transfer.percent||0)/100})"></span></div></div>`:''}${job.controller?`<div class="actions"><button type="button" class="btn text" data-action="cancel-file-upload" ${job.controller.signal.aborted?'disabled':''}>${icon('stop')}${e(nodeText('Stop upload','Ngừng tải lên'))}</button></div>`:''}</div></div>`;}
+function paintFileTransfer(){
+  const job=fileWorkspace.operation,root=$('#file-operation-area');if(!job?.transfer||!root)return;
+  const value=$('[data-upload-percent]',root),meter=$('.file-transfer-meter',root);
+  if(!value||!meter){uiHTML(root,fileOperationMarkup());return;}
+  const progress=job.transfer;
+  uiText(value,progress.processing?voiceText('Processing…','Đang xử lý…'):progress.percent===null?voiceText('Uploading…','Đang tải lên…'):`${progress.percent}%`);
+  meter.hidden=progress.percent===null;$('span',meter).style.transform=`scaleX(${(progress.percent||0)/100})`;
+}
 function fileAccessMarkup(data,server){
   if(isApplication(server))return'';
   const enabled=data.fileAccess?.expires>Date.now();
@@ -693,7 +723,13 @@ function panelConfirm({title,description,confirm=t('Xác nhận'),cancel=t('Hủ
 }
 async function allowDiscardForms(forms){const dirty=forms.filter(form=>form?.dataset.dirty==='true');if(!dirty.length)return true;if(!await panelConfirm({title:t('Bỏ thay đổi chưa lưu?'),description:t('Nội dung đang chỉnh sửa chưa được lưu. Bạn có thể tiếp tục chỉnh sửa hoặc bỏ thay đổi để chuyển sang mục khác.'),confirm:t('Bỏ thay đổi'),cancel:t('Tiếp tục chỉnh sửa')}))return false;for(const form of dirty)if(form.isConnected)form.dataset.dirty='false';return true;}
 async function allowDiscard(form){return allowDiscardForms([form]);}
-async function closeModal(){if(!await allowDiscard($('#modal-form')))return false;activeJobTracker?.stop();activeJobTracker=null;++jobDetailsRequest;$('#modal').close();return true;}
+async function closeModal(){
+  const modal=$('#modal'),form=$('#modal-form'),revision=jobDetailsRequest;
+  if(!await allowDiscard(form))return false;
+  if(revision!==jobDetailsRequest||form&&$('#modal-form')!==form)return false;
+  form?._uploadController?.abort();
+  activeJobTracker?.stop();activeJobTracker=null;++jobDetailsRequest;modal.close();return true;
+}
 document.addEventListener('input',event=>{if(event.target.matches('[data-language-control],[data-vp-search]'))return;const form=event.target.closest('#server-config-form,#modal-form');if(form&&form.dataset.ephemeralSecrets!=='true'){if(form.dataset.editor==='true'){syncEditorDirty(form);return;}form.dataset.dirty='true';if(form.id==='server-config-form'){syncConfigNetwork();updateConfigDirty();}}});
 document.addEventListener('change',event=>{if(event.target.matches('[data-language-control],[data-vp-search]'))return;const form=event.target.closest('#server-config-form,#modal-form');if(form&&form.dataset.ephemeralSecrets!=='true'){if(form.dataset.editor==='true'){syncEditorDirty(form);return;}form.dataset.dirty='true';if(form.id==='server-config-form'){syncConfigNetwork();updateConfigDirty();}}if(event.target.matches('[data-file-select]')){const path=event.target.dataset.fileSelect;if(event.target.checked&&!fileWorkspace.selected.has(path)&&fileWorkspace.selected.size>=fileSelectionLimit){event.target.checked=false;toast(t('Chọn tối đa 1.000 mục. Bỏ bớt lựa chọn trước khi thêm.'),true);}else if(event.target.checked)fileWorkspace.selected.add(path);else fileWorkspace.selected.delete(path);syncFileSelection();}if(event.target.id==='file-select-all'){const inputs=$$('[data-file-select]:not(:disabled)'),added=inputs.filter(input=>!fileWorkspace.selected.has(input.dataset.fileSelect)).length;if(event.target.checked&&fileWorkspace.selected.size+added>fileSelectionLimit){event.target.checked=false;toast(t('Trang này sẽ vượt giới hạn 1.000 mục đã chọn. Bỏ bớt lựa chọn trước.'),true);syncFileSelection();return;}inputs.forEach(input=>{if(event.target.checked)fileWorkspace.selected.add(input.dataset.fileSelect);else fileWorkspace.selected.delete(input.dataset.fileSelect);});syncFileSelection();}});
 window.addEventListener('beforeunload',event=>{if(($('#server-config-form')?.dataset.dirty==='true'||$('[data-application-form]')?.dataset.dirty==='true'||$('[data-gamerule-form]')?.dataset.dirty==='true')||$('#modal-form')?.dataset.dirty==='true'&&$('#modal').open){event.preventDefault();event.returnValue='';}});
@@ -865,7 +901,16 @@ async function importWorld(serverId){
   return openOperationModal(serverId,'world-import',t('Nhập thế giới Bedrock'),ht`Nhập vào ${server.name}. Thế giới hiện tại được giữ lại và không tự chuyển sang bản vừa nhập.`,ht`<div class="form-grid">${field('name',t('Tên thư mục mới'),'','text','required maxlength="255" autocomplete="off"')}<div class="field wide"><label for="world-archive">Gói thế giới .mcworld / ZIP</label><input id="world-archive" name="file" type="file" accept=".mcworld,.zip" required><small>${ht`Tối đa ${number(limits?.compressedMB||1024)} MiB nén, ${number(limits?.unpackedMB||2048)} MiB sau giải nén.`}</small></div></div><div class="notice spacer">${e(nodeText('Choose a Bedrock world containing level.dat and db/. ZIP may wrap one world folder. Verified JavaScript Script API packs are supported; Java worlds, encrypted content and host executables are rejected. Existing world folders are never replaced.','Chọn thế giới Bedrock có level.dat và db/. ZIP có thể chứa một thư mục bao ngoài. Hỗ trợ JavaScript Script API pack đã xác minh; từ chối world Java, nội dung mã hóa và mã chạy trên host. Không ghi đè thư mục world đã có.'))}</div><p class="panel-description">Tải lên có thể mất thời gian với bản đồ lớn. Giữ tab mở đến khi nhận mã tác vụ; có thể đổi ngôn ngữ mà không mất tệp đã chọn.</p>`,async(data,form)=>{
     validateWorldName(data.name);const file=form.elements.file.files[0];if(!file||!/\.(mcworld|zip)$/i.test(file.name))throw new Error(t('Chọn tệp .mcworld hoặc ZIP Bedrock.'));if(file.size>(limits?.compressedMB||1024)*1024*1024)throw new Error(t('Gói thế giới vượt giới hạn tải lên.'));
     const payload=new FormData();payload.append('name',data.name);payload.append('file',file);uiText($('#operation-modal-guard',form),t('Đang tải gói thế giới lên panel…'));
-    const result=await uploadForSession(`/servers/${encodeURIComponent(serverId)}/worlds/import`,payload,{csrfToken:state.auth?.csrfToken,onUnauthorized:()=>renderAuth(false),onProgress:progress=>{if(form.isConnected)uiText($('#operation-modal-guard',form),progress.processing?voiceText('Upload received · validating package…','Đã nhận tải lên · đang kiểm tra gói…'):progress.percent===null?voiceText('Uploading…','Đang tải lên…'):voiceText(`Uploading ${progress.percent}%`,`Đang tải lên ${progress.percent}%`));}});form.dataset.dirty='false';toast(t('Đã nhận gói. Theo dõi kiểm tra và nhập trong tác vụ.'),false,result.job?.id?{action:'job-details',id:result.job.id,label:t('Xem tác vụ')}:null);await refreshOperationView(serverId,'worlds');if(result.job?.id)await showJobDetails(result.job.id);return false;
+    const controller=new AbortController(),fields=$$('input,textarea,select',form).map(input=>[input,input.disabled]);form._uploadController=controller;
+    for(const [input]of fields)input.disabled=true;
+    const uploadGeneration=sessionGeneration;let result;
+    try{result=await uploadForSession(`/servers/${encodeURIComponent(serverId)}/worlds/import`,payload,{signal:controller.signal,csrfToken:state.auth?.csrfToken,onUnauthorized:()=>renderAuth(false),onProgress:progress=>{if(form.isConnected)uiText($('#operation-modal-guard',form),progress.processing?voiceText('Upload received · validating package…','Đã nhận tải lên · đang kiểm tra gói…'):progress.percent===null?voiceText('Uploading…','Đang tải lên…'):voiceText(`Uploading ${progress.percent}%`,`Đang tải lên ${progress.percent}%`));}});}
+    catch(error){if(error.outcomeUnknown&&uploadGeneration===sessionGeneration&&state.auth?.authenticated){const message=nodeText('The upload response was interrupted. Import may still be processing; check Activity before trying again.','Phản hồi tải lên bị gián đoạn. Tác vụ nhập có thể vẫn đang xử lý; kiểm tra Hoạt động trước khi thử lại.');toast(message,true,{action:'notifications',label:nodeText('Activity','Hoạt động')});error.message=message;}throw error;}
+    finally{if(form._uploadController===controller)delete form._uploadController;for(const [input,disabled]of fields)input.disabled=disabled;}
+    form.dataset.dirty='false';toast(t('Đã nhận gói. Theo dõi kiểm tra và nhập trong tác vụ.'),false,result.job?.id?{action:'job-details',id:result.job.id,label:t('Xem tác vụ')}:null);
+    await refreshOperationView(serverId,'worlds');
+    if(result.job?.id&&form.isConnected&&$('#modal-form')===form&&$('#modal').open)await showJobDetails(result.job.id,result.job,server);
+    return false;
   },t('Tải lên và kiểm tra'));
 }
 async function createWorld(serverId){
@@ -882,7 +927,7 @@ async function deleteWorld(serverId,name){
   },t('Xóa thế giới'),world);
 }
 function syncJobDetails(){const root=$('[data-job-details]');if(!root||!$('#modal').open)return;const job=state.data?.jobs?.find(j=>j.id===root.dataset.jobDetails);if(job)activeJobTracker?.observe(job);}
-async function showJobDetails(id,acceptedJob=null,acceptedServer=null){
+async function showJobDetails(id,acceptedJob=null,acceptedServer=null,{downloadExport=false}={}){
   const request=++jobDetailsRequest,actor=state.auth?.user?.id,job=acceptedJob?.id===id?acceptedJob:(await api(`/jobs/${encodeURIComponent(id)}`)).job;
   if(request!==jobDetailsRequest||!state.auth?.authenticated||state.auth.user?.id!==actor)return;
   if(!job||job.id!==id)throw new Error(t('Tác vụ không còn trong lịch sử được cấp quyền.'));
@@ -895,7 +940,7 @@ async function showJobDetails(id,acceptedJob=null,acceptedServer=null){
   const opened=await openModal(operationJobLabel(job.type),job.subject?.name||server?.name||nodeText('System task','Tác vụ hệ thống'),`<div data-job-details="${e(id)}">${operationProgressMarkup(job)}<p data-job-observation class="panel-description" role="status" hidden></p><div data-job-final>${initialDetails}</div></div>`,null);
   if(opened===false)return;
   const root=$('[data-job-details]'),generation=jobDetailsRequest,isCurrent=()=>root?.isConnected&&$('#modal').open&&root.dataset.jobDetails===id&&generation===jobDetailsRequest&&state.auth?.authenticated&&state.auth.user?.id===actor;
-  let renderedDetails=initialDetails;
+  let renderedDetails=initialDetails,exportDownloadStarted=false;
   activeJobTracker=createJobTracker({id,seed:job,isCurrent,read:async signal=>(await api(`/jobs/${encodeURIComponent(id)}`,{signal})).job,onJob:observed=>{
     if(!isCurrent())return;updateOperationProgress($('[data-progress-live]',root),observed,byte);$('[data-job-observation]',root).hidden=true;
     const details=jobDetailMarkup(observed,{server:state.servers.find(item=>item.id===observed.serverId)||server,nodes:state.nodes,icon,canManage,formatDate:date,formatBytes:byte});
@@ -904,6 +949,7 @@ async function showJobDetails(id,acceptedJob=null,acceptedServer=null){
      uiHTML(content,details);const updated=$('.job-output pre',root),updatedTimeline=$('.job-timeline',root);if(updated&&scroll)updated.scrollTop=scroll.follow?updated.scrollHeight:scroll.top;if(updatedTimeline&&expanded)updatedTimeline.open=true;
      if(focused===output)updated?.focus({preventScroll:true});else if(focused?.matches('summary'))updatedTimeline?.querySelector('summary')?.focus({preventScroll:true});else if(focused?.dataset.action)$$('[data-action]',content).find(button=>button.dataset.action===focused.dataset.action&&button.dataset.tab===focused.dataset.tab)?.focus({preventScroll:true});renderedDetails=details;
     }
+    if(downloadExport&&!exportDownloadStarted&&observed.status==='completed'&&observed.result?.export?.id){exportDownloadStarted=true;downloadWorldArtifact(observed.serverId,observed.result.export).catch(error=>{if(isCurrent()&&error.code!=='UI_SESSION_CHANGED')toast(error.message,true);});}
   },onUnavailable:()=>{if(!isCurrent())return;const notice=$('[data-job-observation]',root);notice.hidden=false;uiText(notice,nodeText('Progress is temporarily unavailable. Your request was accepted; Vortex will retry reading its status.','Tiến trình tạm chưa cập nhật. Yêu cầu đã được nhận; Vortex sẽ thử đọc lại trạng thái.'));}});
   activeJobTracker.start();
 }
@@ -1038,6 +1084,7 @@ document.addEventListener('click',async event=>{
     if(action==='copy-job-id'){const root=target.closest('[data-job-details]');if(root?.isConnected&&root.dataset.jobDetails===target.dataset.jobId)await copyText(target.dataset.jobId);return;}
     if(action==='job-open-workspace'){const server=state.servers.find(item=>item.id===target.dataset.serverId),tab=target.dataset.tab;if(!server||!applicationTabs(server).includes(tab))throw Error(nodeText('This server workspace is no longer available.','Workspace máy chủ này không còn khả dụng.'));if(await closeModal()!==false)await navigate(`server/${server.id}/${tab}`);return;}
     if(action==='job-download-backup'){const server=state.servers.find(item=>item.id===target.dataset.serverId);if(!server||!canManage(server))throw Error(nodeText('Server management access is required to download backups.','Cần quyền quản lý máy chủ để tải bản sao lưu.'));await withButtonBusy(target,()=>download(`${serverPath(server)}/backups/${encodeURIComponent(target.dataset.backupId)}/download`,'backup.zip'));return;}
+    if(action==='job-download-world'){await withButtonBusy(target,()=>downloadWorldArtifact(target.dataset.serverId,{id:target.dataset.exportId,name:target.dataset.exportName}));return;}
     if(action==='world-refresh'){target.disabled=true;try{await refreshOperationView(instanceId,'worlds');}finally{if(target.isConnected)target.disabled=false;}return;}
     if(action==='world-import'){await importWorld(instanceId);return;}
     if(action==='world-create'){await createWorld(instanceId);return;}
@@ -1045,7 +1092,8 @@ document.addEventListener('click',async event=>{
     if(action==='world-delete'){await deleteWorld(instanceId,target.dataset.world);return;}
     if(action==='world-export'){
       const name=target.dataset.world,world=state.worlds?.serverId===instanceId?state.worlds.worlds.find(w=>w.name===name):null;assertOperation(instanceId,'world-export',world);target.disabled=true;
-      try{await withButtonBusy(target,()=>download(`${instancePath}/worlds/${encodeURIComponent(name)}/export`,`${name}.mcworld`));}finally{if(target.isConnected)syncOperationControls();}return;
+      const current=requestContext(target);
+      try{await withButtonBusy(target,async()=>{const result=await api(`${instancePath}/worlds/${encodeURIComponent(name)}/export`,{method:'POST',body:{}});if(!result.job?.id)throw Error(nodeText('The server did not return an export task. Check Activity before trying again.','Máy chủ chưa trả về tác vụ xuất. Kiểm tra Hoạt động trước khi thử lại.'));toast(nodeText('Preparing your world download.','Đang chuẩn bị bản tải thế giới.'),false,{action:'job-details',id:result.job.id,label:t('Xem tác vụ')});if(current())await showJobDetails(result.job.id,result.job,state.servers.find(server=>server.id===instanceId),{downloadExport:true});});}finally{if(target.isConnected)syncOperationControls();}return;
     }
     if(action==='verify-backup'){target.disabled=true;try{await verifyBackup(instanceId,target.dataset.backup);}finally{if(target.isConnected)syncOperationControls();}return;}
     if(action==='lock-backup'){target.disabled=true;try{await setBackupProtection(instanceId,target.dataset.backup);}finally{if(target.isConnected)syncOperationControls();}return;}
@@ -1112,6 +1160,7 @@ document.addEventListener('click',async event=>{
     if(action==='download-backup'){assertOperation(instanceId,'download-backup',state.backups?.serverId===instanceId?state.backups.backups.find(b=>b.id===target.dataset.backup):null);target.disabled=true;try{await download(`${instancePath}/backups/${encodeURIComponent(target.dataset.backup)}/download`,target.dataset.name||'bedrock-backup.zip');}finally{if(target.isConnected)syncOperationControls();}return;}
     if(action==='mkdir'){const context=fileContext();openModal(t('Tạo thư mục'),t('Tên thư mục mới trong ')+(context.path||'Root')+'.',field('name',t('Tên thư mục'),'','text','required maxlength="255" placeholder="my-folder"'),async form=>{await fileOperation(context,t('Đang tạo thư mục'),()=>api(`${context.base}/files/mkdir`,{method:'POST',body:{path:fileJoin(context.path,validFileName(form.name))}}));toast(t('Đã tạo thư mục.'));},t('Tạo thư mục'));return;}
     if(action==='upload-file'){const input=$('#file-upload'),context=fileContext();Object.assign(input.dataset,{base:context.base,path:context.path,serverId:context.serverId});input.value='';input.click();return;}
+    if(action==='cancel-file-upload'){const controller=fileWorkspace.operation?.controller;if(controller){target.disabled=true;controller.abort();}return;}
     if(action==='delete-file'){const path=target.dataset.path,context={serverId:instanceId,base:instancePath,path:fileWorkspace.path};confirmAction(t('Xóa tệp hoặc thư mục?'),t('Dữ liệu sẽ bị xóa khỏi máy chủ: ')+path,async()=>{await fileOperation(context,t('Đang xóa'),()=>api(`${instancePath}/file?path=${encodeURIComponent(path)}`,{method:'DELETE'}));toast(t('Đã xóa.'));},t('Xóa'));return;}
     if(action==='node-version-library'){const nodeId=$('#modal-form')?.elements.nodeId.value;if(!nodeId||!await closeModal())return;state.versionNodeId=nodeId;await navigate('versions');return;}
     if(action==='refresh-versions'){const nodeId=state.versionNodeId;target.disabled=true;const versions=await api(`${versionLibraryBase(nodeId)}/refresh`,{method:'POST'});if(state.view!=='versions'||state.versionNodeId!==nodeId)return;state.versions=versions;await loadDashboard();toast(state.versions.error||state.versions.history?.error?t('Đã làm mới các nguồn đọc được. Xem thông báo cho nguồn chưa đồng bộ.'):t('Đã làm mới thư viện phiên bản.'),Boolean(state.versions.error||state.versions.history?.error));await renderView();return;}
@@ -1142,7 +1191,35 @@ document.addEventListener('click',async event=>{
     if(action==='logout'){await api('/auth/logout',{method:'POST'});state.auth=null;state.ws?.close();renderAuth(false);return;}
   }catch(error){if(error.code!=='UI_SESSION_CHANGED')toast(error.message,true);target.disabled=false;}finally{finishBusy();if(state.view==='schedules'&&['run-schedule','toggle-schedule'].includes(action))syncSchedules($('#workspace'),{schedules:state.schedules||[]},scheduleContext());}
 });
-async function uploadFiles(files,context){if(!files.length)return;const server=state.servers.find(s=>s.id===context.serverId);if(!canWriteFiles(server))throw new Error(voiceText('Wait for the current server task before uploading.','Chờ tác vụ hiện tại hoàn tất trước khi tải tệp lên.'));let completed=0;await fileOperation(context,ht`Đang tải ${countUI(files.length,'files')}`,async()=>{for(const file of files){fileWorkspace.operation.detail=`${completed+1} / ${files.length} · ${file.name} → ${context.path||'Root'}`;if($('#file-operation-area'))uiHTML($('#file-operation-area'),fileOperationMarkup());const data=new FormData();data.append('file',file);try{await uploadForSession(`${context.base}/files/upload?path=${encodeURIComponent(context.path)}`,data,{csrfToken:state.auth?.csrfToken,onUnauthorized:()=>renderAuth(false),onProgress:progress=>{if(!fileWorkspace.operation)return;fileWorkspace.operation.transfer=progress;queueConsolePaint(()=>{if($('#file-operation-area'))uiHTML($('#file-operation-area'),fileOperationMarkup());});}});completed++;}catch(error){if(error.code==='UI_SESSION_CHANGED')throw error;if(fileContextCurrent(context))await refreshFileListing(context).catch(()=>{});throw new Error(ht`Đã tải ${countRatioUI(completed,files.length,'files')}. ${file.name}: ${error.message}`);}}});toast(ht`Đã tải ${countUI(completed,'files')} lên ${context.path||'Root'}.`);}
+async function uploadFiles(files,context){
+  if(!files.length)return;
+  const server=state.servers.find(s=>s.id===context.serverId);
+  if(!canWriteFiles(server))throw new Error(voiceText('Wait for the current server task before uploading.','Chờ tác vụ hiện tại hoàn tất trước khi tải tệp lên.'));
+  const configured=fileWorkspace.serverId===context.serverId?fileWorkspace.data?.limits?.uploadMaxBytes:null;
+  const limit=Number.isSafeInteger(configured)&&configured>0?configured:100*1024**2;
+  for(const file of files)if(file.size>limit)throw new Error(nodeText(`${file.name}: the file exceeds the upload limit of ${byte(limit)}.`,`${file.name}: tệp vượt giới hạn tải lên ${byte(limit)}.`));
+  let completed=0;
+  await fileOperation(context,ht`Đang tải ${countUI(files.length,'files')}`,async()=>{
+    const operation=fileWorkspace.operation,controller=new AbortController();operation.controller=controller;
+    for(const file of files){
+      if(controller.signal.aborted)throw Object.assign(new Error(nodeText('Upload stopped.','Đã ngừng tải lên.')),{code:'UPLOAD_CANCELLED'});
+      operation.detail=`${completed+1} / ${files.length} · ${file.name} → ${context.path||'Root'}`;
+      operation.transfer={percent:null,processing:false};
+      if($('#file-operation-area'))uiHTML($('#file-operation-area'),fileOperationMarkup());
+      const data=new FormData();data.append('file',file);
+      try{
+        await uploadForSession(`${context.base}/files/upload?path=${encodeURIComponent(context.path)}`,data,{signal:controller.signal,csrfToken:state.auth?.csrfToken,onUnauthorized:()=>renderAuth(false),onProgress:progress=>{if(fileWorkspace.operation!==operation)return;operation.transfer=progress;queueConsolePaint(paintFileTransfer);}});
+        completed++;
+      }catch(error){
+        if(error.code==='UI_SESSION_CHANGED')throw error;
+        if(fileContextCurrent(context))await refreshFileListing(context).catch(()=>{});
+        const uncertain=error.outcomeUnknown?nodeText(' The server may already have received this file. Check the folder before retrying.',' Máy chủ có thể đã nhận tệp. Kiểm tra thư mục trước khi tải lại.'):'';
+        throw Object.assign(new Error(ht`Đã tải ${countRatioUI(completed,files.length,'files')}. ${file.name}: ${error.message}`+uncertain),{code:error.code,status:error.status,outcomeUnknown:error.outcomeUnknown});
+      }
+    }
+  });
+  toast(ht`Đã tải ${countUI(completed,'files')} lên ${context.path||'Root'}.`);
+}
 $('#file-upload').addEventListener('change',async event=>{const input=event.currentTarget,files=[...input.files],context={base:input.dataset.base,path:input.dataset.path,serverId:input.dataset.serverId};if(!context.base){toast(t('Không xác định được máy chủ tải lên.'),true);return;}try{await uploadFiles(files,context);}catch(error){if(error.code!=='UI_SESSION_CHANGED')toast(error.message,true);}});
 document.addEventListener('contextmenu',event=>{const row=event.target.closest('.file-table tbody tr');if(row){event.preventDefault();openFileMenu(row.dataset.filePath,row.closest('.file-workspace').dataset.serverId);}});
 $('#file-folder-picker').addEventListener('close',()=>{folderPicker=null;});

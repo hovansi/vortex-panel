@@ -3,6 +3,7 @@ import {createPanelUpdateController,createPanelUpdateIntentProbe,panelUpdateErro
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
+import { installHttpReceivePolicy, authorizeMultipartReceive } from './http-receive.js';
 import fs from 'node:fs';
 import { createSystemPowerController, systemPowerErrorPayload } from './system-power.js';
 import { createHostZramController, hostZramErrorPayload } from './host-zram.js';
@@ -74,7 +75,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     next();
   },auth.router);
   const server = http.createServer(app);
-  server.requestTimeout = 5 * 60 * 1000;
+  installHttpReceivePolicy(server);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
   const emit = event => {
     for (const client of wss.clients) {
@@ -138,6 +139,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     next();
   });
   app.use('/api', (req, _res, next) => {
+    authorizeMultipartReceive(req);
     const match = req.path.match(/^\/servers\/([^/]+)\/(?:file|files)(?:\/|$)/);
     req.fileAccess = match ? auth.fileAccess(req, decodeURIComponent(match[1])) : null;
     next();

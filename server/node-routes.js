@@ -30,7 +30,8 @@ const serverRoutes = [
   ['POST', /^\/files\/(?:mkdir|move|rename|copy|compress|extract|create|upload)\/?$/],
   ['GET', /^\/files\/download\/?$/], ['POST', /^\/packs\/import\/?$/],
   ['PATCH,DELETE', /^\/packs\/[^/]+\/?$/], ['POST', /^\/worlds\/(?:import|select|create)\/?$/],
-  ['GET,HEAD', /^\/worlds\/[^/]+\/export\/?$/], ['DELETE', /^\/worlds\/[^/]+\/?$/],
+  ['GET,HEAD,POST', /^\/worlds\/[^/]+\/export\/?$/], ['DELETE', /^\/worlds\/[^/]+\/?$/],
+  ['GET,HEAD', /^\/world-exports\/[^/]+\/download\/?$/],
   ['POST', /^\/backups\/?$/], ['POST', /^\/backups\/[^/]+\/(?:restore|verify)\/?$/],
   ['GET', /^\/backups\/[^/]+\/download\/?$/], ['PATCH,DELETE', /^\/backups\/[^/]+\/?$/],
 ];
@@ -257,7 +258,11 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule
   let upstream;
   const cancel = () => { if (!res.writableFinished) { abort.abort(); upstream?.destroy(); } };
   req.once('aborted', cancel); res.once('close', cancel);
-  const headers = Object.fromEntries(safeRequestHeaders.filter(key => req.headers[key] !== undefined).map(key => [key, req.headers[key]]));
+  const stableDownload = ['GET', 'HEAD'].includes(req.method) && /^\/api\/servers\/[^/]+\/(?:files\/download|(?:backups|world-exports)\/[^/]+\/download)\/?$/.test(remotePath);
+  const worldExport = ['GET', 'HEAD'].includes(req.method) && /^\/api\/servers\/[^/]+\/worlds\/[^/]+\/export\/?$/.test(remotePath);
+  const requestHeaders = stableDownload ? [...safeRequestHeaders, 'range', 'if-range'] : safeRequestHeaders;
+  const responseHeaders = stableDownload ? [...safeResponseHeaders, 'accept-ranges', 'content-range'] : safeResponseHeaders;
+  const headers = Object.fromEntries(requestHeaders.filter(key => req.headers[key] !== undefined).map(key => [key, req.headers[key]]));
   headers['X-Vortex-Actor'] = nodes.actorHeader(node, req.session.user);
   // Never relay a browser supplied elevation header. Only the authenticated
   // controller session can issue this short lived, server scoped grant.
@@ -279,8 +284,12 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule
     // older worker after a downgrade. Missing PATCH commands remain omitted.
     const scheduleExpected = schedule ? await prepareRemoteSchedule(nodes, node, req, bodyOverride ?? req.body ?? {}, schedule, abort.signal) : null;
     if (req.method === 'POST' && /\/clone\/?$/.test(remotePath)) await nodes.assertPortAllocation(node, bodyOverride ?? req.body);
-    const response = await nodes.request(nodes.credentials(node), { path: remotePath + query, method: req.method, body, headers, stream: true, signal: AbortSignal.any([abort.signal, nodes.signal]), timeoutMs: 300000, maxBytes: 2 * 1024 ** 3 + 20 * 1024 ** 2 });
+    const response = await nodes.request(nodes.credentials(node), { path: remotePath + query, method: req.method, body, headers, stream: true, signal: AbortSignal.any([abort.signal, nodes.signal]), timeoutMs: 300000,
+      ...(stableDownload || worldExport || body === req ? { idleTimeoutMs: 300000 } : {}), maxBytes: 2 * 1024 ** 3 + 20 * 1024 ** 2 });
     upstream = response.stream; nodes.identityHeaders(node, response);
+    // Each export GET builds a new ZIP. It has no stable representation that a
+    // browser can safely resume from an earlier request's byte offset.
+    if (worldExport) res.setHeader('Accept-Ranges', 'none');
     const contentType = String(response.headers['content-type'] || '').toLowerCase();
     const transformedJson = contentType.includes('application/json') && !response.headers['content-disposition'];
     if (scheduleExpected && response.statusCode >= 200 && response.statusCode < 300 && !transformedJson) throw scheduleCommandIssue('SCHEDULE_NODE_ACK_MISMATCH');
@@ -290,7 +299,7 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule
       res.status(response.statusCode);
       // GET rewrites JSON resource IDs/localization. Its generated length and
       // validators cannot be inferred from the agent's raw representation.
-      const headHeaders = transformedJson ? ['content-type'] : safeResponseHeaders;
+      const headHeaders = transformedJson ? ['content-type'] : responseHeaders;
       for (const key of headHeaders) if (response.headers[key] !== undefined) res.setHeader(key, response.headers[key]);
       upstream.destroy(); res.end(); return;
     }
@@ -308,7 +317,7 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule
       res.status(response.statusCode).json(nodes.mapResponse(node, value)); return;
     }
     res.status(response.statusCode);
-    for (const key of safeResponseHeaders) if (response.headers[key] !== undefined) res.setHeader(key, response.headers[key]);
+    for (const key of responseHeaders) if (response.headers[key] !== undefined) res.setHeader(key, response.headers[key]);
     await pipeline(upstream, res);
   } catch (error) {
     upstream?.destroy();
@@ -341,7 +350,7 @@ export function createRemoteServerProxy(nodes) {
       if (!canAccessServer(user, id, manage)) fail('You do not have permission to access this server.', 403);
       if ((req.method === 'DELETE' && /^\/?$/.test(match[2]) || req.method === 'POST' && /^\/(?:clone|storage\/grow)\/?$/.test(match[2])) && user.role !== 'admin') fail('This operation requires an administrator.', 403);
       if (/^\/network-access\/?$/.test(match[2]) && user.role !== 'admin') fail('This operation requires an administrator.', 403);
-      if (['GET', 'HEAD'].includes(req.method) && ((/^\/(?:file|files\/download)\/?$/.test(match[2]) && isIdentityPath(req.query.path)) || /^\/worlds\/[^/]+\/export\/?$/.test(match[2]) || /^\/backups\/[^/]+\/download\/?$/.test(match[2])) && !canAccessServer(user, id, true)) fail(IDENTITY_READ_PROTECTION, 403);
+      if (['GET', 'HEAD'].includes(req.method) && ((/^\/(?:file|files\/download)\/?$/.test(match[2]) && isIdentityPath(req.query.path)) || /^\/worlds\/[^/]+\/export\/?$/.test(match[2]) || /^\/(?:backups|world-exports)\/[^/]+\/download\/?$/.test(match[2])) && !canAccessServer(user, id, true)) fail(IDENTITY_READ_PROTECTION, 403);
       const node = nodes.requireAvailable(composite.nodeId, { create: req.method === 'POST' && /^\/clone\/?$/.test(match[2]), mutating: manage });
       return proxy(nodes, node, `/api/servers/${composite.rawId}${match[2]}`, req, res);
     }
