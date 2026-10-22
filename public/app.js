@@ -1,4 +1,5 @@
 import './workspace-viewport.js';
+import {createWorkspaceMotion} from './workspace-motion.js';
 import {panelUpdateSettingsMarkup,syncPanelUpdateSettings,handlePanelUpdateAction,showPanelUpdateJob} from './panel-update.js';
 import {createFrontendReleaseObserver,readPageFrontendIdentity,mountFrontendReleaseNotice} from './frontend-release.js';
 import {openServerAppearance,serverCoverMarkup,serverIconMarkup,serverDescriptionMarkup,appearanceStyle} from './server-appearance.js';
@@ -55,6 +56,7 @@ const navIcons={overview:'grid',servers:'server',console:'terminal',files:'folde
 const state={auth:null,data:null,servers:[],versions:null,view:'overview',serverTab:'console',selected:null,path:'',logs:[],ws:null,connected:false,render:0,busy:false,users:[],mfa:null,metrics:null,diagnostics:null,versionNodeId:'local',versionQuery:'',versionChannel:'all',versionPage:1,serverQuery:'',serverFilter:'all',serverNodeFilter:'all',nodes:[],nodeLimits:{maxNodes:32},configuration:null,worlds:null,backups:null};
 let timezoneRenderPending=false;
 const workspaceContinuity=createWorkspaceContinuity({limit:32});
+const workspaceMotion=createWorkspaceMotion({workspace:$('#workspace'),navigation:$('#navigation'),mobileNavigation:$('#mobile-nav')});
 const recentServer=createRecentServer({storage:preference});
 let settingsNavigationControls=null,settingsSelection='account';
 state.serverLayout=preference.get('vortex-server-layout')==='grid'?'grid':'list';
@@ -150,7 +152,7 @@ function serverPath(s=findServer()){if(!s)throw new Error(t('Hãy chọn một m
 function setServers(servers){state.servers=mergeNodeServers(state.servers,servers,state.nodes);if(!state.servers.some(s=>s.id===state.selected))state.selected=state.servers[0]?.id||null;if(syncConsoleServer(state,findServer())){++logRequest;queueConsolePaint(updateLogs);}}
 
 function renderAuth(setup,error=''){
-  workspaceContinuity.reset();recentServer.reset();settingsNavigationControls?.destroy();settingsNavigationControls=null;settingsSelection='account';
+  workspaceMotion.reset();workspaceContinuity.reset();recentServer.reset();settingsNavigationControls?.destroy();settingsNavigationControls=null;settingsSelection='account';
   activeJobTracker?.stop();activeJobTracker=null;++jobDetailsRequest;++state.render;++logRequest;++dashboardRequest;++sessionGeneration;++navigationRequest;renderedDataSignature='';renderedServerResultsSignature='';resetWorkspaceNavigation(state);syncConsoleServer(state,null);resetPowerClientState();resetMemoryClientState();
   applicationSettingsControls?.destroy();applicationSettingsControls=null;clearPrivateDialogs();modalSubmit=null;fileEditor=null;folderPicker=null;createNodeSync=null;viewResourceControls?.destroy();viewResourceControls=null;
   clearTimeout(reconnectTimer);if(state.ws){state.ws.onopen=null;state.ws.onmessage=null;state.ws.onerror=null;state.ws.onclose=null;state.ws.close();state.ws=null;}
@@ -182,6 +184,7 @@ function renderNav(){
   const dock=$('#mobile-nav'),active=$('a.active,button.active',dock);if(active){dock.style.setProperty('--lens-left',active.offsetLeft+'px');dock.style.setProperty('--lens-width',active.offsetWidth+'px');dock.style.setProperty('--lens-height',active.offsetHeight+'px');}
   uiText($('#view-title'),state.view==='server'?findServer()?.name||t('Máy chủ'):titleMap[state.view]);
   if(focusIdentity&&!focused.isConnected){const next=$$('a,button',$('#'+focusIdentity.root)).find(item=>focusIdentity.view?item.dataset.view===focusIdentity.view:focusIdentity.href?item.getAttribute('href')===focusIdentity.href:item.dataset.action===focusIdentity.action);next?.focus({preventScroll:true});}
+  workspaceMotion.syncNavigation();
 }
 function renderHostMini(){const h=state.data?.host||{},system=h.os?.prettyName||h.os?.name||h.release||h.platform||t('Hệ thống');uiHTML($('#host-mini'),`${icon('host')}<div><strong>${e(h.hostname||t('Máy chủ'))}</strong><small><i class="dot ${state.connected?'':'offline'}"></i><span title="${e(system)}">${e(system)}</span></small></div>`);}
 function updateConnection(connected){state.connected=connected;uiHTML($('#connection'),`<i class="dot ${connected?'':'offline'}"></i><span>${connected?t('Kết nối trực tiếp'):t('Đang đồng bộ HTTP')}</span>`);renderHostMini();}
@@ -201,10 +204,10 @@ async function navigate(view){
   if(view.startsWith('server/')){const [,encodedId,tab]=view.split('/'),id=resolveServerRouteId(encodedId,state.servers);if(!id)view='servers';else{state.selected=id;syncConsoleServer(state,findServer());++logRequest;state.serverTab=applicationTabs(findServer()).includes(tab)?tab:'console';view='server';}}
   if(view==='server'&&!state.servers.length)view='servers';
   if(!titleMap[view]&&view!=='server')view='overview';if(['host','nodes'].includes(view)&&!isAdmin())view='overview';
-  workspaceContinuity.capture(previousRoute,$('#workspace'));
+  workspaceMotion.capture();workspaceContinuity.capture(previousRoute,$('#workspace'));
   state.view=view;if(view==='server'&&state.serverTab==='files')state.path=fileLocations.get(state.selected)||'';else state.path='';renderNav();
   const hash=view==='server'?`server/${state.selected}/${state.serverTab}`:view;state.currentRoute=hash;if(location.hash!==`#${hash}`)history[previousRoute&&previousRoute!==hash?'pushState':'replaceState'](null,'',`#${hash}`);
-  $('#workspace').classList.remove('view-enter');await renderView({capture:false});if(request===navigationRequest){$('#workspace').classList.add('view-enter');if(fromContent&&previousRoute!==hash&&!document.querySelector('dialog[open]')){const title=$('h1',$('#workspace'));if(title){title.tabIndex=-1;title.focus({preventScroll:true});}}}
+  await renderView({capture:false});if(request===navigationRequest){workspaceMotion.reveal({route:hash,animate:previousRoute!==hash});if(fromContent&&previousRoute!==hash&&!document.querySelector('dialog[open]')){const title=$('h1',$('#workspace'));if(title){title.tabIndex=-1;title.focus({preventScroll:true});}}}
 }
 function workspaceLoadingMarkup(){
  const title=state.view==='server'?lm(findServer(),'name')||t('Máy chủ'):titleMap[state.view]||'Workspace';
@@ -458,7 +461,7 @@ function renderBackups(data,standalone=true){
     return ht`<article class="backup-row" data-backup-row="${e(b.id)}"><div class="backup-row-head"><span class="backup-row-icon">${icon(b.locked?'shield':'backup')}</span><div><h3>${e(lm(b,'name'))}</h3><p>${e(date(b.createdAt))} · ${byte(b.size)} · ${e(reason)}</p></div>${b.locked?ht`<span class="badge purple">Được bảo vệ</span>`:''}</div><div class="backup-detail-grid"><div><span>${e(isApplication(s)?applicationName(s):'Bedrock')}</span><strong>${e(b.version||t('Không rõ phiên bản'))}</strong>${b.version&&b.version!==s.version?ht`<small class="server-error">Khác phiên bản hiện tại</small>`:''}</div><div><span>Kiểm tra dữ liệu</span><strong class="${integrity.status==='failed'?'server-error':''}">${e(integrityLabel(b))}</strong><small>${integrity.checkedAt?e(date(integrity.checkedAt)):t('Kiểm tra ZIP và checksum trước khi khôi phục.')}</small></div></div><div class="backup-checksum"><span>SHA-256</span><code>${e(b.sha256||t('Chưa có checksum gốc'))}</code>${b.checksumOrigin==='established'?ht`<small>Checksum được thiết lập từ bản đang lưu; không có checksum tại thời điểm tạo để đối chiếu.</small>`:''}</div>${integrity.error?`<p class="world-validation-error">${e(lm(integrity,'error'))}</p>`:''}${restoreReason&&writable?`<p class="backup-eligibility">${icon('shield')}${e(restoreReason)}</p>`:''}<div class="backup-row-actions">${writable?`${operationButton(t('Khôi phục'),'restore-backup',s,b,'soft','backup')}${operationButton(t('Kiểm tra'),'verify-backup',s,b,'','check')}${operationButton(b.locked?t('Bỏ bảo vệ'):t('Bảo vệ'),'lock-backup',s,b,'','shield')}`:''}${writable?operationButton(t('Tải xuống'),'download-backup',s,b,'text','download'):''}${writable?operationButton(t('Xóa bản sao'),'delete-backup',s,b,'text danger','trash'):''}</div></article>`;
   }).join('')||empty(isApplication(s)?nodeText('Protect your project','Bảo vệ dự án của bạn'):t('Bảo vệ thế giới của bạn'),isApplication(s)?nodeText('Stop the application to back up its files and configuration.','Dừng ứng dụng để sao lưu tệp và cấu hình.'):t('Tạo bản sao trước khi đổi phiên bản hoặc cấu hình.'),'','backup')}</div><div class="recovery-retention">${icon('shield')}<span>${ht`Giữ ${number(s.backupRetention||10)} bản gần nhất không được bảo vệ, cùng các bản được bảo vệ. Bỏ bảo vệ cho phép tự dọn hoặc xóa bản đó.`} ${ht`Tối đa ${number(data.limits?.maxLocked||50)} bản được bảo vệ trên mỗi máy chủ.`}</span></div></section><div class="notice">${icon('archive')}<span>${isApplication(s)?nodeText('Keep a downloaded copy on another device.','Tải một bản về thiết bị khác.'):nodeText('Backups are stored on this VPS. Keep a downloaded copy on another device.','Bản sao lưu được lưu trên VPS. Tải một bản về thiết bị khác.')} ${t('Giới hạn 2 GiB và 50.000 tệp mỗi bản.')}</span></div>${recoveryJobs(s,['backup','restore','backup-verify','backup.verify'])}`;
 }
-function scheduleContext(){return {servers:state.servers,canManage,formatDate:date,icon};}
+function scheduleContext(){return {servers:state.servers,canManage,canCreateServer:canCreate(),formatDate:date,icon};}
 function renderSchedules(data){
   state.schedules=data.schedules||[];if(state.data)state.data.schedules=state.schedules;
   return heading(t('Lịch tác vụ'),nodeText('Automate server tasks on a schedule. An optional console command runs before a backup or restart.','Tự động vận hành máy chủ theo chu kỳ. Lệnh console tùy chọn được chạy trước khi sao lưu hoặc khởi động lại.'),state.servers.some(canManage)?btn(t('Thêm lịch'),'create-schedule','','primary','plus'):'')+schedulesMarkup(data,scheduleContext());
@@ -584,7 +587,7 @@ function scheduleServerTabVisibility(target=null,animate=false){
   });
 }
 function bindView(){
-  if(state.view==='settings')settingsNavigationControls=bindSettingsNavigation($('#workspace'),{selected:settingsSelection});
+  if(state.view==='settings')settingsNavigationControls=bindSettingsNavigation($('#workspace'),{selected:settingsSelection,onSelect:section=>workspaceMotion.revealSection(section)});
   if(state.view==='schedules')syncSchedules($('#workspace'),{schedules:state.schedules||[]},scheduleContext());
   if(isAdmin()&&state.view==='settings')void syncPanelUpdateSettings($('#workspace'),nodeContext($('#workspace')));
   enhanceSelects($('#workspace'));syncTelemetry($('#workspace'));syncPanelVersion();void bindPowerControls($('#workspace'),nodeContext($('#workspace')));void bindMemoryControls($('#workspace'),nodeContext($('#workspace')));void bindTimezoneControls($('#workspace'),nodeContext($('#workspace')));void syncTLSSettings($('#workspace'),nodeContext($('#workspace')));syncButtonIntents($('#workspace'));

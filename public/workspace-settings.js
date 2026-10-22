@@ -18,7 +18,7 @@ export function settingsNavigationMarkup({icon=()=>'',admin=false}={}){
 }
 
 /** Navigation selects existing sections; it never recreates controls or drafts. */
-export function bindSettingsNavigation(root,{selected}={}){
+export function bindSettingsNavigation(root,{selected,onSelect}={}){
  const previous=bindings.get(root),requested=selected??previous?.selected;
  previous?.destroy();
  const navigation=root?.querySelector('.settings-navigation');
@@ -39,11 +39,12 @@ export function bindSettingsNavigation(root,{selected}={}){
  let active='',destroyed=false;
  function select(category,{focus=false,scroll=false}={}){
   const current=sections.get(category);if(destroyed||!current)return false;
-  active=category;
+  const previous=active;active=category;
   for(const [key,item] of sections){item.section.hidden=key!==category;if(key===category)item.button.setAttribute('aria-current','page');else item.button.removeAttribute('aria-current');}
   root.dataset.settingsSelection=category;
   if(focus)current.heading.focus({preventScroll:true});
   if(scroll){const workspace=root.matches?.('.workspace')?root:root.closest?.('.workspace');workspace?.scrollTo?.({top:0,behavior:'instant'});}
+  if(previous&&previous!==category)onSelect?.(current.section);
   return true;
  }
  function click(event){const button=event.target.closest?.('[data-settings-target]');if(button&&navigation.contains(button))select(button.dataset.settingsTarget,{focus:true,scroll:true});}

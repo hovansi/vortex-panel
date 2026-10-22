@@ -36,9 +36,17 @@ export function scheduleRowModel(schedule,{servers=[],canManage=()=>false,format
 const rowMarkup=model=>`<tr data-schedule-row="${escape(model.id)}">${model.cells.map((cell,index)=>`<td data-schedule-cell="${index}"${index===3?' class="muted"':''}>${cell}</td>`).join('')}</tr>`;
 const count=value=>new Intl.NumberFormat(getLocale()).format(value);
 
+function scheduleEmptyState(context){
+  const canSchedule=context.servers.some(context.canManage),canCreateServer=!context.servers.length&&context.canCreateServer===true;
+  const kind=canSchedule?'schedule':canCreateServer?'server':'read-only';
+  const description=canCreateServer?text('Add a server to start scheduling automated tasks.','Thêm máy chủ để bắt đầu lên lịch tự động.'):text('Schedule backups, restarts or console commands.','Tạo lịch sao lưu, khởi động lại hoặc gửi lệnh console.');
+  const action=canSchedule?`<button type="button" class="btn primary" data-action="create-schedule">${context.icon('plus')}${escape(text('Create your first schedule','Tạo lịch đầu tiên'))}</button>`:canCreateServer?`<button type="button" class="btn primary" data-action="create-server">${context.icon('plus')}${escape(text('Create server','Tạo máy chủ'))}</button>`:'';
+  return{kind,markup:`${context.icon('clock')}<h3>${escape(text('No schedules yet','Chưa có lịch tác vụ'))}</h3><p>${escape(description)}</p>${action}`};
+}
+
 export function schedulesMarkup(data,context){
-  const schedules=data.schedules||[],canCreate=context.servers.some(context.canManage);
-  return `<section class="panel schedules-panel" data-schedules-workspace><div class="panel-header"><div><h2>${escape(text('Automation','Tự động hóa'))}</h2></div><span class="badge neutral" data-schedule-count>${count(schedules.length)}</span></div><div class="table-wrap" data-schedule-table${schedules.length?'':' hidden'}><table><thead><tr>${['Task / Server','Interval','Status','Next run','Actions'].map((en,index)=>`<th>${escape(text(en,['Tác vụ / Máy chủ','Chu kỳ','Trạng thái','Lần tiếp theo','Thao tác'][index]))}</th>`).join('')}</tr></thead><tbody data-schedule-rows>${schedules.map(schedule=>rowMarkup(scheduleRowModel(schedule,context))).join('')}</tbody></table></div><div class="empty-state" data-schedule-empty${schedules.length?' hidden':''}>${context.icon('clock')}<h3>${escape(text('Tasks that run on time','Tác vụ chạy đúng giờ'))}</h3><p>${escape(text('Schedule backups, restarts or console commands.','Tạo lịch sao lưu, khởi động lại hoặc gửi lệnh console.'))}</p>${canCreate?`<button type="button" class="btn soft" data-action="create-schedule">${context.icon('plus')}${escape(text('Create your first schedule','Tạo lịch đầu tiên'))}</button>`:''}</div></section>`;
+  const schedules=data.schedules||[],empty=scheduleEmptyState(context);
+  return `<section class="panel schedules-panel" data-schedules-workspace><div class="panel-header"><div><h2>${escape(text('Automation','Tự động hóa'))}</h2></div><span class="badge neutral" data-schedule-count>${count(schedules.length)}</span></div><div class="table-wrap" data-schedule-table${schedules.length?'':' hidden'}><table><thead><tr>${['Task / Server','Interval','Status','Next run','Actions'].map((en,index)=>`<th>${escape(text(en,['Tác vụ / Máy chủ','Chu kỳ','Trạng thái','Lần tiếp theo','Thao tác'][index]))}</th>`).join('')}</tr></thead><tbody data-schedule-rows>${schedules.map(schedule=>rowMarkup(scheduleRowModel(schedule,context))).join('')}</tbody></table></div><div class="empty-state" data-schedule-empty data-empty-kind="${empty.kind}"${schedules.length?' hidden':''}>${empty.markup}</div></section>`;
 }
 
 // Reconcile by identity and by cell. Polling must never remount the workspace,
@@ -66,7 +74,10 @@ export function syncSchedules(root,data,context){
   }
   for(const row of existing.values())row.remove();
   const counter=panel.querySelector('[data-schedule-count]'),value=count(schedules.length);if(counter.textContent!==value)counter.textContent=value;
-  panel.querySelector('[data-schedule-table]').hidden=!schedules.length;panel.querySelector('[data-schedule-empty]').hidden=Boolean(schedules.length);
+  panel.querySelector('[data-schedule-table]').hidden=!schedules.length;
+  const empty=panel.querySelector('[data-schedule-empty]'),emptyState=scheduleEmptyState(context);
+  if(empty.dataset.emptyKind!==emptyState.kind){uiHTML(empty,emptyState.markup);empty.dataset.emptyKind=emptyState.kind;}
+  empty.hidden=Boolean(schedules.length);
   if(focus&&focused!==panel.ownerDocument.activeElement){const replacement=[...panel.querySelectorAll('[data-action][data-id]')].find(button=>button.dataset.action===focus.action&&button.dataset.id===focus.id);if(replacement&&!replacement.disabled)replacement.focus({preventScroll:true});}
   return true;
 }
