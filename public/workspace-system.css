@@ -21,6 +21,20 @@
 }
 body{background:var(--content)}
 body{height:100vh;height:100dvh}
+/* Choice and navigation labels respond as controls; content stays selectable. */
+label,input,select,textarea{-webkit-tap-highlight-color:transparent}
+:where(
+  .application-kind-choice,.resource-choice,.toggle,.config-toggle-row,
+  .btn,.icon-button,.sidebar-search,.avatar,.tool-link,.nav-item,
+  .mobile-nav>a,.mobile-nav>button,.settings-navigation>button,.server-tabs>button,
+  .select-control-trigger,[role=option],.language-trigger,.segmented>button,summary
+){
+  -webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;user-select:none;
+  -webkit-touch-callout:none;
+}
+.application-kind-choice:has(>input:not(:disabled)):active>.application-kind-card,
+.resource-choice:has(>input:not(:disabled)):active{opacity:.86}
 .wallpaper{display:none}
 .app-shell{
   grid-template-columns:232px minmax(0,1fr);width:100%;height:100vh;height:100dvh;max-height:none;
