@@ -41,7 +41,7 @@ The final output includes the panel URL and first-Admin setup instructions. No s
 5. Verify `/healthz` against the service’s actual MainPID. Prepare NGINX, initial IP TLS and the loopback reverse proxy. Attempt a trusted IP certificate and install its renewal timer; keep working access if the CA request fails. Apply only supported, conservative owned network settings.
 6. Print access/setup guidance and remove temporary bootstrap files.
 
-The panel binds to `127.0.0.1:3000`; NGINX terminates HTTPS on port 19191, giving the public address `https://IP:19191`. Public setup sets `PUBLIC_URL` and `TRUST_PROXY` appropriately. When UFW is already active, the helper adds only its missing web-port allowances. It does not enable/reset UFW or manage the VPS provider's firewall. Minecraft and application ports are configured separately in the panel's network tools.
+The panel binds to `127.0.0.1:3000`; NGINX terminates HTTPS on port 19191, giving the public address `https://IP:19191`. Public setup sets `PUBLIC_URL` and `TRUST_PROXY` appropriately. When UFW is already active, the helper adds only its missing web-port allowances. It does not enable/reset UFW or manage the VPS provider's firewall. Minecraft and application ports are configured separately in the panel's network tools. Server network tools support active UFW and native iptables when an enabled netfilter-persistent service already owns safe rules.v4 and rules.v6 files. Native changes persist only the exact tagged server-port rules, keeping other rules in place.
 
 The bootstrap's checksum detects a source archive that differs from its published release. The HTTPS repository/publisher is the trust source; checksums do not independently authenticate the bootstrap script you have already chosen to run.
 

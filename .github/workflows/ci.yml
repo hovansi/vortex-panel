@@ -78,6 +78,10 @@ jobs:
     with:
       runtime_artifact: ${{ needs.bedrock-engine.outputs.artifact_name }}
 
+  network-firewall:
+    name: Isolated native firewall and persistence
+    uses: ./.github/workflows/network-firewall.yml
+
   https:
     name: Managed HTTPS and public port
     uses: ./.github/workflows/https.yml

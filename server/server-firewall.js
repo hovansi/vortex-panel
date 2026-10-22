@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createNativeFirewall } from './native-firewall.js';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -7,15 +8,17 @@ import { parseUdpPorts, networkPortReservations } from './safety.js';
 const execute = promisify(execFile), UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 let hostTail = Promise.resolve();
 const texts = {
-  unsupported: ['UFW management requires a separate data scope and Linux root access.', 'Quản lý UFW cần thư mục dữ liệu riêng và quyền root Linux.'],
-  unavailable: ['UFW is unavailable or its rules could not be inspected safely.', 'UFW không khả dụng hoặc không thể đọc rule an toàn.'],
+  unsupported: ['Firewall management requires a separate data scope and Linux root access.', 'Quản lý firewall cần thư mục dữ liệu riêng và quyền root Linux.'],
+  unavailable: ['The host firewall is unavailable or could not be inspected safely.', 'Firewall trên VPS không khả dụng hoặc không thể kiểm tra an toàn.'],
   inactive: ['UFW is inactive. The panel will not enable it or change its rules.', 'UFW chưa bật. Panel không bật UFW hoặc thay đổi rule.'],
   ready: ['Review the server ports before applying scoped UFW rules.', 'Kiểm tra cổng server trước khi áp dụng rule UFW riêng.'],
-  complete: ['The requested server-port rules are present in active UFW.', 'Các rule cổng server yêu cầu đã có trong UFW đang bật.'],
+  complete: ['The requested server-port rules are active and saved by the host firewall.', 'Các rule cổng máy chủ yêu cầu đã được áp dụng và lưu trên VPS.'],
   removed: ['This server\'s scoped Vortex rules were removed. Foreign rules may still allow these ports.', 'Đã xóa rule Vortex riêng của server này. Rule khác vẫn có thể cho phép các cổng đó.'],
   partial: ['Firewall changes were only partly confirmed. Review the current rules before retrying.', 'Chỉ xác nhận được một phần thay đổi firewall. Kiểm tra rule hiện tại trước khi thử lại.'],
-  unsafe: ['Some relevant UFW rules cannot be reconciled safely. Review them manually.', 'Có rule UFW liên quan chưa thể đồng bộ an toàn. Cần kiểm tra thủ công.'],
-  external: ['Only host UFW rules are inspected. Cloud firewalls, NAT, routing and application/client connectivity are not verified.', 'Chỉ kiểm tra rule UFW trên host. Chưa xác minh firewall cloud, NAT, định tuyến hoặc kết nối ứng dụng/client.'],
+  unsafe: ['Some owned or relevant firewall rules cannot be reconciled safely. Review them manually.', 'Có rule firewall thuộc panel hoặc liên quan chưa thể đồng bộ an toàn. Cần kiểm tra thủ công.'],
+  external: ['Only the selected host firewall is managed. Cloud firewalls, NAT, routing and client connectivity are not verified.', 'Chỉ quản lý firewall được chọn trên VPS. Chưa xác minh firewall cloud, NAT, định tuyến hoặc kết nối từ client.'],
+  native_ready: ['Review the server ports before applying scoped native firewall rules.', 'Kiểm tra cổng máy chủ trước khi áp dụng rule firewall riêng.'],
+  native_persistence: ['Native firewall access requires existing, verified netfilter-persistent configuration. No rules were enabled or adopted automatically.', 'Firewall gốc cần cấu hình netfilter-persistent hiện có được xác minh. Panel không tự bật hoặc tiếp quản rule.'],
   FIREWALL_INPUT: ['Confirm the inspected firewall revision before applying server-port rules.', 'Hãy xác nhận revision firewall vừa kiểm tra trước khi áp dụng rule cổng server.'],
   FIREWALL_STALE: ['Server network settings or firewall rules changed. Inspect again before applying.', 'Cấu hình mạng server hoặc rule firewall đã thay đổi. Hãy kiểm tra lại trước khi áp dụng.'],
   FIREWALL_NETWORK: ['The installed server must have a supported, validated network configuration.', 'Server đã cài cần có cấu hình mạng được hỗ trợ và kiểm tra hợp lệ.'],
@@ -109,19 +112,28 @@ export function createServerFirewall({ scope, exec = execute, platform = process
   const scopeId = typeof scope === 'string' && path.isAbsolute(scope) ? hash(path.resolve(scope)).slice(0, 16) : 'unavailable';
   const run = args => exec('/usr/sbin/ufw', args, { timeout: commandTimeoutMs, maxBuffer: 1024 * 1024, windowsHide: true, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
   async function observe(owner) { return parseStatus((await run(['status', 'numbered'])).stdout, owner); }
+  async function assertNativeAllowed() {
+    try { if ((await observe('')).status !== 'inactive') throw new Error('Active UFW owns the host firewall.'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const native = createNativeFirewall({ exec, supported, present, assertNativeAllowed, commandTimeoutMs, maxDurationMs });
   function response(network, observed, owner, extra = {}) {
     const desired = new Set(network.ports.map(key)), own = observed.rows.filter(row => row.owner), unsafe = observed.unsafe || network.ports.some(target => observed.rows.some(row => row.direction === 'IN' && row.action !== 'ALLOW' && overlaps(row, target)));
     const ports = network.ports.map(target => ({ ...target, state: observed.rows.some(row => row.owner && key(row) === key(target) && covers(row, target)) ? 'managed' : covered(observed.rows, target, desired) ? 'covered' : 'missing' }));
     const status = observed.status, canApply = supported && status === 'active' && !unsafe;
     const warningKeys = ['external', ...(unsafe ? ['unsafe'] : [])], warnings = warningKeys.map(key => texts[key][0]), warningsI18n = warningKeys.map(key => present(key).messageI18n);
-    const value = { ...network, ports, status, supported, canApply, canRemove: supported && status === 'active' && !observed.unsafe && own.length > 0, revision: supported ? hash({ network, rules: observed.raw }) : null, owner, managedRules: own.map(summary), obsoleteRules: own.filter(row => !desired.has(key(row))).map(summary), warnings, warningsI18n, ...present(!supported ? 'unsupported' : status === 'inactive' ? 'inactive' : status !== 'active' ? 'unavailable' : unsafe ? 'unsafe' : 'ready'), ...extra };
+    const value = { ...network, backend: 'ufw', ports, status, supported, canApply, canRemove: supported && status === 'active' && !observed.unsafe && own.length > 0, revision: supported ? hash({ network, rules: observed.raw }) : null, owner, managedRules: own.map(summary), obsoleteRules: own.filter(row => !desired.has(key(row))).map(summary), warnings, warningsI18n, ...present(!supported ? 'unsupported' : status === 'inactive' ? 'inactive' : status !== 'active' ? 'unavailable' : unsafe ? 'unsafe' : 'ready'), ...extra };
     return value;
   }
   async function inspect(server) {
     const network = derive(server), owner = `vortex:${scopeId}:${network.serverId}`;
     if (!supported) return response(network, { status: 'unavailable', rows: [], raw: '' }, owner);
-    try { return response(network, await observe(owner), owner); }
-    catch { return response(network, { status: 'unavailable', rows: [], raw: '' }, owner); }
+    try {
+      const observed = await observe(owner);
+      return observed.status === 'inactive' ? await native.inspect(network, owner) : response(network, observed, owner);
+    } catch (error) {
+      return error.code === 'ENOENT' ? await native.inspect(network, owner) : response(network, { status: 'unavailable', rows: [], raw: '' }, owner);
+    }
   }
   async function applyImmediate(server, input, resolveCurrent, removeAll = false) {
     if (!input || Object.keys(input).some(key => !['revision', 'confirmed'].includes(key)) || input.confirmed !== true || typeof input.revision !== 'string' || !/^[a-f0-9]{64}$/.test(input.revision)) fail('FIREWALL_INPUT', 400);
@@ -129,7 +141,12 @@ export function createServerFirewall({ scope, exec = execute, platform = process
     const network = derive(await current()), owner = `vortex:${scopeId}:${network.serverId}`, identity = hash(network), added = [], removed = [], errors = []; let attempts = 0;
     let observed;
     if (!supported) return { ...await inspect(server), ok: false, partial: false, added, removed, errors: [texts.unsupported[0]], errorsI18n: [present('unsupported').messageI18n] };
-    try { observed = await observe(owner); } catch { return { ...await inspect(server), ok: false, partial: false, added, removed, errors: [texts.unavailable[0]], errorsI18n: [present('unavailable').messageI18n] }; }
+    try { observed = await observe(owner); }
+    catch (error) {
+      if (error.code === 'ENOENT') return native.apply(network, { ...input, scopeId }, async () => derive(await current()), removeAll);
+      return { ...await inspect(server), ok: false, partial: false, added, removed, errors: [texts.unavailable[0]], errorsI18n: [present('unavailable').messageI18n] };
+    }
+    if (observed.status === 'inactive') return native.apply(network, { ...input, scopeId }, async () => derive(await current()), removeAll);
     let state = response(network, observed, owner);
     if (state.revision !== input.revision) fail('FIREWALL_STALE', 409);
     const permitted = observation => removeAll ? supported && observation.status === 'active' && !observation.unsafe : response(network, observation, owner).canApply;

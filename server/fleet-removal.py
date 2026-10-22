@@ -511,6 +511,31 @@ class Host:
                 retained.append({'kind': 'external-backup', 'path': str(path), 'reason': 'An external backup has no matching committed migration artifact proof; retained for review.'})
         return proofs, retained
 
+    def firewall_scope(self):
+        firewall_scope = str(self.data)
+        marker = self.data / '.vortex-layout.json'
+        if self.role == 'panel' and marker.exists():
+            value = self.load(marker, 4096, private=True, mutable=True)
+            require(not self.enforce_owner or marker.lstat().st_uid == 0, 'The migration scope marker is not root-owned.')
+            require(self.data == self.path('/var/lib/vortex-panel') and value.get('schemaVersion') == 1 and (UUID.fullmatch(str(value.get('migrationId', ''))) or MACHINE.fullmatch(str(value.get('migrationId', '')))) and value.get('previousDataDir') == '/var/lib/bedrock-panel' and value.get('dataDir') == '/var/lib/vortex-panel' and value.get('firewallScope') == '/var/lib/bedrock-panel' and value.get('machineId') == self.machine(), 'The legacy firewall scope proof is invalid.')
+            self.migration_receipt(value)
+            firewall_scope = str(self.path('/var/lib/bedrock-panel'))
+        return hashlib.sha256(firewall_scope.encode()).hexdigest()[:16]
+
+    def native_firewall(self, expected_sha=None):
+        reference = SOURCE.with_name('firewall_native.reference.py')
+        if not reference.exists():
+            reference = SOURCE.with_name('firewall_native.py')
+        if not reference.exists():
+            reference = self.release / 'server/firewall_native.py'
+        content = self.read(reference, 1024 ** 2)
+        checksum = hashlib.sha256(content).hexdigest()
+        require(expected_sha is None or checksum == expected_sha, 'The native firewall cleanup reference changed.')
+        spec = importlib.util.spec_from_file_location('vortex_removal_native_firewall', reference)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.NativeFirewall(root=self.root, run=self.run if self.root is not None else module.execute, enforce_owner=self.enforce_owner), reference, checksum
+
     def firewall(self):
         expected = []
         receipt = self.config_root / 'firewall-owner.json'
@@ -530,15 +555,7 @@ class Host:
             _address, _port, public_ports = self.access_endpoint(value)
             for port in sorted({80, *public_ports}):
                 expected.append(['ufw', 'allow', str(port) + '/tcp', 'comment', 'vortex-panel-' + access_id + '-' + str(port)])
-        firewall_scope = str(self.data)
-        marker = self.data / '.vortex-layout.json'
-        if self.role == 'panel' and marker.exists():
-            value = self.load(marker, 4096, private=True, mutable=True)
-            require(not self.enforce_owner or marker.lstat().st_uid == 0, 'The migration scope marker is not root-owned.')
-            require(self.data == self.path('/var/lib/vortex-panel') and value.get('schemaVersion') == 1 and (UUID.fullmatch(str(value.get('migrationId', ''))) or MACHINE.fullmatch(str(value.get('migrationId', '')))) and value.get('previousDataDir') == '/var/lib/bedrock-panel' and value.get('dataDir') == '/var/lib/vortex-panel' and value.get('firewallScope') == '/var/lib/bedrock-panel' and value.get('machineId') == self.machine(), 'The legacy firewall scope proof is invalid.')
-            self.migration_receipt(value)
-            firewall_scope = str(self.path('/var/lib/bedrock-panel'))
-        scope = hashlib.sha256(firewall_scope.encode()).hexdigest()[:16]
+        scope = self.firewall_scope()
         server_pattern = re.compile(r'^vortex:' + scope + r':([a-f0-9-]{36})$')
         # Access receipts describe possible web tuples, even when UFW was never
         # installed. Actual enrollment rules or surviving UFW configuration still
@@ -858,6 +875,8 @@ server {
         self.cleanup_packages(ledger, package_preview, dry_run=True)
         retained.extend(package_preview['retained'])
         firewall = self.firewall()
+        native_controller, _native_reference, native_sha = self.native_firewall()
+        native_firewall = {**native_controller.inspect_scope(self.firewall_scope()), 'referenceSHA256': native_sha}
         storage = self.owned_storage()
         zram = self.zram()
         migration, backup_retained = self.migration_artifacts()
@@ -878,7 +897,7 @@ server {
         service_account = (ledger or {}).get('introduced', {}).get('serviceAccount')
         if service_account and (ledger or {}).get('before', {}).get('accounts', {}).get(service_account.get('name')) is not None:
             service_account = None
-        identity.update(machineId=machine, panelId=panel_id, role=self.role, nodeId=self.node_id, inventory=inventory, entries=entries, firewall=firewall, storage=storage, accounts=accounts,
+        identity.update(machineId=machine, panelId=panel_id, role=self.role, nodeId=self.node_id, inventory=inventory, entries=entries, firewall=firewall, nativeFirewall=native_firewall, storage=storage, accounts=accounts,
                         unitName=self.unit, install=str(self.install), dataRoot=str(self.data), configRoot=str(self.config_root), nodeBinary=self.node_binary,
                         ledgerSHA=digest(ledger) if ledger else None, ownedZram=zram.get('owned') is True,
                         serviceAccount=service_account,
@@ -897,6 +916,7 @@ server {
             components.append({'kind': 'dedicated-configuration', 'path': str(self.config_root), 'action': 'erase', 'reason': 'Dedicated Vortex configuration root verified by fixed service and TLS/config paths.'})
         components += [{'kind': row['kind'], 'path': row['path'], 'action': 'remove', 'reason': 'Exact installer origin and current content match.'} for row in entries]
         components += [{'kind': 'firewall', 'path': ' '.join(row), 'action': 'remove', 'reason': 'Exact Vortex-owned rule.'} for row in firewall]
+        components += [{'kind': 'firewall', 'path': row['family'] + ' ' + row['protocol'] + ' ' + row['port'] + ' (' + row['location'] + ')', 'action': 'remove', 'reason': 'Exact scoped Vortex native INPUT rule; foreign host policy and persistent files are preserved.'} for row in native_firewall['rules']]
         components += [{'kind': 'migration-backup', 'path': row['directory']['path'], 'action': 'erase', 'reason': 'Committed migration receipt and exact artifact content hashes match this installation.'} for row in migration]
         components += [{'kind': 'package', 'path': name, 'action': 'purge', 'reason': 'Exact installer origin, unused current state and bounded APT simulation match.'} for name in package_preview.get('packageCandidates', [])]
         if host_components['networkProfile']:
@@ -993,6 +1013,8 @@ server {
             require(not os.path.lexists(intent_path), 'An existing removal admission freeze requires review.')
             work = self.workspace(request['requestId'], True)
             self.copy(SOURCE, work / 'helper.py')
+            _native, native_reference, _sha = self.native_firewall(plan['_identity']['nativeFirewall']['referenceSHA256'])
+            self.copy(native_reference, work / 'firewall_native.reference.py')
             zram_reference = SOURCE.with_name('host-zram.reference.py')
             if not zram_reference.exists():
                 zram_reference = SOURCE.with_name('host-zram.py')
@@ -1446,6 +1468,8 @@ server {
                 self.cleanup_network_profile(identity, work, result)
                 self.cleanup_timezone(identity, result)
                 self.cleanup_network(identity, work)
+                native, _reference, _sha = self.native_firewall(identity['nativeFirewall']['referenceSHA256'])
+                native.cleanup_scope(identity['nativeFirewall']['scope'], {key: value for key, value in identity['nativeFirewall'].items() if key != 'referenceSHA256'})
                 for command in identity['firewall']:
                     self.run(['ufw', '--force', 'delete', *command[1:]])
                 require(not self.firewall(), 'An owned firewall rule remains.')
@@ -1576,6 +1600,9 @@ server {
             commands = [shlex.split(line) for line in self.run(['ufw', 'show', 'added']).splitlines() if line.strip().startswith('ufw ')]
         owner_comments = {row[-1] for row in identity['firewall']}
         firewall_removed = not any(any(command[index + 1] in owner_comments for index, word in enumerate(command[:-1]) if word == 'comment') for command in commands)
+        if identity.get('nativeFirewall'):
+            native, _reference, _sha = self.native_firewall(identity['nativeFirewall']['referenceSHA256'])
+            firewall_removed = firewall_removed and not native.inspect_scope(identity['nativeFirewall']['scope'])['rules']
         network_removed = True
         if identity.get('network'):
             tables = json.loads(self.run(['nft', '-j', 'list', 'tables'])).get('nftables')

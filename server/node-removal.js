@@ -191,7 +191,7 @@ export function createNodeRemovalController({ nodes, store, dataDir, projectDir,
     emit({ type: 'update' });
     // Never recursively remove a workspace. Unexpected files remain as
     // explicit recovery material; the application already holds durable proof.
-    const cleanup = `rm -f -- ${shell(job.helperPath)} ${shell(job.workspace + '/host-zram.reference.py')} ${shell(job.recoveryPath)}; rmdir -- ${shell(job.workspace)}`;
+    const cleanup = `rm -f -- ${shell(job.helperPath)} ${shell(job.workspace + '/host-zram.reference.py')} ${shell(job.workspace + '/firewall_native.reference.py')} ${shell(job.recoveryPath)}; rmdir -- ${shell(job.workspace)}`;
     try { const result = await connection.exec(cleanup, { allowFailure: true }); if (result.code !== 0) throw new Error('retained'); }
     catch { change(job, { warnings: ['Verified removal completed; the private temporary receipt directory remains on the VPS.'] }); }
   }
@@ -218,6 +218,11 @@ export function createNodeRemovalController({ nodes, store, dataDir, projectDir,
         await connection.write(referencePath, zramReference, 0o600);
         const referenceActual = await connection.exec(`sha256sum -- ${shell(referencePath)}`);
         if (referenceActual.stdout.split(/\s/)[0] !== createHash('sha256').update(zramReference).digest('hex')) throw fail('The packaged memory-helper reference transfer could not be verified.', 502);
+        const firewallReference = await fsp.readFile(path.join(projectDir, 'server/firewall_native.py'));
+        const firewallReferencePath = job.workspace + '/firewall_native.reference.py';
+        await connection.write(firewallReferencePath, firewallReference, 0o600);
+        const firewallReferenceActual = await connection.exec(`sha256sum -- ${shell(firewallReferencePath)}`);
+        if (firewallReferenceActual.stdout.split(/\s/)[0] !== createHash('sha256').update(firewallReference).digest('hex')) throw fail('The packaged firewall-helper reference transfer could not be verified.', 502);
         change(job, { phase: 'quiescing', progress: 25, message: 'Pausing new operations before uninstalling this empty worker.' });
         const node = selected(job.nodeId);
         if (closed) throw fail('The panel stopped before preparing uninstall.', 503);

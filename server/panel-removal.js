@@ -135,7 +135,7 @@ export function createPanelRemovalController({ store, nodes, manager, dataDir, p
     return { plan: { schemaVersion: 1, panelName: currentName(), mainNodeId: 'local', revision: local ? revisionFor(local) : digest([currentName(), membership()]), status: blockers.length ? 'blocked' : 'ready', nodes: rows, blockers, latestJobId: pending?.id, baselineRestorable: local?.baselineRestorable === true } };
   }
   async function references() {
-    const files = ['server/fleet-removal.py', 'server/host-zram.py', 'server/network-metrics.js', 'server/safety.js', 'deploy/application-isolation.py'];
+    const files = ['server/firewall_native.py', 'server/fleet-removal.py', 'server/host-zram.py', 'server/network-metrics.js', 'server/safety.js', 'deploy/application-isolation.py'];
     const result = [];
     for (const name of files) {
       const filename = path.join(projectDir, name), info = await fsp.lstat(filename);

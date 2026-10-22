@@ -177,6 +177,46 @@ class Host:
             rows.append({**rule, 'present': bool(matching)})
         return rows
 
+    def game_firewall_rules(self):
+        scope = hashlib.sha256(str(self.data).encode()).hexdigest()[:16]
+        pattern = re.compile(r'^vortex:' + scope + r':([a-f0-9-]{36})$')
+        if not self.path('/usr/sbin/ufw').exists() and self.root is None:
+            remnants = ('/etc/ufw', '/etc/default/ufw', '/lib/ufw/user.rules', '/lib/ufw/user6.rules',
+                        '/usr/lib/ufw/user.rules', '/usr/lib/ufw/user6.rules', '/var/lib/ufw', '/run/ufw')
+            require(not any(os.path.lexists(self.path(name)) for name in remnants), 'UFW configuration remains but its inspection tool is missing; firewall policy was preserved.')
+            return []
+        commands = []
+        for line in self.run(['ufw', 'show', 'added']).splitlines():
+            if not line.strip().startswith('ufw '):
+                continue
+            command = shlex.split(line)
+            comments = [command[index + 1] for index, word in enumerate(command[:-1]) if word == 'comment']
+            require(len(comments) <= 1, 'A firewall command is ambiguous.')
+            comment = comments[0] if comments else ''
+            match = pattern.fullmatch(comment)
+            if not match:
+                continue
+            valid_port = lambda text: bool(re.fullmatch(r'[0-9]{1,5}(?::[0-9]{1,5})?', text) and all(1 <= int(port) <= 65535 for port in text.split(':')) and int(text.split(':')[0]) <= int(text.split(':')[-1]))
+            full = len(command) == 13 and command[:4] == ['ufw', 'allow', 'in', 'proto'] and command[4] in ['tcp', 'udp'] and command[5] == 'from' and command[7] == 'to' and command[6] == command[8] and command[6] in ['any', '0.0.0.0/0', '::/0'] and command[9] == 'port' and valid_port(command[10]) and command[11:] == ['comment', comment]
+            short = len(command) == 5 and command[:2] == ['ufw', 'allow'] and command[3:] == ['comment', comment] and '/' in command[2] and command[2].rsplit('/', 1)[1] in ['tcp', 'udp'] and valid_port(command[2].rsplit('/', 1)[0])
+            require(UUID.fullmatch(match[1]) and (full or short), 'An unfamiliar tagged firewall rule is preserved.')
+            commands.append(command)
+        return commands
+
+    def native_firewall(self, release=None, expected_sha=None):
+        source = pathlib.Path(__file__).resolve(strict=True)
+        reference = source.with_name('firewall_native.reference.py')
+        if not reference.exists():
+            reference = source.with_name('firewall_native.py')
+        if not reference.exists():
+            reference = (release or self.install / 'current') / 'server/firewall_native.py'
+        checksum = hashlib.sha256(self.read(reference, 1024 ** 2)).hexdigest()
+        require(expected_sha is None or checksum == expected_sha, 'The native firewall cleanup reference changed.')
+        spec = importlib.util.spec_from_file_location('vortex_worker_native_firewall', reference)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.NativeFirewall(root=self.root, run=self.run if self.root is not None else module.execute, enforce_owner=self.enforce_owner), reference, checksum
+
     def network_table(self):
         filename = self.data / '.network-metrics.json'
         if not filename.exists():
@@ -358,6 +398,12 @@ class Host:
                 add(self.data / 'timezone-operations.json', 'Verified role-bound timezone journal; original zone restored only if the last completed Vortex choice is still active.')
         if drop_paths:
             add(drop_in, 'Exact Vortex graceful-shutdown service override.')
+        native, _native_reference, native_sha = self.native_firewall(release)
+        native_firewall = {**native.inspect_scope(hashlib.sha256(str(self.data).encode()).hexdigest()[:16]), 'referenceSHA256': native_sha}
+        for row in native_firewall['rules']:
+            components.append({'kind': 'firewall', 'path': row['family'] + ' ' + row['protocol'] + ' ' + row['port'] + ' (' + row['location'] + ')', 'action': 'remove', 'reason': 'Exact scoped Vortex native INPUT rule; foreign host policy and persistent files are preserved.'})
+        game_firewall = self.game_firewall_rules()
+        components.extend({'kind': 'firewall', 'path': ' '.join(command), 'action': 'remove', 'reason': 'Exact scoped Vortex game/application UFW rule.'} for command in game_firewall)
         firewall = self.firewall_rules()
         if firewall:
             add(self.tls / 'firewall-owner.json', 'Exact tagged controller firewall ownership receipt.')
@@ -407,7 +453,7 @@ class Host:
         if zram.get('canCleanup') is False:
             block('REMOVAL_ZRAM_BUSY', zram.get('reason') or 'Owned compressed swap cannot be safely deactivated with current memory headroom.')
         boot = self.read(self.path('/proc/sys/kernel/random/boot_id'), 100).decode().strip()
-        identity = {'agentId': node_id, 'fingerprint': fingerprint, 'pid': pid, 'bootId': boot, 'release': str(release), 'data': self.stamp(self.data), 'entries': list(entries.values()), 'firewall': firewall, 'networkTable': network_table, 'ownedZram': zram.get('owned') is True, 'nodeBinary': start_args[0]}
+        identity = {'agentId': node_id, 'fingerprint': fingerprint, 'pid': pid, 'bootId': boot, 'release': str(release), 'data': self.stamp(self.data), 'entries': list(entries.values()), 'firewall': firewall, 'gameFirewall': game_firewall, 'nativeFirewall': native_firewall, 'networkTable': network_table, 'ownedZram': zram.get('owned') is True, 'nodeBinary': start_args[0]}
         if maintenance:
             identity['hostMaintenance'] = maintenance
         return {'schemaVersion': 1, 'agentId': node_id, 'revision': digest(identity), 'status': 'blocked' if blockers else 'ready', 'serverCount': len(store['servers']), 'blockers': blockers, 'components': components, 'sshRequired': True, 'legacyOwnership': legacy, 'fullyClean': False, 'fingerprint': fingerprint, 'processId': pid, 'bootId': boot, '_identity': identity}
@@ -467,6 +513,16 @@ class Host:
                 result['plan'] = plan
                 result['retained'] = [row for row in plan['components'] if row['action'] == 'retain']
                 self.save(result_path, result)
+                native, native_reference, _sha = self.native_firewall(pathlib.Path(plan['_identity']['release']), plan['_identity']['nativeFirewall']['referenceSHA256'])
+                staged_native = work / 'firewall_native.reference.py'
+                if native_reference != staged_native:
+                    require(not os.path.lexists(staged_native), 'A native firewall reference already exists in the private workspace.')
+                    raw = self.read(native_reference, 1024 ** 2)
+                    descriptor = os.open(staged_native, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+                    with os.fdopen(descriptor, 'wb') as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
                 maintenance = plan['_identity'].get('hostMaintenance')
                 if maintenance:
                     self.stage_host_maintenance(maintenance, pathlib.Path(plan['_identity']['release']), work)
@@ -497,10 +553,16 @@ class Host:
                     program = 'import {pathToFileURL} from "node:url";const {createNetworkMetrics}=await import(pathToFileURL(process.argv[1]));const c=createNetworkMetrics({dataDir:process.argv[2]});await c.initialize();const r=await c.close();if(r?.cleaned!==true)process.exit(1);'
                     self.run([plan['_identity']['nodeBinary'], '--input-type=module', '-e', program, str(self.install / 'current/server/network-metrics.js'), str(self.data)])
                     require(not self.network_table(), 'Owned network counters remain; their ownership record was preserved.')
+                native, _reference, _sha = self.native_firewall(expected_sha=plan['_identity']['nativeFirewall']['referenceSHA256'])
+                native.cleanup_scope(plan['_identity']['nativeFirewall']['scope'], {key: value for key, value in plan['_identity']['nativeFirewall'].items() if key != 'referenceSHA256'})
                 for rule in plan['_identity']['firewall']:
                     if rule['present']:
                         self.run(['ufw', '--force', 'delete', 'allow', 'from', rule['source'], 'to', 'any', 'port', str(rule['port']), 'proto', 'tcp', 'comment', rule['comment']])
                 require(not any(row['present'] for row in self.firewall_rules()), 'An owned controller firewall rule remains; no success was inferred.')
+                require(self.game_firewall_rules() == plan['_identity']['gameFirewall'], 'Game firewall ownership changed before cleanup.')
+                for command in plan['_identity']['gameFirewall']:
+                    self.run(['ufw', '--force', 'delete', *command[1:]])
+                require(not self.game_firewall_rules(), 'An owned game firewall rule remains; no success was inferred.')
                 # Store shutdown can append diagnostics. The empty inventory is
                 # revalidated after graceful stop; only that exact latest file
                 # replaces the preview stamp.
@@ -583,6 +645,11 @@ class Host:
         firewall_removed = True
         if identity.get('firewall'):
             firewall_removed = not any('vortex-agent:' + node_id in shlex.split(line) for line in self.run(['ufw', 'show', 'added']).splitlines() if line.strip().startswith('ufw '))
+        if 'gameFirewall' in identity:
+            firewall_removed = firewall_removed and not self.game_firewall_rules()
+        if identity.get('nativeFirewall'):
+            native, _reference, _sha = self.native_firewall(expected_sha=identity['nativeFirewall']['referenceSHA256'])
+            firewall_removed = firewall_removed and not native.inspect_scope(identity['nativeFirewall']['scope'])['rules']
         network_removed = True
         if identity.get('networkTable'):
             tables = json.loads(self.run(['nft', '-j', 'list', 'tables'])).get('nftables')

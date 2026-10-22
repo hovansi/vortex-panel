@@ -22,7 +22,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/packs.js', 'server/player-lists.js', 'server/port-allocation.js',
   'server/resource-control-messages.js', 'server/resource-control.js',
   'server/resource-exit.js', 'server/routes.js', 'server/safety.js',
-  'server/server-firewall.js', 'server/server-voice.js',
+  'server/server-firewall.js', 'server/native-firewall.js', 'server/firewall_native.py', 'server/server-voice.js',
   'server/storage-cli.js', 'server/storage-policy.js',
   'server/storage-volumes.js', 'server/store.js', 'server/system-power.js',
   'server/version-catalog.js', 'server/versions.js', 'server/worlds.js', 'server/world-experiments.js',

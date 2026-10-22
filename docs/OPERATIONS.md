@@ -110,7 +110,7 @@ Copy, move, rename and upload refuse existing destinations. ZIP extraction creat
 
 Stop a workload before changing its ports. The selected VPS allocates non-overlapping random ports by default; existing addresses stay stable. Deliberate custom mappings remain available. See [allocation policy](PORTS-0155.md).
 
-RakNet uses UDP; NetherNet uses TCP signaling and its configured UDP range. **Configuration → Network access** previews scoped UFW rules and requires explicit apply. It does not enable UFW, modify provider firewalls or configure NAT. Check socket ownership, transport, public address and provider policy when a client cannot connect. Allocation and local health do not prove external reachability.
+RakNet uses UDP; NetherNet uses TCP signaling and its configured UDP range. **Configuration → Network access** previews the server's saved TCP/UDP ports and requires explicit apply. It supports active UFW or native iptables with an existing enabled netfilter-persistent service and verified rules.v4/rules.v6 files. Native rules are saved for reboot; only exact Vortex-tagged entries are added or removed. Provider firewalls and NAT require separate configuration. Check socket ownership, transport, public address and provider policy when a client cannot connect. Allocation and local health do not prove external reachability.
 
 ## Worker maintenance
 

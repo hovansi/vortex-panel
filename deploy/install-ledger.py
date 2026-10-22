@@ -28,11 +28,11 @@ EXTRA = ['/usr/local/libexec/vortex-host-zram.py', '/usr/local/libexec/vortex-ap
 MAINTENANCE_CAPTURE = ['/etc/sysctl.d/70-vortex-panel-network.conf', '/etc/sysctl.d/70-vortex-node-network.conf',
                        '/etc/systemd/system/vortex-panel-tls-renew.service', '/etc/systemd/system/vortex-panel-tls-renew.timer']
 UUID = re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$', re.I)
-INSTALLER_PACKAGES = set('ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod gcc g++ cmake libjemalloc2 make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev nginx'.split())
+INSTALLER_PACKAGES = set('ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables iptables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod gcc g++ cmake libjemalloc2 make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev nginx'.split())
 # Optional shared access packages lack an exact per-APT transaction receipt;
 # conservatively leave them unproven instead of adopting a concurrent install.
 ROLE_PACKAGES = {'worker': INSTALLER_PACKAGES - {'nginx'},
-                 'panel': set('ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod iproute2 gcc g++ cmake libjemalloc2 make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev'.split())}
+                 'panel': set('ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables iptables e2fsprogs util-linux bubblewrap python3 python3-venv kmod iproute2 gcc g++ cmake libjemalloc2 make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev'.split())}
 
 
 class EvidenceError(ValueError):

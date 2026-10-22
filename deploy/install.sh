@@ -435,7 +435,7 @@ elif [[ $VORTEX_PUBLIC_PORT_EXPLICIT == true ]]; then
 fi
 # END automatic access plan
 apt-get update
-DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables iptables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 if [[ $VORTEX_AUTO_ACCESS == true ]]; then
   DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-remove nginx openssl iproute2
 fi
