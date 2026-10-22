@@ -1109,8 +1109,8 @@ export const PANEL_MESSAGES = Object.freeze([
   },
   {
     "id": "panel.6e34683b16f6",
-    "vi": "Phiên bản đã cài chỉ được cấu hình transport: {0}. Panel dùng NetherNet cho Preview từ 1.26.60; Mojang đã đánh dấu RakNet deprecated.",
-    "en": "The installed version only supports these transport settings: {0}. The panel uses NetherNet for Preview 1.26.60 and newer; Mojang has deprecated RakNet."
+    "vi": "Phiên bản đã cài chỉ được cấu hình transport: {0}. Panel dùng NetherNet từ Bedrock 1.26.60; Mojang đã đánh dấu RakNet deprecated.",
+    "en": "Allowed transport settings for this version: {0}. The panel uses NetherNet from Bedrock 1.26.60 because Mojang has deprecated RakNet."
   },
   {
     "id": "panel.0015fa168698",

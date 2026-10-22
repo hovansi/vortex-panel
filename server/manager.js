@@ -1,5 +1,6 @@
 import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
 import { createBedrockRuntime } from './bedrock-runtime.js';
+import { allowedBedrockTransports, selectBedrockTransport } from './bedrock-transport.js';
 import { createBedrockPortWait, isPrimaryBedrockTcpBindError, bedrockPortWaitIssue, bedrockPortWaitMessage } from './bedrock-port-wait.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -539,13 +540,14 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await fs.chmod(path.join(staging, 'bedrock_server'), 0o700);
       const packageProperties = parseProperties(await fs.readFile(path.join(packageInfo.directory, 'server.properties'), 'utf8'));
       const properties = { ...packageProperties, ...parseProperties(await fs.readFile(path.join(staging, 'server.properties'), 'utf8')) };
-      const transport = packageProperties.transport || 'raknet';
+      const transport = selectBedrockTransport({ ...selection, packageTransport: packageProperties.transport || 'raknet', savedTransport: updating ? server.transport : undefined });
       const udpPorts = transport === 'nethernet' ? (updating ? properties['server-udp-ports'] : null) || server.udpPorts || defaultUdpPorts(server.port, server.maxPlayers) : null;
       const network = validateNetwork(networkServers(), server.id, { ...server, transport, udpPorts, debugPort: debuggerPort(properties) });
       pendingNetworks.set(server.id, network);
       Object.assign(properties, updating ? { 'server-port': String(server.port), 'server-portv6': String(server.portV6), transport, 'enable-lan-visibility': 'false' } : defaultProperties({ ...server, ...network }));
       if (!updating && Object.hasOwn(packageProperties, 'content-log-console-output-enabled')) properties['content-log-console-output-enabled'] = 'true';
       if (transport === 'nethernet') properties['server-udp-ports'] = udpPorts;
+      else delete properties['server-udp-ports'];
       await atomicWrite(path.join(staging, 'server.properties'), serializeProperties(properties));
       if (transport === 'nethernet') await ensureServerIdentity(staging);
       for (const name of ['allowlist.json', 'permissions.json']) if (!await fs.stat(path.join(staging, name)).catch(() => false)) await atomicWrite(path.join(staging, name), '[]\n');
@@ -979,10 +981,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     } };
   }
   function allowedTransports(server) {
-    const [major, minor, patch] = String(server.version).split('.').map(Number);
-    if (server.channel === 'preview' && (major > 1 || (major === 1 && (minor > 26 || (minor === 26 && patch >= 60))))) return ['nethernet'];
     const item = store.data.versions.find(value => value.version === server.version && value.channel === server.channel);
-    return (item?.transport || server.transport) === 'nethernet' ? ['raknet', 'nethernet'] : ['raknet'];
+    return allowedBedrockTransports({ version: server.version, packageTransport: item?.transport || server.transport });
   }
   function configurationResult(server, values) {
     if (isApp(server)) return { server: publicServer(server), properties: {}, resourcePolicy: serverPolicy(server), resourceControl, storageControl, hostCapacity: lastHost?.capacity || null, resources: serverResources(server), network: { port: server.port, transport: 'tcp', requiresStopped: true, warnings: [] } };
@@ -1099,7 +1099,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const values = validateBedrockProperties(proposed);
     const changed = Object.entries(values).some(([key, value]) => original[key] !== value);
     const allowed = allowedTransports(server);
-    if (changed && !allowed.includes(values.transport || 'raknet')) fail(`Phiên bản đã cài chỉ được cấu hình transport: ${allowed.join(', ')}. Panel dùng NetherNet cho Preview từ 1.26.60; Mojang đã đánh dấu RakNet deprecated.`);
+    if (changed && !allowed.includes(values.transport || 'raknet')) fail(`Phiên bản đã cài chỉ được cấu hình transport: ${allowed.join(', ')}. Panel dùng NetherNet từ Bedrock 1.26.60; Mojang đã đánh dấu RakNet deprecated.`);
     const network = validateNetwork(networkServers(), server.id, { port: values['server-port'], portV6: values['server-portv6'], transport: values.transport || 'raknet', udpPorts: values['server-udp-ports'], debugPort: debuggerPort(values) });
     const fields = { ...settings, ...network, maxPlayers: Number(values['max-players']), udpMode };
     if (!changed) { commitServerFields(server, fields, action, detail); emit({ type: 'update' }); return configurationResult(server, values); }
@@ -1953,7 +1953,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       const portMode = creationPortMode(input);
       const port = input.port ?? 19132;
       const catalogItem = store.data.versions.find(item => item.version === selection.version && item.channel === selection.channel);
-      const ports = portMode === 'auto' ? { port: null, portV6: null, transport: catalogItem.transport || 'auto', udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port, portV6: input.portV6 ?? 19133, transport: catalogItem.transport || 'auto', udpPorts: defaultUdpPorts(port, maxPlayers) });
+      const transport = selectBedrockTransport({ ...selection, packageTransport: catalogItem.transport });
+      const ports = portMode === 'auto' ? { port: null, portV6: null, transport, udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port, portV6: input.portV6 ?? 19133, transport, udpPorts: transport === 'nethernet' ? defaultUdpPorts(port, maxPlayers) : null });
       const server = { id: randomUUID(), name: input.name.trim(), ...selection, ...ports, maxPlayers, status: 'installing', players: 0, createdAt: now(), autoRestart: true, autoStart: false, backupRetention: 10, messageLanguage: 'en', worldVoiceEnabled: true, resourcePolicy, storagePolicy: storage, admissionReservation: { ...SHARED_ADMISSION_RESERVATION }, eulaAcceptedAt: now(), backups: [] };
       { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
       const packageBytes = !catalogItem.cached ? PACKAGE_WORKSPACE_BYTES : 0;
