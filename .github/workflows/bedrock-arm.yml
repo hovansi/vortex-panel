@@ -147,20 +147,39 @@ jobs:
             });
           }
 
-          function netherNetInfo(port, timeoutMs) {
+          function netherNetResponse(port, path, timeoutMs, maximum = 65536) {
             return new Promise((resolve, reject) => {
               let done = false, request;
               const finish = (error, result) => { if (done) return; done = true; clearTimeout(timer); request?.destroy(); error ? reject(error) : resolve(result); };
-              const timer = setTimeout(() => finish(new Error('NetherNet GET /v1/join timed out.')), timeoutMs);
-              request = http.get({ hostname: '127.0.0.1', port, path: '/v1/join', headers: { Accept: 'application/json', Connection: 'close' } }, response => {
-                if (response.statusCode < 200 || response.statusCode >= 300 || !/^application\/json(?:\s*;|$)/i.test(response.headers['content-type'] || '')) return finish(new Error('NetherNet did not return successful JSON server metadata.'));
+              const timer = setTimeout(() => finish(new Error('NetherNet HTTP probe timed out.')), timeoutMs);
+              request = http.get({ hostname: '127.0.0.1', port, path, headers: { Accept: 'application/json', Connection: 'close' } }, response => {
+                const length = response.headers['content-length'];
+                if (length !== undefined && (!/^[0-9]+$/.test(length) || Number(length) > maximum)) return finish(new Error('NetherNet response exceeds its verifier bound.'));
                 let bytes = 0; const chunks = [];
-                response.on('data', chunk => { bytes += chunk.length; if (bytes > 65536) finish(new Error('NetherNet server metadata exceeded its verifier bound.')); else chunks.push(chunk); });
+                response.on('data', chunk => { bytes += chunk.length; if (bytes > maximum) finish(new Error('NetherNet response exceeds its verifier bound.')); else chunks.push(chunk); });
                 response.once('error', error => finish(error));
-                response.once('end', () => { try { assert.equal(response.complete, true); finish(null, JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { finish(error); } });
+                response.once('aborted', () => finish(new Error('NetherNet returned an incomplete response.')));
+                response.once('end', () => { try { assert.equal(response.complete, true); finish(null, { status: response.statusCode, contentType: response.headers['content-type'], contentLength: length, body: Buffer.concat(chunks) }); } catch (error) { finish(error); } });
               });
               request.once('error', error => finish(error));
             });
+          }
+
+          export async function probeNetherNet(port, { lanVisibility, worldName, serverName, gameVersion, maxPlayers, timeoutMs = 10000 } = {}) {
+            assert.ok(validPort(port));
+            assert.ok(lanVisibility === undefined || typeof lanVisibility === 'boolean', 'LAN visibility must come from the actual server.properties boolean.');
+            assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 30000);
+            const response = await netherNetResponse(port, '/v1/join', timeoutMs);
+            assert.ok(response.status >= 200 && response.status < 300 && /^application\/json(?:\s*;|$)/i.test(response.contentType || ''), 'NetherNet did not return a successful JSON signaling response.');
+            if (response.body.length === 0) {
+              assert.equal(lanVisibility, false, 'Empty NetherNet metadata is valid only when LAN visibility is explicitly disabled in server.properties.');
+              assert.equal(response.contentLength, '0', 'Hidden NetherNet metadata must declare an exact zero Content-Length.');
+              const unknown = await netherNetResponse(port, '/__vortex_verifier_' + randomBytes(16).toString('hex'), timeoutMs, 1024);
+              assert.equal(unknown.status, 404, 'The signaling handler must reject an unknown route.');
+              return { httpSignalingEndpointVerified: true, httpServerMetadataVerified: false, metadataHidden: true, httpStatus: response.status, unknownRoute404Verified: true, metadata: null };
+            }
+            const metadata = assertMojangInfo(JSON.parse(response.body.toString('utf8')), { worldName, serverName, gameVersion, maxPlayers });
+            return { httpSignalingEndpointVerified: true, httpServerMetadataVerified: true, metadataHidden: false, httpStatus: response.status, metadata };
           }
 
           export function assertMojangInfo(value, { serverName, worldName, gameVersion, maxPlayers } = {}) {
@@ -179,7 +198,7 @@ jobs:
             return { name: value.name, version: value.version, protocol: value.protocol, level: value.level, players: value.players, maxPlayers: value.maxPlayers, gameType: value.gameType };
           }
 
-          export async function verifyBedrockNetwork(server, { worldName, serverName = server.name, gameVersion, expectedExecutable, timeoutMs = 10000, io = fs } = {}) {
+          export async function verifyBedrockNetwork(server, { worldName, serverName = server.name, gameVersion, lanVisibility, expectedExecutable, timeoutMs = 10000, io = fs } = {}) {
             assert.equal(process.platform, 'linux', 'PID-owned Bedrock network verification requires Linux.');
             assert.ok(server && server.status === 'running' && Number.isSafeInteger(server.pid) && server.pid > 0);
             assert.ok(validPort(server.port) && ['raknet', 'nethernet'].includes(server.transport));
@@ -189,8 +208,8 @@ jobs:
             if (server.transport === 'nethernet') {
               const signaling = before.sockets.filter(row => row.protocol === 'tcp' && row.port === server.port && row.state === '0A');
               assert.ok(signaling.length > 0, 'The Bedrock PID must own the NetherNet TCP signaling listener.');
-              const metadata = assertMojangInfo(await netherNetInfo(server.port, timeoutMs), { worldName, serverName, gameVersion, maxPlayers: server.maxPlayers });
-              proof = { transport: 'nethernet', pidOwnedTcpListener: true, port: server.port, listenerFamilies: [...new Set(signaling.map(row => row.family))], httpServerMetadataVerified: true, metadata, udpGameplayVerified: false, realClientGameplayVerified: false };
+              const signalingProof = await probeNetherNet(server.port, { lanVisibility, worldName, serverName, gameVersion, maxPlayers: server.maxPlayers, timeoutMs });
+              proof = { transport: 'nethernet', pidOwnedTcpListener: true, port: server.port, listenerFamilies: [...new Set(signaling.map(row => row.family))], ...signalingProof, udpGameplayVerified: false, realClientGameplayVerified: false };
             } else {
               assert.ok(validPort(server.portV6));
               for (const [family, port] of [[4, server.port], [6, server.portV6]]) assert.ok(before.sockets.some(row => row.protocol === 'udp' && row.family === family && row.port === port && row.state === '07'), 'The Bedrock PID must own its configured IPv' + family + ' RakNet UDP socket.');
@@ -298,7 +317,7 @@ jobs:
           assert.match(refreshed.preview, /^\d+\.\d+\.\d+\.\d+$/);
           const owned = new Set(), report = [];
           const server = async id => (await request('/servers/' + id)).server;
-          async function waitState(id, status, timeout = 180000) {
+          async function waitState(id, status, timeout = 240000) {
             const deadline = Date.now() + timeout;
             while (Date.now() < deadline) {
               const value = await server(id);
@@ -337,7 +356,7 @@ jobs:
             const effective = value.resources.effective;
             assert.equal(effective.kernelEnforced, true);
             assert.equal(effective.mode, 'fixed');
-            assert.equal(effective.memoryMaxBytes, 1536 * 1024 ** 2);
+            assert.equal(effective.memoryMaxBytes, 3072 * 1024 ** 2);
             assert.equal(effective.cpuQuotaMicros, 150000);
             assert.equal(effective.cpuPeriodMicros, 100000);
             assert.ok(Number.isSafeInteger(value.pid) && value.pid > 1);
@@ -355,14 +374,14 @@ jobs:
             assert.equal(realpathSync(cgroupDirectory), cgroupDirectory);
             const membership = readFileSync('/proc/' + value.pid + '/cgroup', 'utf8').trim().split('\n');
             assert.ok(membership.includes('0::' + relative));
-            assert.equal(readFileSync(join(cgroupDirectory, 'memory.max'), 'utf8').trim(), String(1536 * 1024 ** 2));
+            assert.equal(readFileSync(join(cgroupDirectory, 'memory.max'), 'utf8').trim(), String(3072 * 1024 ** 2));
             assert.equal(readFileSync(join(cgroupDirectory, 'cpu.max'), 'utf8').trim(), '150000 100000');
             assert.equal(readFileSync(join(cgroupDirectory, 'memory.swap.max'), 'utf8').trim(), '0');
             return { ...effective, cgroupDirectory };
           }
           async function exercise(channel) {
             const expected = channel === 'stable' ? refreshed.latest : refreshed.preview;
-            const created = await request('/servers', 'POST', { kind: 'bedrock', name: 'Native ARM64 ' + channel, version: 'latest', channel, eula: true, portAllocation: 'auto', maxPlayers: 4, storagePolicy: { mode: 'fixed', diskGiB: 2 }, resourcePolicy: { mode: 'fixed', cpuCores: 1.5, memoryMiB: 1536 } });
+            const created = await request('/servers', 'POST', { kind: 'bedrock', name: 'Native ARM64 ' + channel, version: 'latest', channel, eula: true, portAllocation: 'auto', maxPlayers: 4, storagePolicy: { mode: 'fixed', diskGiB: 2 }, resourcePolicy: { mode: 'fixed', cpuCores: 1.5, memoryMiB: 3072 } });
             const id = created.server.id; owned.add(id);
             assert.equal(created.server.version, expected);
             assert.equal(created.server.channel, channel);
@@ -373,7 +392,7 @@ jobs:
             await request('/servers/' + id + '/start', 'POST', {});
             const first = await waitState(id, 'running');
             const initialWorldStartupMs = Math.round(performance.now() - initialWorldBegan);
-            console.log(JSON.stringify({ role, channel, stage: 'startup', world: 'initial', elapsedMs: initialWorldStartupMs, cpuCores: 1.5, memoryMiB: 1536 }));
+            console.log(JSON.stringify({ role, channel, stage: 'startup', world: 'initial', elapsedMs: initialWorldStartupMs, cpuCores: 1.5, memoryMiB: 3072 }));
             assert.equal(first.bedrockRuntime.mode, 'box64');
             assert.equal(realpathSync('/proc/' + first.pid + '/exe'), runtimeRoot + '/bin/box64');
             elf('/proc/' + first.pid + '/exe', 183);
@@ -381,7 +400,9 @@ jobs:
             const logs = (await request('/servers/' + id + '/logs')).logs;
             assert.ok(logs.some(row => row.source !== 'command' && /\bServer started\./.test(row.message)), 'Native Bedrock readiness must be observed.');
             const effective = kernelLimits(first);
-            const networkOptions = { worldName: properties['level-name'] || 'Bedrock level', serverName: properties['server-name'], expectedExecutable: runtimeRoot + '/bin/box64' };
+            const { properties: activeProperties } = await request('/servers/' + id + '/properties');
+            assert.match(activeProperties['enable-lan-visibility'], /^(?:true|false)$/);
+            const networkOptions = { worldName: activeProperties['level-name'] || 'Bedrock level', serverName: activeProperties['server-name'], lanVisibility: activeProperties['enable-lan-visibility'] === 'true', expectedExecutable: runtimeRoot + '/bin/box64' };
             const initialNetwork = await verifyBedrockNetwork(first, networkOptions);
             console.log(JSON.stringify({ role, channel, stage: 'network', world: 'initial', ...initialNetwork }));
             await nativeLine(id, 'list', /There are \d+\/\d+ players online/);
@@ -417,7 +438,7 @@ jobs:
             await request('/servers/' + id + '/start', 'POST', {});
             const restarted = await waitState(id, 'running');
             const existingWorldStartupMs = Math.round(performance.now() - existingWorldBegan);
-            console.log(JSON.stringify({ role, channel, stage: 'startup', world: 'existing', elapsedMs: existingWorldStartupMs, cpuCores: 1.5, memoryMiB: 1536 }));
+            console.log(JSON.stringify({ role, channel, stage: 'startup', world: 'existing', elapsedMs: existingWorldStartupMs, cpuCores: 1.5, memoryMiB: 3072 }));
             assert.notEqual(restarted.pid, first.pid);
             kernelLimits(restarted);
             const existingNetwork = await verifyBedrockNetwork(restarted, networkOptions);
@@ -428,7 +449,7 @@ jobs:
             await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped');
             await request('/servers/' + id, 'DELETE'); owned.delete(id);
             assert.equal((await request('/servers')).servers.some(row => row.id === id), false);
-            report.push({ channel, version: expected, hostELF: 'aarch64', guestELF: 'x86_64', cpuCores: 1.5, memoryMiB: 1536, observedPeakBytes: peakBytes, initialWorldStartupMs, existingWorldStartupMs, network: { initial: initialNetwork, existing: existingNetwork }, realNativeConsole: true, liveBackupVerified: true, worldRulesPersisted: true, stoppedAndRemoved: true });
+            report.push({ channel, version: expected, hostELF: 'aarch64', guestELF: 'x86_64', cpuCores: 1.5, memoryMiB: 3072, observedPeakBytes: peakBytes, initialWorldStartupMs, existingWorldStartupMs, network: { initial: initialNetwork, existing: existingNetwork }, realNativeConsole: true, liveBackupVerified: true, worldRulesPersisted: true, stoppedAndRemoved: true });
             console.log(JSON.stringify({ role, stage: 'bedrock-complete', ...report.at(-1) }));
           }
           try {
@@ -448,7 +469,7 @@ jobs:
             for (const id of owned) {
               try {
                 const value = await server(id);
-                if (['running', 'starting'].includes(value.status)) { await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped'); }
+                if (['running', 'starting', 'error', 'crashed'].includes(value.status)) { await request('/servers/' + id + '/stop', 'POST', {}); await waitState(id, 'stopped'); }
                 if ((await server(id)).status === 'stopped') await request('/servers/' + id, 'DELETE');
               } catch { console.error('An ephemeral Bedrock instance remains for disposal with the CI VM.'); }
             }

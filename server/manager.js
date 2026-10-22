@@ -1,5 +1,6 @@
 import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
 import { createBedrockRuntime } from './bedrock-runtime.js';
+import { createBedrockPortWait, isPrimaryBedrockTcpBindError, bedrockPortWaitIssue, bedrockPortWaitMessage } from './bedrock-port-wait.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -84,9 +85,11 @@ export async function ensureServerIdentity(runRoot) {
   return destination;
 }
 
-export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, bedrockController, bedrockRuntimeRole = 'panel', hostReader, portAllocator, protectedTcpPorts = [] }) {
+export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, bedrockController, bedrockRuntimeRole = 'panel', hostReader, portAllocator, bedrockPortWaitController, protectedTcpPorts = [] }) {
   const applicationRuntime = applicationController || createApplicationRuntime({dataDir,resourceController,storageController});
   const bedrockRuntime = bedrockController || createBedrockRuntime({ role: bedrockRuntimeRole });
+  const bedrockPortWait = bedrockPortWaitController || createBedrockPortWait();
+  const startWaits = new Map();
   const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [...protectedTcpPorts, Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
   let applicationControl = {supported:false,engine:'bubblewrap',runtimes:[],reason:'Application runtime has not been checked.'};
   const versionService = createVersionService({ store, dataDir, emit, audit: (...args) => audit(...args), reserveDisk: bytes => reservePackageWorkspace(bytes) });
@@ -218,7 +221,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     maintenance = record;
     return record.release;
   }
-  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, bedrockRuntime: !isApp(server) ? processes.get(server.id)?.bedrockRuntime || null : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), restartRecovery: publicRestartRecovery(server.restartRecovery), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
+  const publicServer = server => ({ id: server.id, appearance: publicServerAppearance(server), kind: appKind(server), application: isApp(server) ? publicApplication(server.application) : null, runtime: isApp(server) && server.runtime ? publicRuntimePin(server.runtime) : null, bedrockRuntime: !isApp(server) ? processes.get(server.id)?.bedrockRuntime || null : null, applicationRuntime: isApp(server) ? { ...(processes.get(server.id)?.applicationRuntime || {}), readiness: server.application?.readiness || 'tcp', ready: Boolean(processes.get(server.id)?.ready) } : null, consoleRunId: consoleRun(server), name: server.name, version: server.version, channel: server.channel, port: server.port, portV6: server.portV6, debugPort: server.debugPort ?? null, transport: server.transport || 'raknet', udpPorts: server.udpPorts || null, maxPlayers: server.maxPlayers, players: server.players || 0, status: server.status, startupWait: startWaits.get(server.id)?.public || null, createdAt: server.createdAt, autoRestart: Boolean(server.autoRestart), restartRecovery: publicRestartRecovery(server.restartRecovery), autoStart: Boolean(server.autoStart), backupRetention: server.backupRetention || 10, messageLanguage: serverMessageLanguage(server), worldVoiceEnabled: !isApp(server) && serverWorldVoiceEnabled(server), resourcePolicy: serverPolicy(server), storagePolicy: storagePolicy(server), resources: serverResources(server), telemetry: telemetry(server), memoryMB: server.memoryMB || 0, cpuPercent: server.cpuPercent || 0, uptime: processes.has(server.id) ? Math.floor((Date.now() - processes.get(server.id).startedAt) / 1000) : 0, error: server.error || null, recoveryRequired: Boolean(server.restoreRecoveryRequired), busy: Boolean(server.jobId || server.cloneJobId || lifecycle.has(server.id) || operations.has(server.id) || scheduleLocks.has(server.id) || processes.get(server.id)?.gameplay?.busy), pid: processes.get(server.id)?.child.pid || null });
   const persist = () => { store.save(); emit({ type: 'update' }); };
   const audit = (action, detail, user, detailI18n, serverId) => store.audit(action, detail, user || actorContext.getStore()?.username || 'system', detailI18n, serverId);
   const commitServerFields = (server, fields, action, detail = server.name) => {
@@ -572,17 +575,30 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     }
   }
 
-  async function probePorts(server) {
+  async function probePorts(server, { signal } = {}) {
     assertAvailablePanelPorts(server, protectedTcpPorts);
     for (const port of [...(isApp(server) || ['nethernet', 'auto'].includes(server.transport) ? [server.port] : []), ...(server.debugPort == null ? [] : [server.debugPort])]) {
       const probe = address => new Promise((resolve, reject) => {
-        const listener = net.createServer();
-        listener.once('error', reject);
-        listener.listen({ port, host: address, exclusive: true }, () => listener.close(resolve));
+        const controller = new AbortController();
+        const listener = net.createServer(socket => socket.destroy());
+        let settled = false, timer;
+        const finish = error => {
+          if (settled) return; settled = true;
+          clearTimeout(timer); signal?.removeEventListener('abort', abort);
+          controller.abort();
+          error ? reject(error) : resolve();
+        };
+        const abort = () => finish(bedrockPortWaitIssue('BEDROCK_PORT_WAIT_CANCELLED', server.port));
+        listener.once('error', finish);
+        if (signal?.aborted) return abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => finish(Object.assign(new Error('TCP bind verification timed out.'), { code: 'ETIMEDOUT' })), 1500);
+        try { listener.listen({ port, host: address, exclusive: true, signal: controller.signal }, () => listener.close(error => finish(error))); }
+        catch (error) { finish(error); }
       });
       for (const address of ['::', '0.0.0.0', ...(isApp(server) ? ['::1', '127.0.0.1'] : [])]) {
         try { await probe(address); }
-        catch (error) { if (address.includes(':') && ['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) continue; throw Object.assign(new Error(`Không thể mở cổng TCP ${port}: ${error.message}`), { status: 409, code: error.code }); }
+        catch (error) { if (address.includes(':') && ['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) continue; throw Object.assign(new Error(`Không thể mở cổng TCP ${port}: ${error.message}`), { status: 409, code: error.code, protocol: 'tcp', port }); }
       }
     }
     if (isApp(server)) return;
@@ -622,22 +638,33 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     }
   }
 
-  async function start(server, { automatic = false } = {}) {
-    await applicationRuntime.assertNoPendingBuilds?.();
-    await ensureStorage(server);
+  const startSnapshot = server => JSON.stringify([server.id, appKind(server), server.version, server.channel, server.port, server.portV6, server.transport, server.udpPorts, server.debugPort ?? null, serverPolicy(server), storagePolicy(server), runDirectory(server)]);
+  function assertWaitingStart(server, token) {
+    if (token.controller.signal.aborted) throw bedrockPortWaitIssue('BEDROCK_PORT_WAIT_CANCELLED', token.port);
+    assertOpen();
+    if (startWaits.get(server.id) !== token || !store.data.servers.includes(server) || processes.has(server.id) || startSnapshot(server) !== token.snapshot) throw bedrockPortWaitIssue('BEDROCK_PORT_WAIT_STALE', token.port);
+    return true;
+  }
+  async function start(server, { automatic = false, portWaitToken = null, onPortWait } = {}) {
+    const checkPendingStart = () => portWaitToken ? assertWaitingStart(server, portWaitToken) : assertOpen();
+    checkPendingStart();
+    await applicationRuntime.assertNoPendingBuilds?.(); checkPendingStart();
+    await ensureStorage(server); checkPendingStart();
     if (storagePolicy(server).mode === 'fixed') {
-      const actual = await storageController.stats(server); storageMetrics.set(server.id, actual);
+      const actual = await storageController.stats(server); checkPendingStart(); storageMetrics.set(server.id, actual);
       if (!actual.hardEnforced || actual.limitBytes < storagePolicy(server).diskGiB * GIB) fail('Cần hoàn tất tăng dung lượng trước khi khởi động máy chủ này.', 409);
     }
     assertIdle(server);
     assertRecovered(server);
     if (closed) fail('Panel đang tắt.', 503);
-    if (processes.has(server.id) || ['running', 'starting', 'stopping'].includes(server.status)) fail('Server đang chạy hoặc đang chuyển trạng thái.', 409);
+    if (processes.has(server.id) || ['running', 'stopping'].includes(server.status) || server.status === 'starting' && !portWaitToken) fail('Server đang chạy hoặc đang chuyển trạng thái.', 409);
     if (server.status === 'installing' || !server.version) fail('Server chưa cài đặt xong.', 409);
     validateNetwork(networkServers(), server.id, server);
     assertMemoryHeadroom({ host: await capacityHostInfo(), servers: capacityServers(), reserveRatio, minimumMemoryMiB: resourceControl.memory?.minMiB ?? 256 });
+    checkPendingStart();
     if (closed) fail('Panel đang tắt.', 503);
     const bedrockCapability = !isApp(server) ? await bedrockRuntime.assertReady() : null;
+    checkPendingStart();
     const workingDirectory = runDirectory(server);
     let executable, plan, bedrockPlan, properties = {};
     if (isApp(server)) {
@@ -656,7 +683,40 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     if (transport === 'nethernet') await ensureServerIdentity(workingDirectory);
     if (!['raknet', 'nethernet'].includes(transport) || transport !== (server.transport || 'raknet') || properties['enable-lan-visibility'] !== 'false' || Number(properties['server-port']) !== server.port || Number(properties['server-portv6']) !== server.portV6 || (transport === 'nethernet' && properties['server-udp-ports'] !== server.udpPorts) || debuggerPort(properties) !== (server.debugPort ?? null)) fail('Cấu hình cổng hoặc transport không khớp. Hãy lưu lại cấu hình qua panel.', 409);
     }
-    await probePorts(server);
+    checkPendingStart();
+    try { await probePorts(server, { signal: portWaitToken?.controller.signal }); }
+    catch (error) {
+      if (isApp(server) || server.transport !== 'nethernet' || portWaitToken || !store.data.servers.includes(server) || processes.has(server.id) || !isPrimaryBedrockTcpBindError(error, server.port)) throw error;
+      const token = { server, port: server.port, snapshot: startSnapshot(server), controller: new AbortController(), public: null, operation: lifecycle.get(server.id) };
+      startWaits.set(server.id, token);
+      const previous = { ...server };
+      try {
+        await bedrockPortWait.wait({ port: token.port, initialError: error, signal: token.controller.signal,
+          isCurrent: () => assertWaitingStart(server, token), probe: () => probePorts(server, { signal: token.controller.signal }),
+          onWait: ({ remainingMs }) => {
+            assertWaitingStart(server, token);
+            const time = Date.now(); token.public = { reason: 'tcp-time-wait', port: token.port, startedAt: new Date(time).toISOString(), deadlineAt: new Date(time + remainingMs).toISOString() };
+            server.status = 'starting'; server.error = null; server.players = 0;
+            persistStartState(server, previous);
+            log(server, bedrockPortWaitMessage('BEDROCK_PORT_WAITING', token.port).vi);
+            onPortWait?.({ server: publicServer(server), accepted: true });
+          },
+        });
+        assertWaitingStart(server, token);
+        // Re-run storage, capacity, runtime and configuration validation using
+        // current host data after the bounded kernel cooldown.
+        return await start(server, { automatic, portWaitToken: token });
+      } catch (failure) {
+        if (startWaits.get(server.id) === token && store.data.servers.includes(server) && !processes.has(server.id) && token.public) {
+          server.status = failure.code === 'BEDROCK_PORT_WAIT_CANCELLED' ? 'stopped' : 'error';
+          server.error = failure.code === 'BEDROCK_PORT_WAIT_CANCELLED' ? null : failure.message;
+          if (server.error) log(server, server.error, 'error');
+          persistRuntime(server);
+        }
+        throw failure;
+      } finally { if (startWaits.get(server.id) === token) { startWaits.delete(server.id); emit({ type: 'update' }); } }
+    }
+    checkPendingStart();
     resetConsole(server);
     const previous = { ...server };
     if (plan) server.version = server.runtime?.mode === 'managed' ? server.runtime.version : plan.runtime.version;
@@ -667,10 +727,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       startupPacks = { capturedAt: now(), worldName: properties['level-name'] || 'Bedrock level', revision: observed.revision, stacks: observed.stacks };
     } catch (error) { startupPacks = { capturedAt: now(), worldName: properties['level-name'] || 'Bedrock level', stacks: null, error: error.message }; }
     try {
+      checkPendingStart();
       resourceHandle = await resourceController.prepare(server.id, serverPolicy(server), isApp(server) ? { tasksMax: 128 } : {});
+      checkPendingStart();
       const launch = plan || bedrockPlan;
       launched = launch ? resourceHandle.spawnWithArgs(launch.executable, launch.args, launch.options, launch.execution) : resourceHandle.spawn(executable, { cwd: workingDirectory, env: { ...process.env, LD_LIBRARY_PATH: workingDirectory }, stdio: ['pipe', 'pipe', 'pipe'], detached: false });
-    } catch (error) { await resourceHandle?.cleanup().catch(() => {}); server.status = 'error'; server.error = error.message; log(server, `${isApp(server) ? 'Cannot start application' : 'Không thể chạy Bedrock'}: ${error.message}`, 'error'); persistRuntime(server); throw error; }
+    } catch (error) { await resourceHandle?.cleanup().catch(() => {}); server.status = error.code === 'BEDROCK_PORT_WAIT_CANCELLED' ? 'stopped' : 'error'; server.error = error.code === 'BEDROCK_PORT_WAIT_CANCELLED' ? null : error.message; if (server.error) log(server, `${isApp(server) ? 'Cannot start application' : 'Không thể chạy Bedrock'}: ${error.message}`, 'error'); persistRuntime(server); throw error; }
     const { child, ready } = launched;
     const runtime = { child, resourceHandle, resourceUsage: null, startedAt: Date.now(), expected: false, online: new Map(), connections: new Map(), instanceId: randomUUID(), worldName: properties['level-name'] || 'Bedrock level', startupProperties: { ...properties }, gameRules: new Map(), previousTicks: null, previousTime: performance.now(), ready: false, close: null };
     runtime.consoleRunId = consoleRun(server);
@@ -687,6 +749,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       return deliverConsole(server, command, 'server.announcement.auto');
     }, onWarning: () => { if (runtimeCurrent(server, runtime)) optionalVoiceWarning(server); } });
     processes.set(server.id, runtime);
+    if (portWaitToken && startWaits.get(server.id) === portWaitToken) startWaits.delete(server.id);
     child.stdin.on('error', error => runtimeLog(server, runtime, `Console: ${error.message}`, 'warn'));
     // The trusted in-sandbox loader consumes this one private line before
     // handing the unchanged console pipe to user code. Custom variables never
@@ -1801,7 +1864,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         const recovery = restartRecoveryState(server.restartRecovery);
         if (recovery.paused) { if (server.restartRecovery) server.restartRecovery = recovery; continue; }
         if (server.autoRestart && recovery.nextAttemptAt) { queueRestart(server, { failure: false }); continue; }
-        if (server.autoStart || server.resumeOnPanelStart) manager.action(server.id, 'start', true).catch(error => { server.status = 'error'; server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); queueRestart(server); });
+        if (server.autoStart || server.resumeOnPanelStart) manager.action(server.id, 'start', true).catch(error => { if (error.code === 'BEDROCK_PORT_WAIT_CANCELLED') return; server.status = 'error'; server.error = error.message; log(server, error.message, 'error'); persistRuntime(server); queueRestart(server); });
       }
       if (closed) return;
       // Arm CPU/RAM sampling before awaiting disk/network maintenance. Those
@@ -1990,21 +2053,36 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     async action(id, action, automatic = false, noticeReason = action) {
       assertOpen();
       const server = get(id);
+      if (['stop', 'kill'].includes(action) && startWaits.has(id)) {
+        const pending = startWaits.get(id), scheduleId = scheduleLocks.get(id);
+        cancelRestart(server, { reset: !automatic });
+        pending.controller.abort();
+        await pending.operation?.catch(() => {});
+        if (scheduleId && scheduleContext.getStore() !== scheduleId) await scheduleRuns.get(scheduleId)?.catch(() => {});
+        assertOpen();
+      }
       assertIdle(server);
       if (lifecycle.has(id)) fail('Server đang chuyển trạng thái. Vui lòng đợi.', 409);
       if (!['start', 'stop', 'kill', 'restart'].includes(action)) fail('Thao tác không hợp lệ.');
       if (!automatic) cancelRestart(server, { reset: true });
+      let acceptStart;
+      const accepted = new Promise(resolve => { acceptStart = resolve; });
+      const onPortWait = automatic ? undefined : result => acceptStart(result);
       const promise = (async () => {
         // Yield once so the lock is registered before an async operation starts.
         await Promise.resolve();
-        if (action === 'start') return { server: await start(server, { automatic }) };
+        if (action === 'start') return { server: await start(server, { automatic, onPortWait }) };
         if (action === 'stop' || action === 'kill') return { server: await stop(server, action === 'kill', false, noticeReason) };
-        if (action === 'restart') { await stop(server, false, false, 'restart'); return { server: await start(server, { automatic }) }; }
+        if (action === 'restart') { await stop(server, false, false, 'restart'); return { server: await start(server, { automatic, onPortWait }) }; }
         fail('Thao tác không hợp lệ.');
       })();
       lifecycle.set(id, promise);
       lifecycleIntents.set(id, action);
-      try { return await promise; } finally { lifecycle.delete(id); lifecycleIntents.delete(id); emit({ type: 'update' }); }
+      const finish = () => { if (lifecycle.get(id) === promise) { lifecycle.delete(id); lifecycleIntents.delete(id); emit({ type: 'update' }); } };
+      // Returning an accepted cooldown must not release the full lifecycle lock.
+      // Both outcomes are observed even when the caller has already received it.
+      void promise.then(finish, finish).catch(() => {});
+      return automatic ? await promise : await Promise.race([promise, accepted]);
     },
     command(id, command) {
       assertOpen();
@@ -2223,11 +2301,13 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       let persistenceError;
       try { persist(); } catch (error) { persistenceError = error; }
       clearInterval(scheduler); clearInterval(metricsTimer); clearInterval(processMetricsTimer); clearInterval(releaseTimer);
+      for (const pending of startWaits.values()) pending.controller.abort();
       await Promise.allSettled([collectingMetrics, ...processMetricSamples].filter(Boolean));
       await capacityGate.close();
       versionService.close();
       for (const pending of restartTimers.values()) clearTimeout(pending.timer); restartTimers.clear();
       await Promise.allSettled([...lifecycle.values()]);
+      startWaits.clear();
       await Promise.allSettled([...hostOperations]);
       await Promise.allSettled([...operations.values()]);
       // Online backups must release Bedrock's snapshot before the console is

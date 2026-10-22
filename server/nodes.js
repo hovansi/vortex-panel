@@ -50,7 +50,7 @@ const publicAddress = value => {
 };
 const compact = server => {
   const copy = { ...server };
-  for (const key of ['players', 'cpuPercent', 'memoryMB', 'uptime', 'pid', 'busy', 'resources', 'telemetry', 'capacityUsage']) delete copy[key];
+  for (const key of ['players', 'cpuPercent', 'memoryMB', 'uptime', 'pid', 'busy', 'startupWait', 'resources', 'telemetry', 'capacityUsage']) delete copy[key];
   return copy;
 };
 const nodeTag = (node, row, state) => ({

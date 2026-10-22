@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { bedrockPortWaitErrorPayload } from './bedrock-port-wait.js';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { bedrockRuntimeSupport, BEDROCK_PLATFORM_MESSAGE } from '../public/runtime-platform.js';
@@ -14,14 +15,14 @@ const POLICY = Object.freeze({
 const HASH = /^[a-f0-9]{64}$/;
 const ROOTS = Object.freeze({ panel: '/opt/vortex-panel/runtime/box64-v0.4.4-arm64', worker: '/opt/vortex-node/runtime/box64-v0.4.4-arm64' });
 const MESSAGES = Object.freeze({
-  BEDROCK_RUNTIME_MISSING: { id: 'panel.runtime.bedrock-install', en: 'Install or repair Vortex on this ARM64 node to prepare the Bedrock runtime. A source update alone does not install it.', vi: 'Chạy bộ cài Vortex trên VPS ARM64 này để cài hoặc sửa môi trường Bedrock. Chỉ cập nhật mã nguồn sẽ không cài môi trường này.' },
-  BEDROCK_RUNTIME_INVALID: { id: 'panel.runtime.bedrock-integrity', en: 'The managed Bedrock runtime could not be verified. Run the Vortex installer on this node to repair it.', vi: 'Không xác minh được môi trường Bedrock do Vortex quản lý. Chạy lại bộ cài Vortex trên VPS này để sửa.' },
+  BEDROCK_RUNTIME_MISSING: { id: 'panel.runtime.bedrock-install', en: 'Run the full Vortex installer on this ARM64 node to prepare the Bedrock runtime. A source-only update does not install it.', vi: 'Chạy bộ cài đầy đủ Vortex trên VPS ARM64 này để cài môi trường Bedrock. Chỉ cập nhật mã nguồn sẽ không cài môi trường này.' },
+  BEDROCK_RUNTIME_INVALID: { id: 'panel.runtime.bedrock-integrity', en: 'The existing managed Bedrock runtime could not be verified. An administrator must review it and prepare a verified replacement.', vi: 'Không xác minh được môi trường Bedrock hiện có. Quản trị viên cần kiểm tra và chuẩn bị bản thay thế đã được xác minh.' },
   BEDROCK_RUNTIME_PAGE_SIZE: { id: 'panel.runtime.bedrock-page-size', en: 'Bedrock on ARM64 currently requires a Linux kernel with 4 KiB pages.', vi: 'Bedrock trên ARM64 hiện cần nhân Linux dùng trang bộ nhớ 4 KiB.' },
 });
 export const BEDROCK_RUNTIME_MESSAGES = Object.freeze(Object.values(MESSAGES));
 export function bedrockRuntimeErrorPayload(error, language = 'en') {
   const message = Object.hasOwn(MESSAGES, error?.code) ? MESSAGES[error.code] : error?.code === 'BEDROCK_RUNTIME_UNSUPPORTED' ? BEDROCK_PLATFORM_MESSAGE : null;
-  return message ? { error: language === 'vi' ? message.vi : message.en, code: error.code, errorI18n: { ...message, params: [] } } : null;
+  return message ? { error: language === 'vi' ? message.vi : message.en, code: error.code, errorI18n: { ...message, params: [] } } : bedrockPortWaitErrorPayload(error, language);
 }
 const invalid = () => Object.assign(new Error('Managed Bedrock runtime verification failed.'), { code: 'BEDROCK_RUNTIME_INVALID', status: 409 });
 const fingerprint = stat => ['dev', 'ino', 'size', 'mode', 'uid', 'gid', 'mtimeNs', 'ctimeNs'].map(key => String(stat[key])).join(':');
@@ -81,6 +82,13 @@ export function createBedrockRuntime({ role = 'panel', platform = process.platfo
     if (base.supported || platform !== 'linux' || base.arch !== 'arm64') return base;
     try {
       if (await pageSizeReader() !== 4096) return unsupported('BEDROCK_RUNTIME_PAGE_SIZE');
+      try {
+        await trustedStat(io, root, { directory: true });
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        verified = null;
+        return unsupported('BEDROCK_RUNTIME_MISSING');
+      }
       const receiptPath = root + '/.vortex-bedrock-runtime.json';
       const receiptStat = await trustedStat(io, receiptPath, { maxBytes: 16384 });
       const receiptHandle = await io.open(receiptPath, 'r');
@@ -104,9 +112,9 @@ export function createBedrockRuntime({ role = 'panel', platform = process.platfo
         verified = signature;
       }
       return { ...base, supported: true, mode: 'box64', engine: 'box64', engineVersion: POLICY.version, profile: POLICY.profile, reason: null, reasonI18n: null };
-    } catch (error) {
+    } catch {
       verified = null;
-      return unsupported(error.code === 'ENOENT' ? 'BEDROCK_RUNTIME_MISSING' : 'BEDROCK_RUNTIME_INVALID');
+      return unsupported('BEDROCK_RUNTIME_INVALID');
     }
   }
   function capabilities() {
