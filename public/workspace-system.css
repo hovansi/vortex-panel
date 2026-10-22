@@ -1,6 +1,6 @@
 /* Vortex workspace system: solid content, restrained materials, real controls. */
 :root{
-  --ink:#222329;--muted:#62646d;--soft:#72747c;--line:#17182118;
+  --ink:#222329;--muted:#62646d;--soft:#6b6d76;--line:#17182118;
   --accent:#6954de;--accent-strong:#5742c5;--green:var(--accent);--green-soft:#eeebfb;
   --surface:#fff;--field:#f3f3f6;--content:#f5f5f7;--window:var(--content);
   --sidebar:#f8f8facc;--glass:#ffffff9c;--glass-line:var(--line);
@@ -20,9 +20,10 @@
   --action-disabled-bg:#2e3036;--action-disabled-fg:#a0a3af;--action-disabled-border:#4b4d57;
 }
 body{background:var(--content)}
+body{height:100vh;height:100dvh}
 .wallpaper{display:none}
 .app-shell{
-  grid-template-columns:232px minmax(0,1fr);width:100%;height:100dvh;max-height:none;
+  grid-template-columns:232px minmax(0,1fr);width:100%;height:100vh;height:100dvh;max-height:none;
   margin:0;border:0;border-radius:0;box-shadow:none;background:var(--content);
   backdrop-filter:none;-webkit-backdrop-filter:none;
 }
@@ -41,8 +42,7 @@ body{background:var(--content)}
 .sidebar .nav-item,.sidebar .nav-item.active{min-height:43px;padding:11px 12px;border:0;border-radius:10px;box-shadow:none;font-size:13px}
 .sidebar .nav-item.active{background:transparent;color:var(--ink);font-weight:600}
 .sidebar .nav-item.active>.icon{color:var(--accent)}
-.sidebar .nav-item.active::after{display:none}
-.sidebar .nav-item:not(.active):hover{background:var(--glass);color:var(--ink)}
+.sidebar .nav-item.active::after{display:none}@media(hover:hover) and (pointer:fine){.sidebar .nav-item:not(.active):hover{background:var(--glass);color:var(--ink)}}
 .nav-separator{margin:10px 12px}
 .host-mini{padding:12px;border:1px solid var(--line);border-radius:13px;background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 94%,var(--accent)),var(--surface));box-shadow:0 4px 14px #14151c14,inset 0 1px 0 #ffffffa3}
 :root[data-theme=dark] .host-mini{box-shadow:0 5px 16px #00000038,inset 0 1px 0 #ffffff0f}
@@ -55,8 +55,7 @@ body{background:var(--content)}
 }
 .toolbar-actions{gap:12px}.breadcrumb{font-size:12px}.breadcrumb strong{font-weight:600}
 .toolbar-controls{gap:3px;padding:0;background:none;border:0;box-shadow:none;border-radius:0}
-.toolbar .icon-button{width:38px;height:38px;min-height:38px;border-radius:11px;background:transparent}
-.toolbar .icon-button:hover{background:var(--field)}
+.toolbar .icon-button{width:38px;height:38px;min-height:38px;border-radius:11px;background:transparent}@media(hover:hover) and (pointer:fine){.toolbar .icon-button:hover{background:var(--field)}}
 .toolbar .language-trigger{min-height:38px;border-radius:10px;background:var(--glass);border-color:var(--line);box-shadow:none}
 .toolbar .avatar{border:0;box-shadow:none;background:var(--system-selection);color:var(--accent-strong)}
 .workspace{padding:26px 28px 28px;scrollbar-color:color-mix(in srgb,var(--muted) 28%,transparent) transparent}
@@ -91,8 +90,7 @@ body{background:var(--content)}
 .server-brand-icon{color:#fff;background:color-mix(in srgb,var(--server-accent,var(--accent)) 38%,#242139)}
 .server-brand-icon>span{color:#fff}
 .overview-server-row>.server-brand-icon{width:40px;height:40px;border-radius:11px;font-size:20px;box-shadow:none;background:color-mix(in srgb,var(--server-accent,var(--accent)) 38%,#242139)}
-.server-card{transition:border-color .16s,box-shadow .16s}
-.server-card:hover{transform:none;box-shadow:none;border-color:color-mix(in srgb,var(--accent) 24%,var(--line))}
+.server-card{transition:border-color .16s,box-shadow .16s}@media(hover:hover) and (pointer:fine){.server-card:hover{transform:none;box-shadow:none;border-color:color-mix(in srgb,var(--accent) 24%,var(--line))}}
 .server-card .server-card-body{padding:18px}.server-card-identity .server-name{font-size:16px}
 .server-context{border-radius:16px}.server-tabs{border-radius:12px}
 .server-tabs button{border-radius:9px}
@@ -102,7 +100,7 @@ body{background:var(--content)}
 .btn.text{box-shadow:none}.icon-button{border-radius:10px}
 button{transition:background-color .16s,color .16s,border-color .16s,box-shadow .16s,opacity .1s}
 button:active{transform:none}
-button:active:not(:disabled):not([aria-disabled=true]){opacity:.76}
+button:active:not(:disabled):not([aria-disabled=true]):not([data-busy=true]){opacity:.76}
 input:not([type=checkbox]):not([type=radio]),.field>textarea,select,.select-control-trigger{
   border-radius:10px;border-color:var(--line);box-shadow:none;
 }
@@ -155,8 +153,7 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
   gap:18px;align-items:center;min-height:102px;padding:16px 18px;border:1px solid var(--line);
   border-radius:14px;background:var(--surface);min-width:0;
 }
-.server-row-open{display:flex;justify-content:flex-start;align-items:center;gap:12px;min-width:0;min-height:44px;padding:0;border-radius:9px;text-align:left}
-.server-row-open:hover{background:transparent}.server-row-open>.instance-icon,.server-row-open>.world-icon,.server-row-open>.server-brand-icon{width:40px;height:40px;border-radius:11px;flex:none}
+.server-row-open{display:flex;justify-content:flex-start;align-items:center;gap:12px;min-width:0;min-height:44px;padding:0;border-radius:9px;text-align:left}@media(hover:hover) and (pointer:fine){.server-row-open:hover{background:transparent}}.server-row-open>.instance-icon,.server-row-open>.world-icon,.server-row-open>.server-brand-icon{width:40px;height:40px;border-radius:11px;flex:none}
 .server-row-open>.server-brand-icon{font-size:20px;box-shadow:none;background:color-mix(in srgb,var(--server-accent,var(--accent)) 38%,#242139)}
 .server-row-identity{display:grid;gap:4px;min-width:0}.server-row-identity strong{font-size:14px;font-weight:650;line-height:1.4;overflow-wrap:anywhere}
 .server-row-identity small{font-size:11px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
@@ -255,7 +252,7 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
   .server-row-actions .server-address{min-height:44px;max-width:calc(100% - 60px);font-size:11px}
   .server-row-actions .icon-button{width:44px;height:44px;min-height:44px}.server-row-actions>.btn{min-height:44px}
   .server-view-options>button{min-height:44px;min-width:44px;padding:9px 12px}
-  .modal{max-height:calc(100dvh - 24px);border-radius:18px}.modal-head{padding:20px 18px 16px}.modal-content{padding:18px}
+  .modal{max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);border-radius:18px}.modal-head{padding:20px 18px 16px}.modal-content{padding:18px}
   .modal-head h2,.confirmation h2{font-size:21px}.confirmation{padding:22px;border-radius:18px}
   .drawer{width:min(410px,100%);border-radius:18px 0 0 18px}.tool-link{min-height:62px}
   .frontend-release-notice{bottom:calc(78px + env(safe-area-inset-bottom))}.toasts{bottom:calc(78px + env(safe-area-inset-bottom));left:16px;right:16px}
@@ -293,5 +290,47 @@ input[type=checkbox]:not(.toggle input):disabled{opacity:.55;cursor:not-allowed}
   .panel,.server-row,.node-card,.settings-navigation,.btn{border:1px solid ButtonBorder}
   input[type=checkbox]:not(.toggle input){appearance:auto;-webkit-appearance:checkbox;background:Canvas;border-color:ButtonBorder}
   input[type=checkbox]:not(.toggle input)::before{display:none}
-  .auth-card{background:Canvas}.server-card:hover{border-color:Highlight}
+  .auth-card{background:Canvas}@media(hover:hover) and (pointer:fine){.server-card:hover{border-color:Highlight}}
+}
+
+/* Touch controls retain comfortable targets on tablets as well as phones. */
+@media(any-pointer:coarse){
+  .workspace button,.toolbar button,.modal button,.drawer button,.palette button,.server-picker button,.file-actions button,.file-folder-picker button,.confirmation button{min-width:44px;min-height:44px}
+  .workspace .btn,.modal .btn,.drawer .btn,.confirmation .btn,.toolbar .language-trigger{min-height:44px}
+  .toolbar .icon-button,.toolbar .avatar,.workspace .icon-button,.modal .icon-button,.drawer .icon-button{min-width:44px;width:44px;height:44px}
+  .console-tool{min-width:44px;min-height:44px}
+  :root :is(input,select,textarea):not([type=checkbox]):not([type=radio]),.select-control-trigger{font-size:16px}
+  .metric-details summary{width:44px;height:44px;margin:-10px -10px -10px 0}
+  .metric-details>div{top:52px}
+}
+@media(any-pointer:coarse) and (min-width:721px){
+  .app-shell{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+  .sidebar{padding-bottom:max(18px,env(safe-area-inset-bottom))}
+}
+@media(max-width:720px){
+  .toolbar{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+  .workspace{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+}
+.workspace{scrollbar-gutter:stable;scroll-padding-block:16px}
+.metric-network .network-rate-pair{grid-template-columns:repeat(auto-fit,minmax(min(100%,80px),1fr))}
+.metric-network .network-rate-pair strong{white-space:normal;overflow-wrap:anywhere}
+.metric-tile .usage-label{flex-wrap:wrap}
+:root[data-virtual-keyboard=open] .app-shell{height:var(--keyboard-viewport-height)}
+:root[data-virtual-keyboard=open] .auth-screen{height:var(--keyboard-viewport-height);max-height:var(--keyboard-viewport-height);min-height:0;overflow-y:auto}
+:root[data-virtual-keyboard=open] .mobile-nav{visibility:hidden;pointer-events:none}
+:root[data-virtual-keyboard=open] .workspace{padding-bottom:20px}
+:root[data-virtual-keyboard=open] dialog:is(.modal,.confirmation,.palette,.server-picker,.file-actions,.file-folder-picker){
+  top:calc(var(--keyboard-viewport-top,0px) + max(8px,env(safe-area-inset-top)));bottom:auto;margin-block:0;
+  max-height:calc(var(--keyboard-viewport-height) - max(16px,env(safe-area-inset-top)) - max(16px,env(safe-area-inset-bottom)));
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  :root{--sidebar:#f8f8fa;--glass:#f1f1f4;--system-material:#fafafb;--system-overlay:#fff}
+  :root[data-theme=dark]{--sidebar:#222327;--glass:#2b2c31;--system-material:#25262b;--system-overlay:#292a2f}
+}
+@media(max-width:420px){
+  .application-kind-choices{grid-template-columns:minmax(0,1fr)}
+  .application-kind-card{grid-template-columns:36px minmax(0,1fr);gap:4px 12px;min-height:76px;padding:13px 14px;align-content:center}
+  .application-kind-icon{grid-row:1/3}
+  .application-kind-card strong{font-size:14px}
+  .application-kind-card small{font-size:11px}
 }

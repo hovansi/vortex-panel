@@ -4,6 +4,7 @@ input[type=radio]:checked{border-color:var(--accent);background:radial-gradient(
 input[type=radio]:focus{box-shadow:none}
 input[type=radio]:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:50%}
 input[type=radio]:disabled{cursor:default;opacity:.5}
+.application-kind-choice>input[type=radio]:disabled{opacity:0}
 button[data-busy=true]{position:relative;cursor:progress}
 button[data-busy=true]:disabled{opacity:.78}
 button[data-busy=true]>.icon{opacity:0}
@@ -30,7 +31,8 @@ button[data-busy=true]:has(>.icon>use[href="#i-refresh"])::after{display:none}
 /* Tools have their own navigation surface; sidebar collapse never hides them. */
 .tools-grid{display:grid;gap:8px}
 .tool-link{display:flex;align-items:center;gap:13px;width:100%;min-height:68px;padding:12px;border:1px solid transparent;border-radius:16px;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer;transition:background .18s,border-color .18s}
-.tool-link:hover,.tool-link.selected{background:var(--field);border-color:var(--line)}
+.tool-link.selected{background:var(--field);border-color:var(--line)}
+@media(hover:hover) and (pointer:fine){.tool-link:not(:disabled):not([aria-disabled=true]):hover{background:var(--field);border-color:var(--line)}}
 .tool-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .tool-link-icon{display:grid;place-items:center;flex:0 0 38px;width:38px;height:38px;border-radius:12px;color:var(--accent);background:var(--green-soft)}
 .tool-link-icon>.icon{width:21px;height:21px}
@@ -97,13 +99,13 @@ button.btn.intent-positive{--action-bg:var(--action-positive-bg);--action-fg:var
 button.btn.danger,button.btn.intent-danger{--action-bg:var(--action-danger-bg);--action-fg:var(--action-danger-fg);--action-hover:var(--action-danger-hover)}
 button.btn.intent-warning{--action-bg:var(--action-warning-bg);--action-fg:var(--action-warning-fg);--action-hover:var(--action-warning-hover)}
 button.btn:is(.intent-positive,.danger,.intent-danger,.intent-warning){background:var(--action-bg);color:var(--action-fg);border:1px solid color-mix(in srgb,var(--action-fg) 23%,var(--action-bg));box-shadow:none}
-button.btn:is(.intent-positive,.danger,.intent-danger,.intent-warning):not(:disabled):hover{background:var(--action-hover);color:var(--action-fg)}
+@media(hover:hover) and (pointer:fine){button.btn:is(.intent-positive,.danger,.intent-danger,.intent-warning):not(:disabled):not([aria-disabled=true]):hover{background:var(--action-hover);color:var(--action-fg)}}
 button.btn.intent-neutral:not(.text){background:var(--surface);color:var(--ink);border:1px solid var(--line);box-shadow:none}
-button.btn.intent-neutral:not(.text):not(:disabled):hover{background:var(--field)}
+@media(hover:hover) and (pointer:fine){button.btn.intent-neutral:not(.text):not(:disabled):not([aria-disabled=true]):hover{background:var(--field)}}
 button.btn.intent-primary{background:var(--accent);color:#fff;border-color:transparent}
 :root[data-theme=dark] button.btn.intent-primary{color:#201a37}
-button.btn.intent-primary:not(:disabled):hover{background:var(--accent-strong)}
-button.btn:disabled:not([data-pending=true]){opacity:1;background:var(--action-disabled-bg);color:var(--action-disabled-fg);border:1px solid var(--action-disabled-border);box-shadow:none;cursor:not-allowed;transform:none}
+@media(hover:hover) and (pointer:fine){button.btn.intent-primary:not(:disabled):not([aria-disabled=true]):hover{background:var(--accent-strong)}}
+:root button.btn:disabled:not([data-pending=true]){opacity:1;background:var(--action-disabled-bg);color:var(--action-disabled-fg);border:1px solid var(--action-disabled-border);box-shadow:none;cursor:not-allowed;transform:none}
 button.btn[data-pending=true]:disabled{opacity:1;cursor:progress;transform:none}
 button.btn:is(.intent-positive,.intent-danger,.intent-warning):focus-visible{outline-color:var(--accent);outline-offset:3px}
 .service-memory{margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--field);min-width:0}
@@ -140,5 +142,31 @@ button.intent-danger:not(.btn){color:var(--action-danger-bg)}button.intent-posit
 .fleet-native-failure{margin-top:12px;border:1px solid color-mix(in srgb,var(--danger) 20%,var(--line));border-radius:12px;padding:12px;background:color-mix(in srgb,var(--danger) 4%,var(--field))}.fleet-native-failure>summary{cursor:pointer;font-size:12px;font-weight:600;min-height:28px}.fleet-native-failure>pre{font-size:11px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto;margin:9px 0 0}
 
 .fleet-verified-scope{margin:15px 0;padding:15px;border:1px solid var(--line);border-radius:13px;background:var(--field)}.fleet-verified-scope>strong{font-size:12px}.fleet-verified-scope>.panel-description{font-size:12px;line-height:1.7;margin-top:6px}.fleet-verified-scope .service-details{margin-bottom:0}
+/* Each dialog keeps its own scroll range inside the visible, safe viewport. */
+dialog:is(.modal,.confirmation,.file-actions,.file-folder-picker,.drawer){overscroll-behavior:contain;scroll-padding-block:20px}
+dialog:is(.modal,.confirmation){max-height:calc(100vh - max(28px,env(safe-area-inset-top)) - max(28px,env(safe-area-inset-bottom)));max-height:calc(100dvh - max(28px,env(safe-area-inset-top)) - max(28px,env(safe-area-inset-bottom)))}
+dialog.confirmation{overflow:auto}
+dialog.confirmation :is(h2,p),.modal-head>div:first-child{min-width:0;overflow-wrap:anywhere}
+.modal .form-actions,.confirmation .confirm-actions{flex-wrap:wrap}
+:is(.modal .form-actions,.confirmation .confirm-actions,.file-folder-picker .folder-picker-footer)>.btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+dialog.palette{margin-top:15vh;margin-top:15dvh;max-height:calc(85vh - max(16px,env(safe-area-inset-bottom)));max-height:calc(85dvh - max(16px,env(safe-area-inset-bottom)));overscroll-behavior:contain}
+dialog.palette[open]{display:flex;flex-direction:column}
+.palette>.palette-input,.palette>.palette-footer{flex-shrink:0}
+.palette>.palette-results{min-height:0;overscroll-behavior:contain}
+.fleet-ssh-card>summary:focus-visible{outline:2px solid var(--system-focus,var(--accent));outline-offset:-4px;border-radius:inherit}
+.service-details>summary:focus-visible,.fleet-native-failure>summary:focus-visible{outline:2px solid var(--system-focus,var(--accent));outline-offset:2px;border-radius:5px}
+@media(hover:none),(pointer:coarse){.service-details>summary,.fleet-native-failure>summary{min-height:44px}}
+@media(max-width:720px){
+ dialog:is(.modal,.confirmation){max-height:calc(100vh - max(12px,env(safe-area-inset-top)) - max(12px,env(safe-area-inset-bottom)));max-height:calc(100dvh - max(12px,env(safe-area-inset-top)) - max(12px,env(safe-area-inset-bottom)))}
+ dialog.palette{margin-top:10vh;margin-top:10dvh;max-height:calc(90vh - max(16px,env(safe-area-inset-bottom)));max-height:calc(90dvh - max(16px,env(safe-area-inset-bottom)))}
+ .drawer>.drawer-head{padding-top:max(23px,env(safe-area-inset-top))}
+ .drawer>.drawer-body{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+}
+@media(forced-colors:active){
+ input[type=radio]{appearance:auto;-webkit-appearance:radio;background:Canvas;border-color:ButtonBorder}
+ input[type=radio]:checked{background:Canvas;border-color:ButtonBorder}
+ button[data-busy=true]::after{border-color:ButtonText;border-right-color:transparent}
+ .workspace-loading-ring{border-color:GrayText;border-top-color:Highlight}
+}
 /* Compact host zram measurements; all selectors stay inside memory controls. */
 :is(.service-memory,.service-operation[data-memory-result]) .memory-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:18px 0}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics>div{min-width:0}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics dt{font-size:11px;color:var(--muted)}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics dd{margin:5px 0 0;font-size:18px;font-weight:650;line-height:1.45;letter-spacing:-.3px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics>div:last-child dd{font-size:14px;letter-spacing:0;padding-top:3px}.service-memory .memory-empty{margin:14px 0;font-size:13px;color:var(--muted)}.service-memory .memory-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}.service-memory .memory-footer .actions{gap:8px;flex-wrap:wrap}.service-memory .memory-footer .btn{font-size:11px;min-height:38px}.service-memory .memory-footer .icon{width:15px;height:15px}.service-memory .memory-observation{display:flex;gap:4px 9px;flex-wrap:wrap;align-items:center;font-size:10px}.service-memory .memory-partial{color:var(--muted)}.service-memory .service-feedback{margin:0 0 14px;font-size:11px}.service-memory .service-section-heading{align-items:center;margin-bottom:0}.service-memory .service-section-heading h3{font-size:14px}.service-memory .service-section-heading .badge{font-size:10px}.service-memory [data-action=memory-status][data-pending=true]>.icon{animation:memory-refresh-spin 1s linear infinite}@keyframes memory-refresh-spin{to{transform:rotate(360deg)}}@media(max-width:420px){:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics{gap:9px;margin:15px 0}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics dd{font-size:16px}:is(.service-memory,.service-operation[data-memory-result]) .memory-metrics>div:last-child dd{font-size:12px}.service-memory .memory-footer{gap:10px}.service-memory .memory-footer .actions{width:100%}.service-memory .memory-footer .btn{flex:1;min-height:42px;padding:9px 10px}.service-memory .service-section-heading{flex-wrap:nowrap;gap:8px}}@media(prefers-reduced-motion:reduce){.service-memory [data-action=memory-status][data-pending=true]>.icon{animation:none}}
