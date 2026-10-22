@@ -4,14 +4,18 @@ umask 077
 # Installs only vortex-node.service; panel source, unit, account and data stay separate.
 [[ $EUID -eq 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
 ADVERTISE_ENDPOINT=
+GAME_PUBLIC_IP=
+GAME_PUBLIC_IP_MODE=auto
 AGENT_PORT=8443
 RESUME_LEDGER_SHA=
 while [[ $# -gt 0 ]]; do
   case $1 in
     --endpoint) [[ $# -ge 2 ]] || exit 1; ADVERTISE_ENDPOINT=$2; shift 2;;
+    --game-public-ip) [[ $# -ge 2 && $GAME_PUBLIC_IP_MODE == auto ]] || exit 1; GAME_PUBLIC_IP=$2; GAME_PUBLIC_IP_MODE=explicit; shift 2;;
+    --no-game-public-ip-inference) [[ $GAME_PUBLIC_IP_MODE == auto ]] || exit 1; GAME_PUBLIC_IP_MODE=disabled; shift;;
     --port) [[ $# -ge 2 ]] || exit 1; AGENT_PORT=$2; shift 2;;
     --resume-ledger) [[ $# -ge 2 && $2 =~ ^[a-f0-9]{64}$ && -z $RESUME_LEDGER_SHA ]] || exit 1; RESUME_LEDGER_SHA=$2; shift 2;;
-    *) echo 'Usage: sudo bash deploy/install-node.sh [--endpoint https://YOUR_VPS_IP:8443] [--port 8443] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; exit 1;;
+    *) echo 'Usage: sudo bash deploy/install-node.sh [--endpoint https://YOUR_VPS_IP:8443] [--game-public-ip IPV4 | --no-game-public-ip-inference] [--port 8443] [--resume-ledger REVIEWED_CAPTURE_SHA256]' >&2; exit 1;;
   esac
 done
 [[ $AGENT_PORT =~ ^[0-9]{4,5}$ && $AGENT_PORT -ge 1024 && $AGENT_PORT -le 65535 ]] || { echo 'Agent port must be an integer from 1024 to 65535.' >&2; exit 1; }
@@ -438,6 +442,32 @@ npm ci --cache "$RECOVERY_DIR/npm-cache" --omit=dev --ignore-scripts
 chown -hR root:root "$INSTALL_DIR"
 chmod 0755 "$INSTALL_DIR"
 chmod -R go-w "$INSTALL_DIR"
+# BEGIN worker network configuration
+prepare_node_network_config() {
+  NODE_NETWORK_ARGS=()
+  if [[ -n $ADVERTISE_ENDPOINT ]]; then
+    ADVERTISE_ENDPOINT=$("$NODE_BIN" --input-type=module -e 'import {validateNodeEndpoint} from "./server/node-transport.js";const value=validateNodeEndpoint(process.argv[1]);if(!value.startsWith("https:"))throw Error("HTTPS endpoint required");process.stdout.write(value);' "$ADVERTISE_ENDPOINT") || return 1
+  fi
+  if [[ $GAME_PUBLIC_IP_MODE == explicit ]]; then
+    "$NODE_BIN" --input-type=module -e 'import {validateGamePublicAddress} from "./server/bedrock-network.js";validateGamePublicAddress(process.argv[1]);' "$GAME_PUBLIC_IP" || return 1
+  fi
+  if [[ -e $CONFIG_FILE ]]; then
+    # Reinstallation never mutates a credential-bearing existing config. A
+    # deliberate change is available separately in the private node CLI.
+    if [[ $GAME_PUBLIC_IP_MODE == explicit ]]; then
+      "$NODE_BIN" --input-type=module -e 'import {readNodeConfig} from "./server/node-cli.js";const config=readNodeConfig(process.argv[1]);if(config.gamePublicAddress!==process.argv[2])throw Error("Existing game public IP differs. Update it with node-cli.js initialize --config /etc/vortex-node.json --game-public-ip IPV4, then retry; the installer preserved the existing configuration.");' "$CONFIG_FILE" "$GAME_PUBLIC_IP" || return 1
+    fi
+    return 0
+  fi
+  local effective_game_ip=$GAME_PUBLIC_IP
+  if [[ $GAME_PUBLIC_IP_MODE == auto && -n $ADVERTISE_ENDPOINT ]]; then
+    effective_game_ip=$("$NODE_BIN" --input-type=module -e 'import {isPublicGameAddress} from "./server/bedrock-network.js";const value=new URL(process.argv[1]).hostname;process.stdout.write(isPublicGameAddress(value)?value:"");' "$ADVERTISE_ENDPOINT") || return 1
+  fi
+  [[ -z $ADVERTISE_ENDPOINT ]] || NODE_NETWORK_ARGS+=(--endpoint "$ADVERTISE_ENDPOINT")
+  [[ -z $effective_game_ip ]] || NODE_NETWORK_ARGS+=(--game-public-ip "$effective_game_ip")
+}
+prepare_node_network_config
+# END worker network configuration
 if [[ ! -e $CONFIG_FILE ]]; then
   NEW_TLS=true
   if [[ ! -d $TLS_DIR ]]; then install -d -m 0700 "$TLS_DIR"; fi
@@ -446,11 +476,10 @@ if [[ ! -e $CONFIG_FILE ]]; then
   [[ ! -e $TLS_DIR/tls.key && ! -e $TLS_DIR/tls.crt ]] || { echo 'TLS files already exist without a node config. Review them before initializing.' >&2; false; }
   openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 365 -subj '/CN=Vortex Node' -keyout "$TLS_DIR/tls.key" -out "$TLS_DIR/tls.crt" 2>/dev/null
   chmod 0600 "$TLS_DIR/tls.key" "$TLS_DIR/tls.crt"
-  "$NODE_BIN" server/node-cli.js initialize --config "$CONFIG_FILE" --data-dir /var/lib/vortex-node --host 0.0.0.0 --port "$AGENT_PORT" --cert "$TLS_DIR/tls.crt" --key "$TLS_DIR/tls.key"
+  "$NODE_BIN" server/node-cli.js initialize --config "$CONFIG_FILE" --data-dir /var/lib/vortex-node --host 0.0.0.0 --port "$AGENT_PORT" --cert "$TLS_DIR/tls.crt" --key "$TLS_DIR/tls.key" "${NODE_NETWORK_ARGS[@]}"
 fi
 # Validate privately before stopping a working node; never print its token.
 "$NODE_BIN" --input-type=module -e 'import {readNodeConfig} from "./server/node-cli.js"; const c=readNodeConfig(process.argv[1]); if(!c.tls)throw Error("Installer requires HTTPS");' "$CONFIG_FILE"
-if [[ -n $ADVERTISE_ENDPOINT ]]; then "$NODE_BIN" --input-type=module -e 'import {validateNodeEndpoint} from "./server/node-transport.js"; if(!validateNodeEndpoint(process.argv[1]).startsWith("https:"))throw Error("HTTPS endpoint required");' "$ADVERTISE_ENDPOINT"; fi
 CHANGED_SERVICE=true
 if [[ $PREVIOUS_ACTIVE == true ]]; then systemctl stop vortex-node; fi
 ln -sfn -- "$INSTALL_DIR" "$INSTALL_ROOT/current.next"

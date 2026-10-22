@@ -1,6 +1,9 @@
 import {createServerAppearance,publicServerAppearance} from './server-appearance.js';
 import { createBedrockRuntime } from './bedrock-runtime.js';
-import { allowedBedrockTransports, selectBedrockTransport } from './bedrock-transport.js';
+import { createBedrockNetworkPolicy } from './bedrock-network.js';
+import { createGameNetworkAccess } from './game-network-access.js';
+import { panelFirewallScope } from './panel-layout.js';
+import { allowedBedrockTransports, selectBedrockTransport, selectNewBedrockTransport, BEDROCK_TRANSPORT_POLICY } from './bedrock-transport.js';
 import { createBedrockPortWait, isPrimaryBedrockTcpBindError, bedrockPortWaitIssue, bedrockPortWaitMessage } from './bedrock-port-wait.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -88,10 +91,12 @@ export async function ensureServerIdentity(runRoot) {
   return destination;
 }
 
-export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, bedrockController, bedrockRuntimeRole = 'panel', hostReader, portAllocator, bedrockPortWaitController, protectedTcpPorts = [] }) {
+export async function createManager({ store, dataDir, emit = () => {}, reserveRatio = 0.1, resourceController = createResourceController({ reserveRatio }), storageController = createStorageController({ dataDir }), networkMetrics = createNetworkMetrics({ dataDir }), applicationController, bedrockController, bedrockRuntimeRole = 'panel', hostReader, portAllocator, bedrockPortWaitController, bedrockNetworkPolicy = createBedrockNetworkPolicy(), networkAccessController, protectedTcpPorts = [] }) {
   const applicationRuntime = applicationController || createApplicationRuntime({dataDir,resourceController,storageController});
   const bedrockRuntime = bedrockController || createBedrockRuntime({ role: bedrockRuntimeRole });
   const bedrockPortWait = bedrockPortWaitController || createBedrockPortWait();
+  const gameNetworkAccess = networkAccessController || createGameNetworkAccess({ scope: panelFirewallScope(dataDir) });
+  if (typeof bedrockNetworkPolicy?.automaticUdpPorts !== 'function') throw new TypeError('A Bedrock network policy is required.');
   const startWaits = new Map();
   const allocatePorts = portAllocator || createPortAllocator({ protectedPorts: [...protectedTcpPorts, Number(process.env.PORT)].filter(port => Number.isInteger(port) && port > 0 && port <= 65535) });
   let applicationControl = {supported:false,engine:'bubblewrap',runtimes:[],reason:'Application runtime has not been checked.'};
@@ -540,8 +545,8 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       await fs.chmod(path.join(staging, 'bedrock_server'), 0o700);
       const packageProperties = parseProperties(await fs.readFile(path.join(packageInfo.directory, 'server.properties'), 'utf8'));
       const properties = { ...packageProperties, ...parseProperties(await fs.readFile(path.join(staging, 'server.properties'), 'utf8')) };
-      const transport = selectBedrockTransport({ ...selection, packageTransport: packageProperties.transport || 'raknet', savedTransport: updating ? server.transport : undefined });
-      const udpPorts = transport === 'nethernet' ? (updating ? properties['server-udp-ports'] : null) || server.udpPorts || defaultUdpPorts(server.port, server.maxPlayers) : null;
+      const transport = !updating || server.transport === 'nethernet' ? selectNewBedrockTransport({ ...selection, packageTransport: packageProperties.transport, actualPackage: true }) : selectBedrockTransport({ ...selection, packageTransport: packageProperties.transport || 'raknet', savedTransport: server.transport });
+      const udpPorts = transport === 'nethernet' ? (updating ? properties['server-udp-ports'] : null) || server.udpPorts || (updating ? defaultUdpPorts(server.port, server.maxPlayers) : bedrockNetworkPolicy.automaticUdpPorts(server.port, server.maxPlayers)) : null;
       const network = validateNetwork(networkServers(), server.id, { ...server, transport, udpPorts, debugPort: debuggerPort(properties) });
       pendingNetworks.set(server.id, network);
       Object.assign(properties, updating ? { 'server-port': String(server.port), 'server-portv6': String(server.portV6), transport, 'enable-lan-visibility': 'false' } : defaultProperties({ ...server, ...network }));
@@ -559,6 +564,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       persist();
       committed = true;
       const warnings = [];
+      if (!updating) { const access = await ensureGameNetwork(server, { warningOnly: true }); if (access?.status === 'warning') warnings.push(access.message); }
       if (updating) try { await fs.rm(rollback, { recursive: true, force: true }); }
       catch (error) { warnings.push(`Đã cập nhật server; còn dữ liệu rollback tại ${path.basename(rollback)} cần kiểm tra: ${error.message}`); }
       log(server, `Bedrock ${selection.version} ${updating ? 'đã cập nhật; dữ liệu thế giới và cấu hình được giữ lại' : 'đã cài đặt'}.`);
@@ -626,6 +632,10 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     const excludedPorts = [];
     for (let attempt = 0; attempt < 8; attempt++) {
       if (mode === 'auto') Object.assign(server, await allocatePorts({ kind: appKind(server), transport: isApp(server) ? 'auto' : server.transport, maxPlayers: server.maxPlayers, servers: networkServers, excludedPorts }));
+      if (!isApp(server) && server.transport === 'nethernet') {
+        server.udpPorts = bedrockNetworkPolicy.automaticUdpPorts(server.port, server.maxPlayers);
+        server.udpMode = 'auto';
+      }
       assertOpen(); validateNetwork(networkServers(), server.id, server);
       assertAvailablePanelPorts(server, protectedTcpPorts);
       pendingNetworks.set(server.id, { kind: appKind(server), port: server.port, portV6: server.portV6, transport: server.transport, udpPorts: server.udpPorts, debugPort: server.debugPort });
@@ -641,6 +651,17 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         excludedPorts.push(server.port, ...(!isApp(server) ? [server.portV6, ...(server.transport !== 'raknet' ? parseUdpPorts(server.udpPorts) : [])] : []));
       }
     }
+  }
+
+  async function ensureGameNetwork(server, { warningOnly = false } = {}) {
+    let result;
+    try { result = await gameNetworkAccess.ensure(server, () => get(server.id)); }
+    catch (error) {
+      if (!warningOnly || !['GAME_NETWORK_BLOCKED', 'GAME_NETWORK_CHANGED'].includes(error?.code)) throw error;
+      result = { status: 'warning', verified: false, message: error.message };
+    }
+    if (result?.status === 'warning') log(server, result.message, 'warn');
+    return result;
   }
 
   const startSnapshot = server => JSON.stringify([server.id, appKind(server), server.version, server.channel, server.port, server.portV6, server.transport, server.udpPorts, server.debugPort ?? null, serverPolicy(server), storagePolicy(server), runDirectory(server)]);
@@ -689,6 +710,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     if (!['raknet', 'nethernet'].includes(transport) || transport !== (server.transport || 'raknet') || properties['enable-lan-visibility'] !== 'false' || Number(properties['server-port']) !== server.port || Number(properties['server-portv6']) !== server.portV6 || (transport === 'nethernet' && properties['server-udp-ports'] !== server.udpPorts) || debuggerPort(properties) !== (server.debugPort ?? null)) fail('Cấu hình cổng hoặc transport không khớp. Hãy lưu lại cấu hình qua panel.', 409);
     }
     checkPendingStart();
+    if (!isApp(server)) { await ensureGameNetwork(server); checkPendingStart(); }
     try { await probePorts(server, { signal: portWaitToken?.controller.signal }); }
     catch (error) {
       if (isApp(server) || server.transport !== 'nethernet' || portWaitToken || !store.data.servers.includes(server) || processes.has(server.id) || !isPrimaryBedrockTcpBindError(error, server.port)) throw error;
@@ -981,17 +1003,18 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     } };
   }
   function allowedTransports(server) {
+    if (server.transport === 'nethernet') return ['nethernet'];
     const item = store.data.versions.find(value => value.version === server.version && value.channel === server.channel);
     return allowedBedrockTransports({ version: server.version, packageTransport: item?.transport || server.transport });
   }
   function configurationResult(server, values) {
     if (isApp(server)) return { server: publicServer(server), properties: {}, resourcePolicy: serverPolicy(server), resourceControl, storageControl, hostCapacity: lastHost?.capacity || null, resources: serverResources(server), network: { port: server.port, transport: 'tcp', requiresStopped: true, warnings: [] } };
-    let recommendedUdpPorts = null;
+    let recommendedUdpPorts = null, legacyUdpPorts = null;
     const port = Number(values['server-port']), maxPlayers = Number(values['max-players']);
-    if (Number.isInteger(port) && port >= 1024 && port <= 65535 && Number.isInteger(maxPlayers) && maxPlayers >= 1 && maxPlayers <= 1000) try { recommendedUdpPorts = defaultUdpPorts(port, maxPlayers); } catch {}
+    if (Number.isInteger(port) && port >= 1024 && port <= 65535 && Number.isInteger(maxPlayers) && maxPlayers >= 1 && maxPlayers <= 1000) try { legacyUdpPorts = defaultUdpPorts(port, maxPlayers); recommendedUdpPorts = bedrockNetworkPolicy.automaticUdpPorts(port, maxPlayers); } catch {}
     let udpPortCount = 0; const warnings = [];
     if (values.transport === 'nethernet') try { udpPortCount = parseUdpPorts(values['server-udp-ports']).length; } catch (error) { warnings.push(error.message); }
-    const udpMode = server.udpMode || (values['server-udp-ports'] === recommendedUdpPorts ? 'auto' : 'custom');
+    const udpMode = server.udpMode || (values['server-udp-ports'] === legacyUdpPorts ? 'auto' : 'custom');
     return { server: publicServer(server), properties: values, resourcePolicy: serverPolicy(server), resourceControl, storageControl, hostCapacity: lastHost?.capacity || null, resources: serverResources(server), network: { udpMode, recommendedUdpPorts, udpPortCount, allowedTransports: allowedTransports(server), debugPort: debuggerPort(values), requiresStopped: true, warnings } };
   }
   async function applicationCapabilities({ refresh = false } = {}) {
@@ -1095,10 +1118,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     let udpMode = input.udpMode || configurationResult(server, original).network.udpMode;
     // Direct edits in the advanced editor explicitly choose a custom mapping.
     if (input.udpMode === undefined && input.properties?.['server-udp-ports'] !== undefined && String(input.properties['server-udp-ports']) !== original['server-udp-ports']) udpMode = 'custom';
-    if (proposed.transport === 'nethernet' && udpMode === 'auto' && (input.properties !== undefined || input.udpMode === 'auto')) proposed['server-udp-ports'] = defaultUdpPorts(Number(proposed['server-port']), Number(proposed['max-players']));
+    const automaticNetworkChange = input.udpMode === 'auto' || ['server-port', 'max-players', 'transport'].some(key => input.properties?.[key] !== undefined && String(input.properties[key]) !== original[key]);
+    if (proposed.transport === 'nethernet' && udpMode === 'auto' && automaticNetworkChange) proposed['server-udp-ports'] = bedrockNetworkPolicy.automaticUdpPorts(Number(proposed['server-port']), Number(proposed['max-players']));
     const values = validateBedrockProperties(proposed);
     const changed = Object.entries(values).some(([key, value]) => original[key] !== value);
     const allowed = allowedTransports(server);
+    if (changed && server.transport === 'nethernet') selectNewBedrockTransport({ version: server.version, packageTransport: values.transport || 'raknet' });
     if (changed && !allowed.includes(values.transport || 'raknet')) fail(`Phiên bản đã cài chỉ được cấu hình transport: ${allowed.join(', ')}. Panel dùng NetherNet từ Bedrock 1.26.60; Mojang đã đánh dấu RakNet deprecated.`);
     const network = validateNetwork(networkServers(), server.id, { port: values['server-port'], portV6: values['server-portv6'], transport: values.transport || 'raknet', udpPorts: values['server-udp-ports'], debugPort: debuggerPort(values) });
     const fields = { ...settings, ...network, maxPlayers: Number(values['max-players']), udpMode };
@@ -1918,7 +1943,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     },
     async dashboard() {
       resourceControl = await resourceController.capabilities();
-      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { bedrockRuntime: await bedrockRuntime.capabilities(), linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
+      return { host: await hostInfo(), servers: manager.listServers(), jobs: manager.jobs(), activity: manager.activity(), versions: versionService.metadata(), capabilities: { bedrockRuntime: await bedrockRuntime.capabilities(), bedrockTransportPolicy: BEDROCK_TRANSPORT_POLICY, linux: process.platform === 'linux', root: process.getuid?.() === 0, hostTerminal: process.platform === 'linux' && process.env.ALLOW_HOST_TERMINAL === 'true', portAllocation: process.platform === 'linux' || portAllocator ? PORT_ALLOCATION_POLICY : { supported: false }, resourceControl, applicationRuntime: await applicationCapabilities(), storageControl: { ...storageControl, packageWorkspaceBytes: PACKAGE_WORKSPACE_BYTES }, networkMetrics: networkMetrics.capabilities() }, history: [...history] };
     },
     listServers: () => store.data.servers.map(publicServer),
     getServer: id => publicServer(get(id)),
@@ -1953,7 +1978,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       const portMode = creationPortMode(input);
       const port = input.port ?? 19132;
       const catalogItem = store.data.versions.find(item => item.version === selection.version && item.channel === selection.channel);
-      const transport = selectBedrockTransport({ ...selection, packageTransport: catalogItem.transport });
+      const transport = selectNewBedrockTransport({ ...selection, packageTransport: catalogItem.transport });
       const ports = portMode === 'auto' ? { port: null, portV6: null, transport, udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port, portV6: input.portV6 ?? 19133, transport, udpPorts: transport === 'nethernet' ? defaultUdpPorts(port, maxPlayers) : null });
       const server = { id: randomUUID(), name: input.name.trim(), ...selection, ...ports, maxPlayers, status: 'installing', players: 0, createdAt: now(), autoRestart: true, autoStart: false, backupRetention: 10, messageLanguage: 'en', worldVoiceEnabled: true, resourcePolicy, storagePolicy: storage, admissionReservation: { ...SHARED_ADMISSION_RESERVATION }, eulaAcceptedAt: now(), backups: [] };
       { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
@@ -2010,6 +2035,15 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       for (const values of [logBuffers, consoleRuns, logWriters, serverMetrics, storageMetrics, applicationProjects, applicationProjectInstallStates]) values.delete(id);
       storagePaused.delete(id); deferredLogs.delete(id);
       const result = await finishDeletion(quarantine);
+      if (!isApp(server)) {
+        let access;
+        try { access = await gameNetworkAccess.release?.(server); }
+        catch { access = { status: 'warning', message: 'The server was deleted, but its owned host firewall rules could not be fully confirmed as removed. Review the host firewall.' }; }
+        if (access?.status === 'warning') {
+          result.warnings = [...(result.warnings || []), access.message];
+          result.firewallCleanupPending = server.id;
+        }
+      }
       if (fixedStorage) {
         try { await storageController.remove(server); }
         catch (error) { result.warnings = [...(result.warnings || []), `Server deleted; its private storage image requires cleanup: ${server.id}: ${error.message}`]; result.storageCleanupPending = server.id; }
@@ -2049,8 +2083,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
       const maxPlayers = source.maxPlayers;
       const sourceProperties = await properties(source);
       if (debuggerPort(sourceProperties) !== null) fail('Hãy tắt inbound script debugger trước khi clone để tránh trùng cổng debugger.', 409);
+      const transport = selectNewBedrockTransport({ version: source.version, packageTransport: source.transport === 'nethernet' && sourceProperties.transport === 'nethernet' ? 'nethernet' : undefined });
       const portMode = creationPortMode(input);
-      const network = portMode === 'auto' ? { port: null, portV6: null, transport: source.transport || 'raknet', udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port: input.port, portV6: input.portV6, transport: source.transport || 'raknet', udpPorts: source.transport === 'nethernet' ? defaultUdpPorts(input.port, maxPlayers) : null });
+      const network = portMode === 'auto' ? { port: null, portV6: null, transport, udpPorts: null, debugPort: null } : validateNetwork(networkServers(), null, { port: input.port, portV6: input.portV6, transport, udpPorts: defaultUdpPorts(input.port, maxPlayers) });
       const target = { id: randomUUID(), name: input.name.trim(), version: source.version, channel: source.channel, ...network, maxPlayers, status: 'installing', players: 0, createdAt: now(), autoRestart: source.autoRestart, autoStart: false, backupRetention: source.backupRetention || 10, messageLanguage: serverMessageLanguage(source), worldVoiceEnabled: serverWorldVoiceEnabled(source), resourcePolicy: serverPolicy(source), storagePolicy: normalizeStoragePolicy(input.storagePolicy ?? (source.storagePolicy?.mode === 'fixed' ? source.storagePolicy : undefined)), admissionReservation: { ...SHARED_ADMISSION_RESERVATION }, eulaAcceptedAt: now(), backups: [], clonedFrom: source.id, runtimeFiles: [...(source.runtimeFiles || [])] };
       { storageControl = await storageController.capabilities(); if (!storageControl.supported) fail(storageControl.reason || 'Hard storage volumes are unavailable on this node.', 409); }
       return capacityGate.run({ candidate: target }, async assessment => {
@@ -2084,7 +2119,9 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
             if (target.transport === 'nethernet') await ensureServerIdentity(staging);
             await validateBedrockPackage(staging);
             await fs.rename(staging, runDirectory(target)); target.status = 'stopped'; target.error = null; persist();
+            const access = await ensureGameNetwork(target, { warningOnly: true });
             log(target, `Đã nhân bản ${source.name}; tạo identity riêng khi Bedrock khởi động.`);
+            return access?.status === 'warning' ? { warnings: [access.message] } : undefined;
           } finally { await fs.rm(staging, { recursive: true, force: true }).catch(() => {}); }
       }, 'server.clone', `${source.name} → ${target.name}`, source);
       return { server: publicServer(target), job: record };

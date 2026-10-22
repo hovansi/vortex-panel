@@ -1,0 +1,264 @@
+name: NetherNet NAT regression
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-nat:
+    name: Source NAT contracts / ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - name: Check out the exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Verify NAT policy, allocation transactions and trusted node context
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test "$(node -p 'process.arch')" = "$EXPECTED_ARCH"
+          export SOURCE_ROOT="$(pwd -P)"
+          TEST_ROOT=$(mktemp -d "$RUNNER_TEMP/vortex-nat-ci.XXXXXX")
+          cleanup() {
+            if [[ -d "$TEST_ROOT" && "$(dirname -- "$TEST_ROOT")" == "$(realpath -e -- "$RUNNER_TEMP")" && "$(basename -- "$TEST_ROOT")" == vortex-nat-ci.* ]]; then
+              rm -f -- "$TEST_ROOT/nat-regression.mjs"
+              rmdir -- "$TEST_ROOT"
+            fi
+          }
+          trap cleanup EXIT
+          # Inert headers and opaque world bytes exercise source transactions.
+          # No Bedrock process, native quota, firewall or cloud API is invoked.
+          cat > "$TEST_ROOT/nat-regression.mjs" <<'NODE'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          import { randomUUID } from 'node:crypto';
+          import { createRequire } from 'node:module';
+          import { pathToFileURL } from 'node:url';
+          import { Readable } from 'node:stream';
+          
+          const source = path.resolve(process.env.SOURCE_ROOT || process.cwd());
+          const load = name => import(pathToFileURL(path.join(source, 'server', name)).href);
+          const { createBedrockNetworkPolicy, isPublicGameAddress } = await load('bedrock-network.js');
+          const { createManager } = await load('manager.js');
+          const { createStore } = await load('store.js');
+          const { createNodes } = await load('nodes.js');
+          const { createNodeSecrets } = await load('node-secrets.js');
+          const { createRemoteServerProxy } = await load('node-routes.js');
+          const { initializeNodeConfig, readNodeConfig } = await load('node-cli.js');
+          const { NODE_RUNTIME_FILES } = await load('node-runtime.js');
+          const { BEDROCK_TRANSPORT_POLICY } = await load('bedrock-transport.js');
+          const { PORT_ALLOCATION_POLICY } = await load('port-allocation.js');
+          const { defaultUdpPorts, parseProperties, serializeProperties } = await load('safety.js');
+          const { normalizeStoragePolicy, GIB } = await load('storage-policy.js');
+          const express = createRequire(path.join(source, 'package.json'))('express');
+          const publicAddress = '8.8.8.8', alternateAddress = '1.1.1.1';
+          const privateNic = { eth0: [{ address: '10.0.0.101', family: 'IPv4', internal: false }] };
+          const natPolicy = () => createBedrockNetworkPolicy({ publicAddress, interfaces: privateNic });
+          const mapped = (port, players = 10) => { const range = defaultUdpPorts(port, players); return `${publicAddress}:${range}:${range}`; };
+          const actualFetch = globalThis.fetch;
+          globalThis.fetch = (url, ...args) => {
+            const parsed = new URL(String(url));
+            if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') throw new Error('External networking is disabled in this source regression suite.');
+            return actualFetch(url, ...args);
+          };
+          async function temporary(t, prefix, beforeCleanup = async () => {}) {
+            const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+            t.after(async () => {
+              await beforeCleanup();
+              assert.equal(path.dirname(directory), path.resolve(os.tmpdir()));
+              assert.ok(path.basename(directory).startsWith(prefix));
+              await fs.rm(directory, { recursive: true, force: true });
+            });
+            return directory;
+          }
+          test('RFC1918 NAT maps the entire allocated UDP pool without reducing player capacity', () => {
+            assert.equal(natPolicy().automaticUdpPorts(33000, 100), mapped(33000, 100));
+            assert.equal(natPolicy().automaticUdpPorts(33200, 10), mapped(33200));
+            assert.equal(natPolicy().capability.automaticNatMapping, true);
+          });
+          test('a public address already on a NIC keeps ordinary unmapped ports', () => {
+            const policy = createBedrockNetworkPolicy({ publicAddress, interfaces: { ...privateNic, wan: [{ address: publicAddress, family: 4, internal: false }] } });
+            assert.equal(policy.automaticUdpPorts(33000, 100), defaultUdpPorts(33000, 100));
+            assert.equal(policy.capability.automaticNatMapping, false);
+          });
+          test('hostnames, private addresses and malformed address inputs cannot become public NAT mappings', () => {
+            for (const address of [undefined, '', 'worker.example.test', '10.0.0.1', '100.64.1.1', '127.0.0.1', '169.254.1.1', '192.168.1.1', '198.51.100.1', '203.0.113.1', '224.0.0.1', '::1', '8.8.8.8:19132', ' 8.8.8.8']) {
+              assert.equal(isPublicGameAddress(address), false, String(address));
+              assert.equal(createBedrockNetworkPolicy({ publicAddress: address, interfaces: privateNic }).automaticUdpPorts(33000, 10), defaultUdpPorts(33000, 10));
+            }
+          });
+          test('unreadable NIC state or missing private interface does not guess a mapping', () => {
+            for (const interfaces of [null, {}, { lo: [{ address: '127.0.0.1', family: 'IPv4', internal: true }] }, () => { throw new Error('unavailable'); }]) {
+              assert.equal(createBedrockNetworkPolicy({ publicAddress, interfaces }).automaticUdpPorts(33000, 10), defaultUdpPorts(33000, 10));
+            }
+          });
+          
+          // Ordinary private directories only: no mount, quota, service or firewall writes.
+          function directoryStorage(dataDir) {
+            const base = path.resolve(dataDir, 'servers');
+            const directory = server => { const target = path.resolve(base, server.id); assert.equal(path.dirname(target), base); return target; };
+            const capabilities = () => ({ supported: true, fixedSupported: true, testFixture: true, hardEnforced: false, enforcement: null, minGiB: 1, maxGiB: 1024 });
+            const provision = async server => { await fs.mkdir(directory(server), { recursive: true, mode: 0o700 }); return { ok: true, testFixture: true, hardEnforced: false }; };
+            async function bytes(root) {
+              let count = 0;
+              for (const item of await fs.readdir(root, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
+                const name = path.join(root, item.name); if (item.isDirectory()) count += await bytes(name); else if (item.isFile()) count += (await fs.stat(name)).size;
+              }
+              return count;
+            }
+            return { capabilities, initialize: async () => capabilities(), provision, ensureMounted: provision,
+              async stats(server) { const policy = normalizeStoragePolicy(server.storagePolicy, { legacy: true }), usedBytes = await bytes(directory(server)), totalBytes = policy.diskGiB === null ? null : policy.diskGiB * GIB; return { mode: policy.mode, usedBytes, totalBytes, limitBytes: totalBytes, availableBytes: totalBytes === null ? null : Math.max(0, totalBytes - usedBytes), hardEnforced: false, testFixture: true, source: 'ordinary-private-directory', sampledAt: new Date().toISOString() }; },
+              unmount: async () => ({ ok: true, unmounted: false }), remove: async () => ({ ok: true, removed: false }), grow: provision,
+              growthAdditionalBytes: async (server, policy) => Math.max(0, (policy.diskGiB - (server.storagePolicy?.diskGiB || 0)) * GIB), close: async () => {} };
+          }
+          const host = () => ({ cpus: 8, cpuPercent: null, memoryTotal: 16 * GIB, memoryUsed: 2 * GIB, memoryAvailable: 14 * GIB, diskTotal: 100 * GIB, diskAvailable: 90 * GIB, diskUsed: 10 * GIB, platform: 'source-regression', sampledAt: new Date().toISOString() });
+          async function finished(manager, id) {
+            for (let n = 0; n < 1000; n++) {
+              const job = manager.jobs().find(item => item.id === id);
+              if (['completed', 'failed'].includes(job?.status)) { assert.equal(job.status, 'completed', job.message); return job; }
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            throw new Error('Timed out waiting for isolated metadata job.');
+          }
+          async function managerFixture(t, policy = natPolicy()) {
+            let cleanup = async () => {};
+            const dataDir = await temporary(t, 'vortex-nat-manager-', () => cleanup()), store = createStore(dataDir), allocations = [], access = [];
+            let nextPort = 33000, launches = 0;
+            const manager = await createManager({ store, dataDir, hostReader: host, bedrockNetworkPolicy: policy, storageController: directoryStorage(dataDir),
+              networkAccessController: { ensure: async (server, current) => { assert.equal((await current()).id, server.id); access.push({ id: server.id, port: server.port, udpPorts: server.udpPorts }); return { status: 'ready', verified: true }; }, release: async () => ({ status: 'ready', verified: true }) },
+              applicationController: { assertNoPendingBuilds: async () => {}, initialize: async () => {}, capabilities: async () => ({ supported: false, runtimes: [] }), close: async () => {} },
+              bedrockController: { assertReady: async () => ({ supported: true, testFixture: true }), capabilities: async () => ({ supported: true, testFixture: true }), launchPlan: async () => { launches++; throw new Error('Inert packages must never execute.'); } },
+              portAllocator: async input => { const port = nextPort; nextPort += 200; allocations.push(port); return { port, portV6: port + 1, transport: input.transport, udpPorts: defaultUdpPorts(port, input.maxPlayers), debugPort: null }; },
+            });
+            const save = store.save;
+            cleanup = async () => { store.save = save; for (const server of store.data.servers) server.status = 'stopped'; await manager.close(); assert.equal(launches, 0); };
+            const binary = Buffer.alloc(1024); Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]).copy(binary); binary.writeUInt16LE(62, 18);
+            const version = '1.26.52.3', cached = path.join(dataDir, 'packages', 'stable-' + version);
+            await fs.mkdir(cached, { recursive: true }); await fs.writeFile(path.join(cached, 'bedrock_server'), binary);
+            await fs.writeFile(path.join(cached, 'server.properties'), serializeProperties({ transport: 'nethernet', 'server-udp-ports': '19134-19165', 'max-players': 10, 'level-name': 'Main' }));
+            store.data.versions.push({ version, channel: 'stable', cached: true, available: true, transport: 'nethernet', source: 'import', url: null }); store.save();
+            const run = server => path.join(dataDir, 'servers', server.id, 'run');
+            const properties = async server => parseProperties(await fs.readFile(path.join(run(server), 'server.properties'), 'utf8'));
+            async function create(overrides = {}) {
+              const result = await manager.createServer({ name: 'Isolated source contract', version, channel: 'stable', eula: true, maxPlayers: 10, storagePolicy: { mode: 'fixed', diskGiB: 1 }, ...overrides });
+              await finished(manager, result.job.id); return store.data.servers.find(row => row.id === result.server.id);
+            }
+            return { dataDir, store, manager, allocations, access, save, run, properties, create };
+          }
+          test('create automatic mode maps final allocated ports in metadata, properties and firewall hook', async t => {
+            const f = await managerFixture(t), server = await f.create();
+            assert.equal(server.port, 33000); assert.equal(server.udpPorts, mapped(33000)); assert.equal((await f.properties(server))['server-udp-ports'], mapped(33000));
+            assert.equal((await f.manager.configuration(server.id)).network.udpMode, 'auto'); assert.equal(f.access.at(-1).udpPorts, mapped(33000));
+          });
+          test('create manual ports maps its allocation without invoking automatic port selection', async t => {
+            const f = await managerFixture(t), server = await f.create({ portAllocation: 'manual', port: 34200, portV6: 34201 });
+            assert.equal(f.allocations.length, 0); assert.equal(server.udpPorts, mapped(34200)); assert.equal((await f.properties(server))['server-udp-ports'], mapped(34200));
+          });
+          test('direct globally addressed host creates plain allocation rather than a redundant NAT mapping', async t => {
+            const policy = createBedrockNetworkPolicy({ publicAddress, interfaces: { eth0: [{ address: publicAddress, family: 'IPv4', internal: false }] } });
+            const f = await managerFixture(t, policy), server = await f.create(); assert.equal(server.udpPorts, defaultUdpPorts(server.port, 10));
+          });
+          for (const mode of ['auto', 'manual']) test(`clone ${mode} uses destination allocation and preserves source world and custom mapping`, async t => {
+            const f = await managerFixture(t), original = await f.create(), custom = `${alternateAddress}:44000-44031:33002-33033`;
+            await f.manager.saveConfiguration(original.id, { udpMode: 'custom', properties: { 'server-udp-ports': custom } });
+            const world = path.join(f.run(original), 'worlds', 'Main', 'inert-content.bin'); await fs.mkdir(path.dirname(world), { recursive: true }); await fs.writeFile(world, Buffer.from('Opaque user world bytes; never launched.'));
+            const before = await fs.readFile(world), previousProperties = await fs.readFile(path.join(f.run(original), 'server.properties'));
+            const result = await f.manager.cloneServer(original.id, { name: 'Destination source contract', eula: true, ...(mode === 'manual' ? { portAllocation: 'manual', port: 34500, portV6: 34501 } : {}) });
+            await finished(f.manager, result.job.id); const target = f.store.data.servers.find(row => row.id === result.server.id);
+            assert.notEqual(target.port, original.port); assert.equal(target.udpPorts, mapped(target.port)); assert.equal((await f.properties(target))['server-udp-ports'], mapped(target.port));
+            assert.equal(original.udpPorts, custom); assert.deepEqual(await fs.readFile(path.join(f.run(original), 'server.properties')), previousProperties);
+            assert.deepEqual(await fs.readFile(world), before); assert.deepEqual(await fs.readFile(path.join(f.run(target), 'worlds', 'Main', 'inert-content.bin')), before);
+          });
+          test('explicit custom mapping survives unrelated configuration edits', async t => {
+            const f = await managerFixture(t), server = await f.create(), custom = `${alternateAddress}:44000-44031:33002-33033`;
+            await f.manager.saveConfiguration(server.id, { udpMode: 'custom', properties: { 'server-udp-ports': custom } });
+            await f.manager.saveConfiguration(server.id, { properties: { difficulty: 'hard' }, settings: { autoRestart: false } });
+            assert.equal(server.udpPorts, custom); assert.equal((await f.properties(server))['server-udp-ports'], custom); assert.equal(server.udpMode, 'custom');
+          });
+          test('explicit automatic regeneration uses new ports and player capacity', async t => {
+            const f = await managerFixture(t), server = await f.create();
+            await f.manager.saveConfiguration(server.id, { udpMode: 'auto', properties: { 'server-port': '34700', 'server-portv6': '34701', 'max-players': '60' } });
+            assert.equal(server.udpPorts, mapped(34700, 60)); assert.equal((await f.properties(server))['server-udp-ports'], mapped(34700, 60));
+          });
+          test('failed network metadata commit rolls back actual properties and saved allocation', async t => {
+            const f = await managerFixture(t), server = await f.create(), before = await fs.readFile(path.join(f.run(server), 'server.properties')), original = structuredClone(server);
+            f.store.save = () => { throw new Error('Injected isolated commit failure'); };
+            await assert.rejects(f.manager.saveConfiguration(server.id, { udpMode: 'auto', properties: { 'server-port': '34700', 'server-portv6': '34701' } }), /Injected isolated commit failure/);
+            assert.equal(server.port, original.port); assert.equal(server.udpPorts, original.udpPorts); assert.deepEqual(await fs.readFile(path.join(f.run(server), 'server.properties')), before);
+          });
+          
+          async function controllerFixture(t, address = publicAddress) {
+            let cleanup = async () => {};
+            const root = await temporary(t, 'vortex-nat-controller-', () => cleanup()), store = createStore(root), id = randomUUID(), agentId = randomUUID(), token = 'f'.repeat(43);
+            const row = { id, agentId, name: 'Isolated registry contract', endpoint: 'https://worker.example.test:8443', publicAddress: address, location: '', fingerprint: null, maintenance: false, tokenEncrypted: createNodeSecrets(root).seal(token, id), inventory: [], lastSeen: null };
+            store.data.nodes = [row]; store.save(); const requests = [];
+            const request = async (credentials, options) => {
+              assert.equal(credentials.token, token); requests.push(options);
+              const body = options.path === '/api/node/snapshot' ? { service: 'vortex-node', protocol: 1, nodeId: agentId, version: '0.23.15', host: {}, capabilities: { portAllocation: PORT_ALLOCATION_POLICY, bedrockTransportPolicy: BEDROCK_TRANSPORT_POLICY }, servers: [], jobs: [], schedules: [], activity: [] } : { server: { id: randomUUID(), name: 'Upstream contract only', port: 24000, portV6: 24001, transport: 'nethernet', udpPorts: '24002-24033', status: 'stopped', maxPlayers: 10 } };
+              if (!options.stream) return body;
+              return { statusCode: 200, headers: { 'x-vortex-node-id': agentId }, stream: Readable.from([Buffer.from(JSON.stringify(body))]) };
+            };
+            const localManager = { maintenanceStatus: () => null, withActor: (_user, callback) => callback(), dashboard: async () => ({ host: {}, servers: [], capabilities: {} }), listServers: () => [], jobs: () => [], schedules: () => [], activity: () => [] };
+            const nodes = createNodes({ store, localManager, dataDir: root, request }); cleanup = () => nodes.close(); await nodes.refresh(id, { force: true }); assert.equal(nodes.stateOf(row).online, true);
+            return { nodes, id, requests };
+          }
+          const gameHeader = request => Object.fromEntries(Object.entries(request.headers || {}).map(([name, value]) => [name.toLowerCase(), value]))['x-vortex-game-public-ip'];
+          test('remote create derives game IP only from the selected trusted node registry', async t => {
+            const f = await controllerFixture(t);
+            await f.nodes.manager.createServer({ nodeId: f.id, name: 'Contract', version: '1.26.52.3', eula: true, portAllocation: 'auto', gamePublicAddress: alternateAddress });
+            assert.equal(gameHeader(f.requests.find(item => item.path === '/api/servers')), publicAddress);
+          });
+          test('registry hostname or private IP cannot generate an unverified upstream public mapping', async t => {
+            for (const address of ['worker.example.test', '10.0.0.1', '100.64.1.1']) {
+              const f = await controllerFixture(t, address);
+              await f.nodes.manager.createServer({ nodeId: f.id, name: 'Contract', version: '1.26.52.3', eula: true, portAllocation: 'auto' });
+              assert.equal(gameHeader(f.requests.find(item => item.path === '/api/servers')), undefined);
+            }
+          });
+          for (const operation of ['clone', 'configuration']) test(`browser ${operation} header spoof is discarded before upstream mutation`, async t => {
+            const f = await controllerFixture(t), app = express(); app.use(express.json());
+            app.use((req, _res, next) => { req.session = { user: { id: 'isolated-admin', username: 'isolated-admin', role: 'admin', allServers: true, serverIds: [] } }; next(); });
+            app.use('/api', createRemoteServerProxy(f.nodes)); app.use((error, _req, res, _next) => res.status(error.status || 500).json({ error: error.message }));
+            const listener = await new Promise(resolve => { const value = app.listen(0, '127.0.0.1', () => resolve(value)); }); t.after(() => new Promise(resolve => listener.close(resolve)));
+            const response = await fetch(`http://127.0.0.1:${listener.address().port}/api/servers/${f.id}:${randomUUID()}/${operation}`, { method: operation === 'clone' ? 'POST' : 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Vortex-Game-Public-IP': alternateAddress, 'X-Forwarded-Host': alternateAddress }, body: JSON.stringify(operation === 'clone' ? { name: 'Contract clone', eula: true, portAllocation: 'auto' } : { udpMode: 'auto' }) });
+            assert.equal(response.status, 200); assert.equal(gameHeader(f.requests.find(item => item.path.endsWith('/' + operation))), publicAddress);
+          });
+          test('worker configured public address updates without replacing identity, token or data location', async t => {
+            const root = await temporary(t, 'vortex-nat-node-config-'), options = { configFile: path.join(root, 'node.json'), dataDir: path.join(root, 'data'), host: '127.0.0.1', tls: false, gamePublicAddress: publicAddress };
+            const first = initializeNodeConfig(options), result = initializeNodeConfig({ ...options, gamePublicAddress: alternateAddress });
+            assert.deepEqual(result.config, { ...first.config, gamePublicAddress: alternateAddress });
+            const before = await fs.readFile(options.configFile); initializeNodeConfig({ ...options, gamePublicAddress: undefined }); assert.deepEqual(await fs.readFile(options.configFile), before);
+            assert.equal(readNodeConfig(options.configFile).gamePublicAddress, alternateAddress);
+          });
+          test('worker runtime includes NAT policy and scoped network access helpers', () => {
+            assert.ok(NODE_RUNTIME_FILES.includes('server/bedrock-network.js')); assert.ok(NODE_RUNTIME_FILES.includes('server/game-network-access.js'));
+          });
+          NODE
+          node --test --test-reporter=tap "$TEST_ROOT/nat-regression.mjs"

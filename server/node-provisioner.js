@@ -5,6 +5,7 @@ import { randomUUID, createHash, timingSafeEqual, X509Certificate } from 'node:c
 import ssh2 from 'ssh2';
 import { buildNodeBundle } from './node-bundle.js';
 import { normalizeArchitecture } from '../public/runtime-platform.js';
+import { isPublicGameAddress } from './bedrock-network.js';
 const { Client, utils } = ssh2;
 
 const activeStatus = new Set(['queued', 'running']);
@@ -294,7 +295,8 @@ os.replace(t,p)
         });
         const verified = await exec(client, `sha256sum -- ${shell(stage + '/source.zip')}`, { signal }); if (verified.stdout.split(/\s/)[0] !== bundle.sha256) fail('PROVISION_TRANSFER');
         const endpoint = `https://${net.isIP(input.host) === 6 ? '[' + input.host + ']' : input.host}:${input.agentPort}`;
-        const runner = `#!/bin/bash\nset +e\numask 077\nrelease_lock() { if [ ! -L /run/vortex-node-provision.lock ] && [ "$(cat /run/vortex-node-provision.lock/owner 2>/dev/null)" = ${shell(job.id)} ]; then rm -f /run/vortex-node-provision.lock/owner; rmdir /run/vortex-node-provision.lock 2>/dev/null; fi; }\ntrap release_lock EXIT\n( set -e; printf bootstrap > ${shell(stage + '/phase')}; if ! command -v unzip >/dev/null 2>&1; then apt-get -o DPkg::Lock::Timeout=120 update; DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y unzip; fi; printf unpack > ${shell(stage + '/phase')}; mkdir ${shell(stage + '/source')}; unzip -q ${shell(stage + '/source.zip')} -d ${shell(stage + '/source')}; printf install > ${shell(stage + '/phase')}; bash ${shell(stage + '/source/deploy/install-node.sh')} --endpoint ${shell(endpoint)} --port ${input.agentPort} ) > ${shell(stage + '/installer.log')} 2>&1\nresult=$?\nprintf '%s' "$result" > ${shell(stage + '/status.tmp')}\nmv -- ${shell(stage + '/status.tmp')} ${shell(stage + '/status')}\n`;
+        const gameNetworkOption = isPublicGameAddress(input.publicAddress) ? `--game-public-ip ${shell(input.publicAddress)}` : '--no-game-public-ip-inference';
+        const runner = `#!/bin/bash\nset +e\numask 077\nrelease_lock() { if [ ! -L /run/vortex-node-provision.lock ] && [ "$(cat /run/vortex-node-provision.lock/owner 2>/dev/null)" = ${shell(job.id)} ]; then rm -f /run/vortex-node-provision.lock/owner; rmdir /run/vortex-node-provision.lock 2>/dev/null; fi; }\ntrap release_lock EXIT\n( set -e; printf bootstrap > ${shell(stage + '/phase')}; if ! command -v unzip >/dev/null 2>&1; then apt-get -o DPkg::Lock::Timeout=120 update; DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y unzip; fi; printf unpack > ${shell(stage + '/phase')}; mkdir ${shell(stage + '/source')}; unzip -q ${shell(stage + '/source.zip')} -d ${shell(stage + '/source')}; printf install > ${shell(stage + '/phase')}; bash ${shell(stage + '/source/deploy/install-node.sh')} --endpoint ${shell(endpoint)} --port ${input.agentPort} ${gameNetworkOption} ) > ${shell(stage + '/installer.log')} 2>&1\nresult=$?\nprintf '%s' "$result" > ${shell(stage + '/status.tmp')}\nmv -- ${shell(stage + '/status.tmp')} ${shell(stage + '/status')}\n`;
         await operation(io, 'writeFile', `${stage}/run.sh`, runner, { mode: 0o600 });
         step(job, 'install', 35, { recoveryPath: `${stage}/installer.log`, transfer: { loadedBytes: bundle.bytes, totalBytes: bundle.bytes, percent: 100 } });
         // Sending exec may start the detached process even if the reply is

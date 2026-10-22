@@ -82,6 +82,10 @@ jobs:
     name: Isolated native firewall and persistence
     uses: ./.github/workflows/network-firewall.yml
 
+  network-nat:
+    name: Isolated NetherNet NAT source regression
+    uses: ./.github/workflows/network-nat.yml
+
   https:
     name: Managed HTTPS and public port
     uses: ./.github/workflows/https.yml

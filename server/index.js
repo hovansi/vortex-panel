@@ -27,6 +27,9 @@ import { capacityErrorPayload } from './capacity.js';
 import { storageErrorPayload } from './storage-volumes.js';
 import { applicationErrorPayload } from './application-runtime.js';
 import { bedrockRuntimeErrorPayload } from './bedrock-runtime.js';
+import { bedrockTransportErrorPayload } from './bedrock-transport.js';
+import { createBedrockNetworkPolicy, validateGamePublicAddress } from './bedrock-network.js';
+import { gameNetworkAccessErrorPayload } from './game-network-access.js';
 import { createHostnameController, hostnameErrorPayload } from './hostname.js';
 import { createHostTimezoneController, timezoneErrorPayload } from './host-timezone.js';
 import { createHostNetworkTuningController, networkTuningErrorPayload } from './host-network-tuning.js';
@@ -91,7 +94,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
   try {
     const publicEndpoint = process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL) : null;
     const protectedTcpPorts = publicEndpoint ? [Number(publicEndpoint.port || (publicEndpoint.protocol === 'https:' ? 443 : 80))] : [];
-    manager = await createManager({ store, dataDir, emit, protectedTcpPorts });
+    manager = await createManager({ store, dataDir, emit, protectedTcpPorts, bedrockNetworkPolicy: createBedrockNetworkPolicy({ publicAddress: validateGamePublicAddress(process.env.VORTEX_GAME_PUBLIC_IP) ?? publicEndpoint?.hostname }) });
     systemTimezone = timezoneController || createHostTimezoneController({ role: 'panel', nodeId: 'local', dataDir, store });
     await systemTimezone.read({ includeZones: false });
     timezoneTimer = setInterval(() => { timezoneFlight ||= systemTimezone.read({ includeZones: false }).catch(() => {}).finally(() => { timezoneFlight = null; }); }, 60000); timezoneTimer.unref();
@@ -165,7 +168,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
     if (status >= 500) console.error(error);
-    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || tlsErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || panelUpdateErrorPayload(error, _req.panelLanguage) || panelRemovalErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || nodeProvisionErrorPayload(error, _req.panelLanguage) || nodeErrorPayload(error.message, _req.panelLanguage) || { error: status >= 500 ? 'Thao tác thất bại. Xem nhật ký dịch vụ panel.' : error.message });
+    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || tlsErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || panelUpdateErrorPayload(error, _req.panelLanguage) || panelRemovalErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || bedrockTransportErrorPayload(error, _req.panelLanguage) || gameNetworkAccessErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || nodeProvisionErrorPayload(error, _req.panelLanguage) || nodeErrorPayload(error.message, _req.panelLanguage) || { error: status >= 500 ? 'Thao tác thất bại. Xem nhật ký dịch vụ panel.' : error.message });
   });
   server.on('upgrade', (req, socket, head) => {
     const session = auth.readSession(req);

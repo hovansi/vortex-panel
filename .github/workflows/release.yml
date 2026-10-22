@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Exact stable release tag matching package.json'
         required: true
-        default: 'v0.23.14'
+        default: 'v0.23.15'
         type: string
 
 permissions:
@@ -123,6 +123,11 @@ jobs:
     needs: verify
     uses: ./.github/workflows/network-firewall.yml
 
+  network-nat:
+    name: NetherNet NAT and network lifecycle
+    needs: verify
+    uses: ./.github/workflows/network-nat.yml
+
   https:
     name: Public HTTPS port and upgrade compatibility
     needs: verify
@@ -130,7 +135,7 @@ jobs:
 
   publish:
     name: Build and publish verified assets
-    needs: [verify, bedrock-engine, native-arm, bedrock-arm, network-firewall, https]
+    needs: [verify, bedrock-engine, native-arm, bedrock-arm, network-firewall, network-nat, https]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

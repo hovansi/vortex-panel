@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { randomInt } from 'node:crypto';
 import { defaultUdpPorts, networkPortReservations, validateNetwork } from './safety.js';
 
-export const PORT_ALLOCATION_POLICY = Object.freeze({ supported: true, schemaVersion: 1, mode: 'auto', minPort: 20000, maxPort: 59999, preferredRaknetPort: 19132, excludesEphemeral: true, authority: 'node' });
+export const PORT_ALLOCATION_POLICY = Object.freeze({ supported: true, schemaVersion: 1, mode: 'auto', minPort: 20000, maxPort: 59999, preferredNetherNetPort: 19132, excludesEphemeral: true, authority: 'node' });
 const messages = Object.freeze({
   PORT_ALLOCATION_INPUT: ['Invalid port allocation request. Choose automatic allocation without port fields, or supply manual ports.', 'Yêu cầu cấp cổng không hợp lệ. Chọn tự động và bỏ các trường cổng, hoặc nhập cổng thủ công.'],
   PORT_ALLOCATION_INVENTORY: ['Host port usage could not be verified. No server was created; refresh and try again after checking the node.', 'Không xác minh được các cổng đang dùng trên VPS. Chưa tạo máy chủ; kiểm tra node rồi tải lại và thử lại.'],
@@ -104,11 +104,10 @@ export function createPortAllocator({ readInventory = readHostPortInventory, ran
     } catch { throw issue('PORT_ALLOCATION_INVENTORY'); }
     const width = kind !== 'bedrock' ? 1 : transport === 'raknet' ? 2 : Math.max(32, maxPlayers + 4) + 2;
     const networkAt = port => validateNetwork(servers, null, kind !== 'bedrock' ? { kind, port } : { port, portV6: port + 1, transport, udpPorts: transport === 'raknet' ? null : defaultUdpPorts(port, maxPlayers) });
-    const preferred = PORT_ALLOCATION_POLICY.preferredRaknetPort;
-    // The standard pool has one explicit RakNet preference outside its random
-    // range. Custom pools keep their exact bounds; every preferred listener
-    // still passes the same host, reservation and race-exclusion checks.
-    if (kind === 'bedrock' && transport === 'raknet' && minPort === PORT_ALLOCATION_POLICY.minPort && maxPort === PORT_ALLOCATION_POLICY.maxPort && !blocked[preferred] && !blocked[preferred + 1]) return networkAt(preferred);
+    const preferred = PORT_ALLOCATION_POLICY.preferredNetherNetPort;
+    // Preserve the standard-port preference only when the entire NetherNet
+    // allocation is available. Custom pools retain their exact bounds.
+    if (kind === 'bedrock' && transport === 'nethernet' && minPort === PORT_ALLOCATION_POLICY.minPort && maxPort === PORT_ALLOCATION_POLICY.maxPort && !blocked.subarray(preferred, preferred + width).some(Boolean)) return networkAt(preferred);
     const prefix = new Uint32Array(65537);
     for (let port = 0; port < blocked.length; port++) prefix[port + 1] = prefix[port] + blocked[port];
     const candidates = [];

@@ -283,8 +283,8 @@ async function proxy(nodes, node, remotePath, req, res, bodyOverride, { schedule
     // a cached new version cannot authorize an
     // older worker after a downgrade. Missing PATCH commands remain omitted.
     const scheduleExpected = schedule ? await prepareRemoteSchedule(nodes, node, req, bodyOverride ?? req.body ?? {}, schedule, abort.signal) : null;
-    if (req.method === 'POST' && /\/clone\/?$/.test(remotePath)) await nodes.assertPortAllocation(node, bodyOverride ?? req.body);
-    const response = await nodes.request(nodes.credentials(node), { path: remotePath + query, method: req.method, body, headers, stream: true, signal: AbortSignal.any([abort.signal, nodes.signal]), timeoutMs: 300000,
+    if (req.method === 'POST' && /\/clone\/?$/.test(remotePath)) await nodes.assertPortAllocation(node, { ...(bodyOverride ?? req.body), kind: 'bedrock' });
+    const response = await nodes.request(nodes.credentials(node), { path: remotePath + query, method: req.method, body, headers: nodes.gameNetworkHeaders?.(node, headers) || headers, stream: true, signal: AbortSignal.any([abort.signal, nodes.signal]), timeoutMs: 300000,
       ...(stableDownload || worldExport || body === req ? { idleTimeoutMs: 300000 } : {}), maxBytes: 2 * 1024 ** 3 + 20 * 1024 ** 2 });
     upstream = response.stream; nodes.identityHeaders(node, response);
     // Each export GET builds a new ZIP. It has no stable representation that a

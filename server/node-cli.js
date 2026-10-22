@@ -4,6 +4,7 @@ import { randomUUID, randomBytes, createHash, X509Certificate } from 'node:crypt
 import { fileURLToPath } from 'node:url';
 import { createNodeAgent, validateNodeDataDir } from './node-agent.js';
 import { validateNodeEndpoint, requestNode } from './node-transport.js';
+import { validateGamePublicAddress } from './bedrock-network.js';
 
 const DEFAULT_CONFIG = '/etc/vortex-node.json';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -17,6 +18,7 @@ function validateConfig(config) {
   if (config.tls !== null && (!config.tls || !path.isAbsolute(config.tls.certFile || '') || !path.isAbsolute(config.tls.keyFile || ''))) throw new Error('TLS certificate and key paths must be absolute.');
   if (!config.tls && !['127.0.0.1', '::1'].includes(config.host)) throw new Error('Public node listeners require TLS.');
   if (config.endpoint) config.endpoint = validateNodeEndpoint(config.endpoint);
+  validateGamePublicAddress(config.gamePublicAddress);
   validateNodeDataDir(config.dataDir);
   return config;
 }
@@ -39,9 +41,18 @@ function writeConfig(filename, config, { create = false } = {}) {
     else fs.renameSync(temporary, filename);
   } finally { if (fd !== undefined) fs.closeSync(fd); try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
 }
-export function initializeNodeConfig({ configFile = DEFAULT_CONFIG, dataDir = '/var/lib/vortex-node', host = '0.0.0.0', port = 8443, certFile = '/etc/vortex-node/tls.crt', keyFile = '/etc/vortex-node/tls.key', endpoint, tls = true } = {}) {
-  if (fs.existsSync(configFile)) return { config: readNodeConfig(configFile), created: false };
-  const config = validateConfig({ schemaVersion: 1, nodeId: randomUUID(), token: randomBytes(32).toString('base64url'), dataDir: path.resolve(dataDir), host, port, tls: tls ? { certFile: path.resolve(certFile), keyFile: path.resolve(keyFile) } : null, ...(endpoint ? { endpoint } : {}) });
+export function initializeNodeConfig({ configFile = DEFAULT_CONFIG, dataDir = '/var/lib/vortex-node', host = '0.0.0.0', port = 8443, certFile = '/etc/vortex-node/tls.crt', keyFile = '/etc/vortex-node/tls.key', endpoint, gamePublicAddress, tls = true } = {}) {
+  gamePublicAddress = validateGamePublicAddress(gamePublicAddress);
+  if (fs.existsSync(configFile)) {
+    const config = readNodeConfig(configFile);
+    if (gamePublicAddress !== undefined && gamePublicAddress !== config.gamePublicAddress) {
+      config.gamePublicAddress = gamePublicAddress;
+      writeConfig(configFile, config);
+      return { config, created: false, updated: true };
+    }
+    return { config, created: false };
+  }
+  const config = validateConfig({ schemaVersion: 1, nodeId: randomUUID(), token: randomBytes(32).toString('base64url'), dataDir: path.resolve(dataDir), host, port, tls: tls ? { certFile: path.resolve(certFile), keyFile: path.resolve(keyFile) } : null, ...(endpoint ? { endpoint } : {}), ...(gamePublicAddress !== undefined ? { gamePublicAddress } : {}) });
   writeConfig(configFile, config, { create: true }); return { config, created: true };
 }
 export function rotateNodeToken(configFile = DEFAULT_CONFIG) {
@@ -56,7 +67,7 @@ export function nodeConnection(config, endpoint) {
 }
 function optionsFromArgs(args) {
   const result = {};
-  const names = { '--config': 'configFile', '--data-dir': 'dataDir', '--host': 'host', '--port': 'port', '--cert': 'certFile', '--key': 'keyFile', '--endpoint': 'endpoint' };
+  const names = { '--config': 'configFile', '--data-dir': 'dataDir', '--host': 'host', '--port': 'port', '--cert': 'certFile', '--key': 'keyFile', '--endpoint': 'endpoint', '--game-public-ip': 'gamePublicAddress' };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--http-loopback') { result.tls = false; continue; }
     const key = names[args[i]]; if (!key || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Invalid node CLI option.');
@@ -66,7 +77,7 @@ function optionsFromArgs(args) {
 }
 export async function runNodeCli(args = process.argv.slice(2)) {
   const [command = 'serve', ...rest] = args, options = optionsFromArgs(rest), configFile = options.configFile || process.env.VORTEX_NODE_CONFIG || DEFAULT_CONFIG;
-  if (['init', 'initialize'].includes(command)) { const result = initializeNodeConfig({ ...options, configFile }); console.log(JSON.stringify({ created: result.created, nodeId: result.config.nodeId, configFile })); return; }
+  if (['init', 'initialize'].includes(command)) { const result = initializeNodeConfig({ ...options, configFile }); console.log(JSON.stringify({ created: result.created, ...(result.updated ? { updated: true, restartRequired: true } : {}), nodeId: result.config.nodeId, configFile })); return; }
   if (command === 'show-connection') { console.log(JSON.stringify(nodeConnection(readNodeConfig(configFile), options.endpoint), null, 2)); return; }
   if (command === 'rotate-token') { console.log(JSON.stringify(rotateNodeToken(configFile))); return; }
   if (command === 'check') {

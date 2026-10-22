@@ -13,6 +13,15 @@ import { applicationErrorPayload, applicationIssue } from './application-schema.
 import { bedrockRuntimeErrorPayload } from './bedrock-runtime.js';
 import { canAccessServer } from './access.js';
 import { creationPortMode, supportsAutomaticPorts, requireAutomaticPorts } from './port-allocation.js';
+import { requireNetherNetCreationPolicy, bedrockTransportErrorPayload } from './bedrock-transport.js';
+import { isPublicGameAddress } from './bedrock-network.js';
+import { gameNetworkAccessErrorPayload } from './game-network-access.js';
+
+export function nodeGameNetworkHeaders(node, input = {}) {
+  const headers = Object.fromEntries(Object.entries(input).filter(([name]) => name.toLowerCase() !== 'x-vortex-game-public-ip'));
+  if (isPublicGameAddress(node?.publicAddress)) headers['X-Vortex-Game-Public-IP'] = node.publicAddress;
+  return headers;
+}
 
 export const NODE_LIMITS = Object.freeze({ maxNodes: 32, serversPerNode: 512, snapshotBytes: 8 * 1024 ** 2 });
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -125,7 +134,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
         // The central create facade throws through its own error handler. Keep
         // recognized operation identities there, using local canonical metadata
         // rather than trusting arbitrary message/code fields from a peer.
-        const canonical = typeof value?.code === 'string' ? capacityErrorPayload(value) || applicationErrorPayload(value) || bedrockRuntimeErrorPayload(value) : null;
+        const canonical = typeof value?.code === 'string' ? capacityErrorPayload(value) || applicationErrorPayload(value) || bedrockRuntimeErrorPayload(value) || bedrockTransportErrorPayload(value) || gameNetworkAccessErrorPayload(value) : null;
         if (canonical) { error.code = canonical.code; error.errorI18n = canonical.errorI18n; }
         throw error;
       }
@@ -134,7 +143,7 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
   }
   async function call(node, options = {}) {
     requireOpen();
-    const result = await request(credentials(node), { ...options, stream: true, signal: options.signal ? AbortSignal.any([shutdown.signal, options.signal]) : shutdown.signal, timeoutMs: options.timeoutMs ?? 10000 });
+    const result = await request(credentials(node), { ...options, headers: nodeGameNetworkHeaders(node, options.headers), stream: true, signal: options.signal ? AbortSignal.any([shutdown.signal, options.signal]) : shutdown.signal, timeoutMs: options.timeoutMs ?? 10000 });
     identityHeaders(node, result);
     return readJson(result, options.maxBytes);
   }
@@ -483,10 +492,10 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
   }
   async function assertPortAllocation(node, input) {
     const automaticPorts = creationPortMode(input) === 'auto', application = ['nodejs', 'python'].includes(input?.kind);
-    if (!automaticPorts && !application) return;
-    // A fresh authenticated observation prevents a stale new-agent snapshot
-    // from silently falling back to legacy fixed ports after a downgrade.
+    // Re-observe every creation, including manual ports and clones: older
+    // workers must not silently choose RakNet under a newer control plane.
     const snapshot = validateSnapshot(node, await call(node, { path: '/api/node/snapshot', timeoutMs: 4000 }));
+    if (!application) requireNetherNetCreationPolicy(snapshot.capabilities?.bedrockTransportPolicy);
     if (automaticPorts) requireAutomaticPorts(snapshot.capabilities?.portAllocation);
     if (application) {
       const capability = snapshot.capabilities?.applicationRuntime, rows = Array.isArray(capability?.runtimes) ? capability.runtimes : Object.entries(capability?.runtimes || {}).map(([kind, row]) => ({ kind, ...row }));
@@ -578,5 +587,5 @@ export function createNodes({ store, localManager, dataDir, emit = () => {}, req
     for (const id of new Set([...streams.keys(), ...retryTimers.keys(), ...eventTimers.keys()])) stopEvents(id);
     // Never stop agents or remote Bedrock processes when the controller closes.
   }
-  return { manager, initialize, close, attachProvisioner(value) { provisioner = value; }, attachRemoval(value) { removal = value; }, attachFleetRemoval(value) { fleetRemoval = value; }, attachFleetUpdate(value){fleetUpdate=value;}, beginFleetUpdate, beginFleetRemoval, beginRemoval, cancelRemoval, completeRemoval, add, update, remove, get, publicNodes, publicNode, listServers, refresh, refreshAll, requireAvailable, beginMutation, assertPortAllocation, call, readJson, actorHeader, identityHeaders, credentials, stateOf, signal: shutdown.signal, mapResponse: (node, value) => mapNodeResponse(node, value, stateOf(node)), recordResponse(node, value, { mutating = true } = {}) { if (mutating) rememberResponse(node, value); refresh(node.id, { force: true }).catch(() => {}); }, recordDeletedSchedule(node, rawId) { if (!UUID.test(rawId || '')) fail('Invalid schedule identity.', 400); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.schedules.delete(rawId); pending.schedules.set(rawId, { revision: ++observation, row: null }); while (pending.schedules.size > 2000) pending.schedules.delete(pending.schedules.keys().next().value); const state = stateOf(node); if (state.snapshot) state.snapshot.schedules = state.snapshot.schedules.filter(row => row.id !== rawId); emit({ type: 'update' }); }, recordDeletedServer(node, rawId) { const id = nodeResourceId(node.id, rawId); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.servers.set(rawId, { revision: ++observation, row: null }); const state = stateOf(node); if (state.snapshot) state.snapshot.servers = state.snapshot.servers.filter(s => s.id !== rawId); node.inventory = node.inventory.filter(s => s.id !== rawId); for (const user of store.data.users) user.serverIds = (user.serverIds || []).filter(value => value !== id); let warning; try { store.save(); } catch { warning = 'The server was deleted on the node, but its central inventory/grant cleanup could not be saved. Refresh after reconnecting.'; } emit({ type: 'update' }); return warning; }, request, get limits() { return { ...NODE_LIMITS, nextNodeName: naming.preview() }; } };
+  return { manager, initialize, close, attachProvisioner(value) { provisioner = value; }, attachRemoval(value) { removal = value; }, attachFleetRemoval(value) { fleetRemoval = value; }, attachFleetUpdate(value){fleetUpdate=value;}, beginFleetUpdate, beginFleetRemoval, beginRemoval, cancelRemoval, completeRemoval, add, update, remove, get, publicNodes, publicNode, listServers, refresh, refreshAll, requireAvailable, beginMutation, assertPortAllocation, call, readJson, actorHeader, identityHeaders, gameNetworkHeaders: nodeGameNetworkHeaders, credentials, stateOf, signal: shutdown.signal, mapResponse: (node, value) => mapNodeResponse(node, value, stateOf(node)), recordResponse(node, value, { mutating = true } = {}) { if (mutating) rememberResponse(node, value); refresh(node.id, { force: true }).catch(() => {}); }, recordDeletedSchedule(node, rawId) { if (!UUID.test(rawId || '')) fail('Invalid schedule identity.', 400); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.schedules.delete(rawId); pending.schedules.set(rawId, { revision: ++observation, row: null }); while (pending.schedules.size > 2000) pending.schedules.delete(pending.schedules.keys().next().value); const state = stateOf(node); if (state.snapshot) state.snapshot.schedules = state.snapshot.schedules.filter(row => row.id !== rawId); emit({ type: 'update' }); }, recordDeletedServer(node, rawId) { const id = nodeResourceId(node.id, rawId); let pending = acknowledgements.get(node.id); if (!pending) { pending = { servers: new Map(), jobs: new Map(), schedules: new Map() }; acknowledgements.set(node.id, pending); } pending.servers.set(rawId, { revision: ++observation, row: null }); const state = stateOf(node); if (state.snapshot) state.snapshot.servers = state.snapshot.servers.filter(s => s.id !== rawId); node.inventory = node.inventory.filter(s => s.id !== rawId); for (const user of store.data.users) user.serverIds = (user.serverIds || []).filter(value => value !== id); let warning; try { store.save(); } catch { warning = 'The server was deleted on the node, but its central inventory/grant cleanup could not be saved. Refresh after reconnecting.'; } emit({ type: 'update' }); return warning; }, request, get limits() { return { ...NODE_LIMITS, nextNodeName: naming.preview() }; } };
 }

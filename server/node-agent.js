@@ -6,10 +6,12 @@ import http from 'node:http';
 import https from 'node:https';
 import { installHttpReceivePolicy, authorizeMultipartReceive } from './http-receive.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createStore } from './store.js';
 import { createManager } from './manager.js';
+import { createBedrockNetworkPolicy, validateGamePublicAddress } from './bedrock-network.js';
 import { restoreFleetRemovalIntent } from './panel-removal.js';
 import { createRouter } from './routes.js';
 import { acquireDataLock } from './lock.js';
@@ -17,10 +19,12 @@ import { localeMiddleware } from './locale.js';
 import { createResourceController } from './resource-control.js';
 import { canAccessServer, requireAdmin } from './access.js';
 import { serverFirewallErrorPayload } from './server-firewall.js';
+import { gameNetworkAccessErrorPayload } from './game-network-access.js';
 import { capacityErrorPayload } from './capacity.js';
 import { storageErrorPayload } from './storage-volumes.js';
 import { applicationErrorPayload } from './application-runtime.js';
 import { bedrockRuntimeErrorPayload } from './bedrock-runtime.js';
+import { bedrockTransportErrorPayload } from './bedrock-transport.js';
 import { createHostnameController, changeHostname, hostnameErrorPayload } from './hostname.js';
 import { createSystemPowerController, sendPowerRequest, systemPowerErrorPayload } from './system-power.js';
 import { createHostZramController, sendZramRequest, hostZramErrorPayload } from './host-zram.js';
@@ -58,10 +62,16 @@ function actorFromHeader(header) {
   return { ...actor, serverIds: [...new Set(actor.serverIds)] };
 }
 
-export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, emit: observer = () => {} } = {}) {
+export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicAddress, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, emit: observer = () => {} } = {}) {
   if (!uuid.test(nodeId || '') || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(token)) throw new Error('A UUID nodeId and strong node token are required.');
   if (!tls && !['127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error('Public node listeners require HTTPS. HTTP is limited to literal loopback.');
   if (tls && (!tls.cert || !tls.key)) throw new Error('Both TLS certificate and key are required.');
+  gamePublicAddress = validateGamePublicAddress(gamePublicAddress);
+  const gameNetworkContext = new AsyncLocalStorage();
+  // Only the authenticated control plane may supply a request-scoped address.
+  // The context also follows asynchronous create/clone jobs without leaking
+  // another node request's public address into the shared manager.
+  const bedrockNetworkPolicy = createBedrockNetworkPolicy({ publicAddress: () => gameNetworkContext.getStore()?.publicAddress ?? gamePublicAddress });
   dataDir = validateNodeDataDir(dataDir);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   if (fs.lstatSync(dataDir).isSymbolicLink()) throw new Error('Node dataDir must not be a symlink.');
@@ -87,7 +97,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   try {
     store = injectedStore || createStore(dataDir);
     if (!injectedStore && store.data.users.length) throw new Error('Node data must not contain panel user accounts. Use a dedicated node data directory.');
-    manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, bedrockRuntimeRole: 'worker', resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
+    manager = injectedManager || await createManager({ store, dataDir, emit, reserveRatio: 0, bedrockRuntimeRole: 'worker', bedrockNetworkPolicy, resourceController: resourceController || createResourceController({ unit: process.env.VORTEX_NODE_UNIT || 'vortex-node.service', reserveRatio: 0 }) });
     systemTimezone = timezoneController || createHostTimezoneController({ dataDir, store, nodeId, role: 'worker' });
     systemNetwork = networkController || createHostNetworkTuningController({ role: 'worker', nodeId, store, manager });
     // Establish the verified OS timezone before auto-starting managed children.
@@ -131,7 +141,10 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
         const grant = JSON.parse(req.headers['x-vortex-file-access']);
         if (typeof grant.serverId === 'string' && Number.isFinite(grant.expires) && grant.expires > Date.now() && grant.expires <= Date.now() + 10 * 60 * 1000) req.fileAccess = grant;
       }
-      next();
+      let publicAddress;
+      try { publicAddress = validateGamePublicAddress(req.headers['x-vortex-game-public-ip']); }
+      catch { throw Object.assign(new Error('Invalid control-plane game public IPv4 address.'), { status: 400 }); }
+      gameNetworkContext.run({ publicAddress }, next);
     } catch (error) { next(error); }
   });
   const ordinaryJson = express.json({ limit: '2mb' }), editorJson = express.json({ limit: '13mb' });
@@ -185,7 +198,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, host = '127
   app.use((error, _req, res, _next) => {
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
-    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
+    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || bedrockTransportErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || gameNetworkAccessErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
     else res.destroy();
   });
   let server;

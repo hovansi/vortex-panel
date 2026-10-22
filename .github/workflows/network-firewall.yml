@@ -288,6 +288,7 @@ jobs:
           import { pathToFileURL } from 'node:url';
           const execute = promisify(execFile);
           const { createNativeFirewall } = await import(pathToFileURL(path.join(process.env.SOURCE_ROOT, 'server/native-firewall.js')));
+          const { createGameNetworkAccess } = await import(pathToFileURL(path.join(process.env.SOURCE_ROOT, 'server/game-network-access.js')));
           const root = process.env.FIREWALL_ROOT, fixture = process.env.PERSISTENCE_FIXTURE, source = process.env.SOURCE_ROOT;
           const scope = path.join(root, 'var/lib/vortex-firewall-ci');
           const scopeId = createHash('sha256').update(path.resolve(scope)).digest('hex').slice(0, 16);
@@ -317,6 +318,12 @@ jobs:
             apply: (network, input) => native.apply(network, { ...input, scopeId }, async () => network),
             remove: (network, input) => native.apply(network, { ...input, scopeId }, async () => network, true)
           };
+          const instance = { id: server.serverId, transport: 'nethernet', port: bedrockPort, portV6: bedrockPort + 1, udpPorts: '28111-28112' };
+          const automaticAccess = createGameNetworkAccess({ firewall: {
+            inspect: () => controller.inspect(server),
+            apply: (_instance, input) => controller.apply(server, input),
+            remove: (_instance, input) => controller.remove(server, input)
+          } });
           const files = ['rules.v4', 'rules.v6'].map(name => path.join(root, 'etc/iptables', name));
           const originals = await Promise.all(files.map(filename => fs.readFile(filename)));
           const originalModes = await Promise.all(files.map(async filename => { const s = await fs.stat(filename); return [s.uid, s.gid, s.mode & 0o777]; }));
@@ -360,8 +367,10 @@ jobs:
             const first = await controller.inspect(server);
             assert.equal(first.backend, 'iptables'); assert.equal(first.canApply, true); assert.equal(first.persistence.ready, true);
             assert.ok(first.ports.every(row => row.state === 'missing'));
-            const applied = await controller.apply(server, { revision: first.revision, confirmed: true });
-            assert.equal(applied.ok, true); assert.ok(applied.ports.every(row => row.live && row.saved));
+            const automatic = await automaticAccess.ensure(instance, async () => instance);
+            assert.equal(automatic.verified, true); assert.equal(automatic.cloudVerified, false);
+            const applied = await controller.inspect(server);
+            assert.ok(applied.ports.every(row => row.live && row.saved));
             await connectivity(true); await unchangedForeign();
             const again = await controller.apply(server, { revision: (await controller.inspect(server)).revision, confirmed: true });
             assert.equal(again.ok, true); assert.equal(again.added.length, 0); assert.equal(again.removed.length, 0);
@@ -398,8 +407,10 @@ jobs:
             await command(tools.ipv4, ['-w', '5', '-t', 'filter', '-A', 'INPUT', '-p', 'tcp', '--dport', String(bedrockPort), '-m', 'comment', '--comment', owner, '-j', 'DROP']);
             const unsafe = await controller.inspect(server); assert.equal(unsafe.canApply, false);
             await command(tools.ipv4, ['-w', '5', '-t', 'filter', '-D', 'INPUT', '-p', 'tcp', '--dport', String(bedrockPort), '-m', 'comment', '--comment', owner, '-j', 'DROP']);
-            const removed = await controller.remove(server, { revision: (await controller.inspect(server)).revision, confirmed: true });
-            assert.equal(removed.ok, true); assert.equal(removed.managedRules.length, 0); assert.equal(removed.savedRules.length, 0);
+            const removed = await automaticAccess.release(instance);
+            assert.equal(removed.verified, true);
+            const released = await controller.inspect(server);
+            assert.equal(released.managedRules.length, 0); assert.equal(released.savedRules.length, 0);
             await connectivity(false);
             for (const family of Object.keys(tools)) assert.equal(await reachable(family, 'tcp', applicationPort), true, 'Other server rules must survive owner removal.');
             // A previous UFW setup can coexist with exact native ownership.
@@ -443,7 +454,7 @@ jobs:
               await fs.writeFile(row.filename, after.replace(row.declaration, '').replace(row.ufwLine + '\n', ''));
             }
             await unchangedForeign();
-            console.log(JSON.stringify({ nativeArchitecture: process.arch, backend: 'iptables', namespacedLiveIPv4IPv6: true, tcpAndUdpConnectivityVerified: true, exactPersistentFiles: true, staleRevisionRejected: true, duplicateNormalizationVerified: true, otherServerPreserved: true, scopeCleanupVerified: true, mixedUfwCleanupIsolationVerified: true, facadeSelectionClaimed: false, hostServicesChanged: false, passed: true }));
+            console.log(JSON.stringify({ nativeArchitecture: process.arch, backend: 'iptables', namespacedLiveIPv4IPv6: true, tcpAndUdpConnectivityVerified: true, automaticServerAccessVerified: true, exactPersistentFiles: true, staleRevisionRejected: true, duplicateNormalizationVerified: true, otherServerPreserved: true, scopeCleanupVerified: true, mixedUfwCleanupIsolationVerified: true, facadeSelectionClaimed: false, hostServicesChanged: false, passed: true }));
           } finally {
             for (const socket of sockets) socket.close();
             await Promise.all(servers.map(listener => new Promise(resolve => listener.close(resolve))));
