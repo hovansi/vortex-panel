@@ -361,6 +361,9 @@ class Host:
                 archive = root / 'source.zip'; archive.write_bytes(asset_bytes(assets['vortex-panel-' + request['version'] + '.zip'], MAX_ARCHIVE)); os.chmod(archive, 0o600)
                 source = self.install / 'releases' / ('update-' + request['version'] + '-' + request['requestId'])
                 unpack(archive, source, manifest, self.role)
+                source_identity = self.safe(source, directory=True)
+                os.chmod(source, 0o700)
+                require(not os.path.lexists(source / 'node_modules'), 'New source already contains generated dependencies.')
                 record['targetSource'] = str(source)
                 manifest_file = root / 'manifest.json'
                 manifest_file.write_bytes(manifest_bytes); os.chmod(manifest_file, 0o600)
@@ -386,6 +389,10 @@ class Host:
                         self.remove_private_cache(cache, cache_identity.st_dev, cache_identity.st_ino)
                     except BaseException:
                         record['cacheRetainedForReview'] = True
+                current_source = self.safe(source, directory=True)
+                require((current_source.st_dev, current_source.st_ino) == (source_identity.st_dev, source_identity.st_ino), 'New source identity changed during dependency installation.')
+                record['dependencyRoot'] = self.staged_dependencies(source, normalize=True)
+                os.chmod(source, 0o755)
                 for name in ('server/node-cli.js', self.entry):
                     self.run([str(node), '--check', str(source / name)])
                 self.source_verified(source, manifest)
@@ -401,6 +408,70 @@ class Host:
     def public(self, value):
         keys = ('schemaVersion', 'requestId', 'role', 'nodeId', 'machineId', 'installationId', 'revision', 'version', 'status', 'createdAt', 'preparedAt', 'launchedAt', 'finishedAt', 'error', 'proof', 'rolledBack', 'targetSource')
         return {'ok': True, **{key: value[key] for key in keys if key in value}}
+
+    def staged_dependencies(self, source, identity=None, normalize=False):
+        source = pathlib.Path(source)
+        source_info = self.safe(source, directory=True)
+        require(source.parent == self.install / 'releases' and source.name.startswith('update-') and UUID.fullmatch(source.name[-36:]) and VERSION.fullmatch(source.name[7:-37]), 'Dependency target is not a new update release.')
+        require(not normalize or stat.S_IMODE(source_info.st_mode) == 0o700, 'Dependency normalization requires private new staging.')
+        directory = source / 'node_modules'
+        info = directory.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not directory.is_symlink() and info.st_dev == source_info.st_dev, 'Staged dependencies must be a real local directory.')
+        proof = {'dev': info.st_dev, 'ino': info.st_ino}
+        require(normalize or identity == proof, 'Staged dependency identity changed.')
+        if not self.root:
+            with open('/proc/self/mountinfo', encoding='utf-8') as stream:
+                mounts = stream.read(8 * 1024 * 1024 + 1)
+            require(len(mounts) <= 8 * 1024 * 1024, 'Dependency mount inspection exceeds its bound.')
+            for line in mounts.splitlines():
+                fields = line.split()
+                require(len(fields) >= 6, 'Dependency mount inventory is invalid.')
+                target = re.sub(r'\\([0-7]{3})', lambda value: chr(int(value.group(1), 8)), fields[4])
+                require(target != str(directory) and not target.startswith(str(directory) + '/'), 'A filesystem is mounted inside staged dependencies.')
+        rows, pending = [(directory, info)], [directory]
+        while pending:
+            parent = pending.pop()
+            for path in sorted(parent.iterdir()):
+                observed = path.lstat()
+                require(observed.st_dev == info.st_dev, 'Staged dependencies crossed a filesystem boundary.')
+                if stat.S_ISDIR(observed.st_mode):
+                    pending.append(path)
+                elif stat.S_ISREG(observed.st_mode):
+                    require(observed.st_nlink == 1, 'Staged dependencies contain a hard link.')
+                elif stat.S_ISLNK(observed.st_mode):
+                    link = os.readlink(path)
+                    require(not os.path.isabs(link), 'Staged dependency link is absolute.')
+                    lexical = pathlib.Path(os.path.normpath(path.parent / link))
+                    require(lexical.is_relative_to(directory) and lexical != directory, 'Staged dependency link leaves its tree.')
+                    target = path.resolve(strict=True)
+                    require(target.is_relative_to(directory) and target != directory and target.is_file() and not target.is_symlink(), 'Staged dependency link escaped its tree or is not a file.')
+                    target_info = target.lstat()
+                    require(target_info.st_dev == info.st_dev and target_info.st_nlink == 1, 'Staged dependency link targets an unsafe file.')
+                else:
+                    raise UpdateError('Staged dependencies contain a special file.')
+                rows.append((path, observed))
+                require(len(rows) <= 150000, 'Staged dependencies exceed their entry bound.')
+        if normalize:
+            # Validate the complete private tree before changing any inode. Never
+            # follow npm .bin links; they may point only to verified local files.
+            for path, observed in sorted(rows, key=lambda row: not stat.S_ISDIR(row[1].st_mode)):
+                current = path.lstat()
+                require((current.st_dev, current.st_ino, current.st_mode, current.st_nlink) == (observed.st_dev, observed.st_ino, observed.st_mode, observed.st_nlink), 'Staged dependency changed during normalization.')
+                if stat.S_ISLNK(observed.st_mode):
+                    os.chown(path, 0, 0, follow_symlinks=False)
+                    continue
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_DIRECTORY if stat.S_ISDIR(observed.st_mode) else 0))
+                try:
+                    opened = os.fstat(descriptor)
+                    require((opened.st_dev, opened.st_ino, opened.st_mode, opened.st_nlink) == (observed.st_dev, observed.st_ino, observed.st_mode, observed.st_nlink), 'Staged dependency inode changed.')
+                    os.fchown(descriptor, 0, 0)
+                    os.fchmod(descriptor, 0o755 if stat.S_ISDIR(opened.st_mode) or opened.st_mode & 0o111 else 0o644)
+                finally:
+                    os.close(descriptor)
+            return self.staged_dependencies(source, identity=proof)
+        for path, observed in rows:
+            require(observed.st_uid == 0 and observed.st_gid == 0 and (stat.S_ISLNK(observed.st_mode) or stat.S_IMODE(observed.st_mode) in (0o644, 0o755) and (not stat.S_ISDIR(observed.st_mode) or stat.S_IMODE(observed.st_mode) == 0o755)), 'Staged dependency ownership or mode is unsafe.')
+        return proof
 
     def source_verified(self, source, manifest):
         inventory = {row['path']: row for row in manifest['inventory']}
@@ -554,6 +625,7 @@ class Host:
                 manifest_bytes = self.read(root / 'manifest.json', 4 * 1024 * 1024, private=True)
                 require(hashlib.sha256(manifest_bytes).hexdigest() == record['manifestSHA256'], 'Prepared manifest changed.')
                 self.source_verified(target, json.loads(manifest_bytes))
+                self.staged_dependencies(target, identity=record.get('dependencyRoot'))
                 previous = (self.install / 'current').resolve(strict=True)
                 self.health(previous, -1, freeze_request=request_id)
                 # Admission ACK is live and includes the UUID. A previously admitted

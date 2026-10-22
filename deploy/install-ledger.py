@@ -261,9 +261,10 @@ def finalize(args):
                 record(child, origin)
     source_before = before['before']['paths'].get(layout['source'])
     source = Path(layout['source'])
-    # A new dedicated root is ours. On upgrades only previously recorded paths
-    # or newly created release directories can gain source-file ownership.
-    if source_before is None:
+    # The original absent-root baseline stays immutable across upgrades. It
+    # proves the first installation only, not later fleet releases or files.
+    # Preserve old receipts and admit only this installation's current release.
+    if previous is None and source_before is None:
         record(source, 'installer-created-dedicated-source')
     else:
         current = source / 'current'
@@ -278,7 +279,7 @@ def finalize(args):
             record(path, 'installer-created-fixed-component')
     # The config directory can also hold its older worker manifest. Record only
     # files created in a fresh config root; an existing TLS/helper is not adopted.
-    if before['before']['paths'].get(layout['config']) is None:
+    if previous is None and before['before']['paths'].get(layout['config']) is None:
         for child in config.iterdir():
             if child != target:
                 record(child, 'installer-created-configuration')
