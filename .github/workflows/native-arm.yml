@@ -168,7 +168,7 @@ jobs:
           }
           trap cleanup_fixture EXIT
           if ! sudo env PATH=/usr/sbin:/usr/bin:/sbin:/bin bash deploy/install.sh \
-            --root-mode --local-only --self-signed --no-network-tuning \
+            --root-mode --self-signed --no-network-tuning \
             > "$RUNNER_TEMP/vortex-native-ledger-upgrade.log" 2>&1; then
             echo 'Native CLI upgrade failed with a foreign-owned historical dependency.' >&2
             sed -E 's/(One-time setup token:|SETUP TOKEN:).*/\1 [redacted]/' "$RUNNER_TEMP/vortex-native-ledger-upgrade.log" | tail -n 100 >&2
