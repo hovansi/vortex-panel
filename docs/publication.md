@@ -4,7 +4,7 @@ Vortex Panel is published from [hovansi/vortex-panel](https://github.com/hovansi
 
 ## Release contract
 
-The examples below use **0.18.0**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the validated commit.
+The examples below use **0.24.0**. Start publication from the **Release** workflow on `main`, or push a stable `vX.Y.Z` tag after the source and package versions are ready. The release workflow requires `package.json`, both package-lock version fields and the requested tag version to match exactly, and binds publication to the validated commit.
 
 The workflow validates production source on Ubuntu 22.04 and 24.04 before packaging. It creates a draft release, uploads and verifies all four assets, then publishes the draft. An existing draft or published release is an explicit stop condition; the workflow never overwrites assets or automatically replays a failed publication.
 
@@ -27,7 +27,7 @@ The generic source downloader remains `deploy/bootstrap.sh`. The builder substit
 ```bash
 npm ci
 npm run check
-node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.18.0
+node scripts/release.js --repository hovansi/vortex-panel --output output/release/v0.24.0
 ```
 
 Build from a clean checkout of the intended commit when comparing local source bytes with CI. `.gitattributes` standardizes text files to LF; the source archive records the bytes actually collected by its builder.
@@ -37,20 +37,20 @@ Build from a clean checkout of the intended commit when comparing local source b
 Upload or commit the reviewed public source on `main`, then:
 
 1. Open the repository's **Actions** tab and choose **Release**.
-2. Select **Run workflow**, choose branch **main** and enter **`v0.18.0`** in the tag input.
+2. Select **Run workflow**, choose branch **main** and enter **`v0.24.0`** in the tag input.
 3. Run the workflow and follow both Ubuntu verification jobs and the publication job.
 
 The verification jobs validate the selected production source commit first. The publisher creates the requested tag only if it is missing and binds it to that same commit. An existing tag must already resolve to the validated commit; a conflicting tag stops publication. A newly created tag is not automatically recreated after an uncertain response.
 
-For later releases, replace `v0.18.0` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
+For later releases, replace `v0.24.0` with the version matching the package files. No local Git identity or manual tag creation is required for this Actions path. Do not pre-create a draft/published release using GitHub's **New release** form: that creates a release object which conflicts with the workflow's existing-release refusal.
 
 ### Alternative: push a tag
 
 The workflow also retains its tag-push trigger. After committing the reviewed source, create and push a tag pointing to that exact commit:
 
 ```bash
-git tag -a v0.18.0 -m "Vortex Panel 0.18.0"
-git push origin v0.18.0
+git tag -a v0.24.0 -m "Vortex Panel 0.24.0"
+git push origin v0.24.0
 ```
 
 Choose one trigger for a release. Do not dispatch a second run while a tag-triggered release is active. If a prior run stopped after a mutation, inspect its remote tag/release state before deciding how to continue; publication never silently resumes or overwrites an existing draft.

@@ -181,8 +181,8 @@ else
   python3 "$SOURCE_DIR/deploy/install-ledger.py" capture --role worker
 fi
 apt-get -o DPkg::Lock::Timeout=120 update
-DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables iptables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod
-DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=120 install -y --no-remove ca-certificates curl openssl unzip zip rsync xz-utils tar iproute2 procps coreutils findutils libc6 libgcc-s1 libstdc++6 libatomic1 zlib1g libcurl4 nftables iptables ufw e2fsprogs util-linux bubblewrap python3 python3-venv kmod
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove gcc make pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev libncurses-dev libgdbm-dev uuid-dev libzstd-dev
 if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
   VORTEX_BEDROCK_PAGE_SIZE=$(getconf PAGESIZE)
   if [[ $VORTEX_BEDROCK_PAGE_SIZE == 4096 ]]; then
@@ -193,7 +193,7 @@ if [[ $VORTEX_NODE_ARCH == arm64 ]]; then
       prebuilt|installed) ;;
       *) echo 'Invalid ARM64 Bedrock runtime preparation mode.' >&2; exit 1;;
     esac
-    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove "${VORTEX_BEDROCK_PACKAGES[@]}"
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get -o DPkg::Lock::Timeout=120 install -y --no-upgrade --no-remove "${VORTEX_BEDROCK_PACKAGES[@]}"
   fi
 fi
 # BEGIN optional kernel module
@@ -207,7 +207,7 @@ prepare_memory_module() {
     return 0
   fi
   package=linux-modules-extra-$kernel
-  if ! candidate=$(LC_ALL=C apt-cache policy "$package" 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }') || [[ ! $candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
+  if ! candidate=$(LC_ALL=C apt-cache policy "$package" 2>/dev/null | awk '$1 == "Candidate:" { print $2 }') || [[ ! $candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
     echo "Optional memory assistance is unavailable: no matching module package exists for $kernel. The current kernel is retained." >&2
     return 0
   fi
@@ -237,7 +237,7 @@ prepare_memory_module() {
       dependency_absent=true
     fi
     if [[ $dependency_absent == true ]]; then
-      if ! dependency_candidate=$(LC_ALL=C apt-cache policy wireless-regdb 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }') || [[ ! $dependency_candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
+      if ! dependency_candidate=$(LC_ALL=C apt-cache policy wireless-regdb 2>/dev/null | awk '$1 == "Candidate:" { print $2 }') || [[ ! $dependency_candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
         echo 'Optional memory module preparation was skipped: its fresh dependency could not be pinned safely.' >&2
         return 0
       fi
@@ -353,9 +353,30 @@ PY
   if [[ -n $PREVIOUS_NODE_BIN ]]; then export PATH="${PREVIOUS_NODE_BIN%/node}:$PATH"; fi
 fi
 # END previous worker interpreter
-NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-NODE_ARCH=$(node -p 'process.arch' 2>/dev/null || true)
-if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VORTEX_NODE_ARCH" ]]; then
+# Validate only the privileged control interpreter, without executing source
+# before its admission guard. Keep these pure floors aligned with safety.js.
+control_runtime_supported() {
+  node --input-type=module - "$VORTEX_NODE_ARCH" <<'JS'
+const CONTROL_RUNTIME_FLOORS = Object.freeze({
+  22: Object.freeze([23, 4]),
+  24: Object.freeze([22, 1]),
+  26: Object.freeze([12, 1])
+});
+
+function controlRuntimeSupported(version = process.versions.node) {
+  if (typeof version !== 'string') return false;
+  const match = /^(?:v)?(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/.exec(version);
+  if (!match) return false;
+  const [, majorText, minorText, patchText] = match;
+  const floor = CONTROL_RUNTIME_FLOORS[Number(majorText)];
+  if (!floor) return false;
+  const minor = Number(minorText), patch = Number(patchText);
+  return minor > floor[0] || minor === floor[0] && patch >= floor[1];
+}
+process.exit(controlRuntimeSupported() && process.arch === process.argv[2] ? 0 : 1);
+JS
+}
+if ! control_runtime_supported; then
   NODE_TEMP=$(mktemp -d /tmp/vortex-node-runtime.XXXXXXXX)
   curl --fail --location --proto '=https' --tlsv1.2 --output "$NODE_TEMP/SHASUMS256.txt" https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt
   NODE_FILE=$(awk -v arch="$VORTEX_NODE_ARCH" '$2 ~ ("^node-v22\\.[0-9]+\\.[0-9]+-linux-" arch "\\.tar\\.xz$") {print $2; exit}' "$NODE_TEMP/SHASUMS256.txt")
@@ -371,6 +392,9 @@ if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VOR
   chmod -R a+rX,go-w -- "$PRIVATE_RUNTIME"
   export PATH=$PRIVATE_RUNTIME/bin:$PATH
 fi
+control_runtime_supported || {
+  echo 'The selected Node control runtime is unsupported or below its security patch floor.' >&2; false;
+}
 NODE_BIN=$(command -v node)
 [[ ! -L $ZRAM_HELPER ]] || { echo 'The OS helper path must not be linked.' >&2; false; }
 if [[ -e $ZRAM_HELPER ]]; then

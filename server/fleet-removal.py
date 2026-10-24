@@ -131,9 +131,32 @@ class Host:
             current = os.fstat(fd)
             require((info.st_dev, info.st_ino) == (current.st_dev, current.st_ino) and current.st_nlink == 1, 'Ownership evidence changed while opening.')
             with os.fdopen(fd, 'rb', closefd=False) as stream:
-                value = stream.read(maximum + 1)
+                value = stream.read(min(maximum, current.st_size) + 1)
             require(len(value) <= maximum, 'Ownership evidence exceeds its bound.')
+            require(len(value) == current.st_size and os.fstat(fd).st_size == current.st_size, 'Ownership evidence changed while reading.')
             return value
+        finally:
+            os.close(fd)
+
+    def read_proc_sys(self, key, maximum=4096):
+        # Kernel procfs values are regular files whose stat size is normally zero.
+        # Keep their tiny read separate from strict on-disk ownership records.
+        require(key in NETWORK_KEYS and isinstance(maximum, int) and 0 < maximum <= 4096,
+                'Unsafe bounded procfs value key.')
+        filename = self.path('/proc/sys/' + key.replace('.', '/'))
+        info = self.safe(filename)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'A procfs value is not an exclusive regular file.')
+        identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_uid, row.st_gid, row.st_nlink)
+        fd = os.open(filename, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            opened = os.fstat(fd)
+            require(identity(opened) == identity(info), 'A procfs value changed while opening.')
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                content = stream.read(maximum + 1)
+            require(0 < len(content) <= maximum, 'A procfs value exceeds its bound or is empty.')
+            require(identity(os.fstat(fd)) == identity(opened) and identity(self.safe(filename)) == identity(opened),
+                    'A procfs value changed while reading.')
+            return content
         finally:
             os.close(fd)
 
@@ -1649,7 +1672,7 @@ server {
             network = restored.get('outcome') == 'restored' and not os.path.lexists(profile) and isinstance(restored.get('values'), dict) and set(restored['values']).issubset(NETWORK_KEYS)
             if network:
                 try:
-                    network = all(self.read(self.path('/proc/sys/' + key.replace('.', '/')), 4096).decode().strip() == value for key, value in restored['values'].items())
+                    network = all(self.read_proc_sys(key, 4096).decode().strip() == value for key, value in restored['values'].items())
                 except (RemovalError, OSError, UnicodeError):
                     network = False
         if identity.get('hostTimezone'):
@@ -1691,7 +1714,16 @@ server {
 
     @staticmethod
     def public(value):
-        return {key: item for key, item in value.items() if key not in ['_identity', '_ledger', 'plan']}
+        result = {key: item for key, item in value.items() if key not in ['_identity', '_ledger', 'plan']}
+        if isinstance(result.get('retained'), list):
+            unique, seen = [], set()
+            for item in result['retained']:
+                key = json.dumps(item, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(item)
+            result['retained'] = unique
+        return result
 
 
 def main():

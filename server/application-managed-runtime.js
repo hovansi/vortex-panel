@@ -10,6 +10,15 @@ export const PYTHON_BUILD_TOOLS = Object.freeze(['/usr/bin/gcc', '/usr/bin/make'
 export const PYTHON_BUILD_HEADERS = Object.freeze(['/usr/include/openssl/ssl.h', '/usr/include/zlib.h', '/usr/include/bzlib.h', '/usr/include/readline/readline.h', '/usr/include/sqlite3.h', '/usr/include/lzma.h', '/usr/include/ncurses.h', '/usr/include/gdbm.h', '/usr/include/uuid/uuid.h', '/usr/include/zstd.h']);
 const noFile = error => error?.code === 'ENOENT';
 
+// Ubuntu may provide nice through a multi-call hardlinked implementation.
+// Keep the ordinary strict trust checks; only these two system paths qualify.
+export async function selectPythonBuildNice(trustedFile) {
+  for (const filename of ['/usr/bin/nice', '/usr/bin/gnunice']) {
+    try { return await trustedFile(filename, true); } catch {}
+  }
+  throw applicationIssue('APPLICATION_RUNTIME_TOOLS');
+}
+
 export function assertRuntimeELF(header, arch) {
   const machine = { x64: 62, arm64: 183 }[arch];
   if (!machine || !Buffer.isBuffer(header) || header.length < 64 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || header[4] !== 2 || header[5] !== 1 || header[6] !== 1 || ![2, 3].includes(header.readUInt16LE(16)) || header.readUInt16LE(18) !== machine || header.readUInt32LE(20) !== 1 || header.readUInt16LE(52) !== 64) throw applicationIssue('APPLICATION_RUNTIME_PIN');
@@ -67,7 +76,7 @@ export function createManagedRuntimeStore({ dataDir, fs: io = fs, fetch: request
   }
   async function prerequisites() {
     const missing = [];
-    for (const filename of [...PYTHON_BUILD_TOOLS, ...PYTHON_BUILD_HEADERS]) { try { await trustedFile(filename, PYTHON_BUILD_TOOLS.includes(filename)); } catch { missing.push(filename); } }
+    for (const filename of [...PYTHON_BUILD_TOOLS, ...PYTHON_BUILD_HEADERS]) { try { if (filename === '/usr/bin/nice') await selectPythonBuildNice(trustedFile); else await trustedFile(filename, PYTHON_BUILD_TOOLS.includes(filename)); } catch { missing.push(filename); } }
     // libffi uses a multiarch header path on Ubuntu; pkg-config is the trusted
     // authority for that development package rather than a guessed architecture.
     if (!missing.includes('/usr/bin/pkg-config')) try { await command('/usr/bin/pkg-config', ['--exists', 'libffi'], { timeout: 10000, maxBuffer: 65536, env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' } }); } catch { missing.push('libffi (pkg-config)'); }

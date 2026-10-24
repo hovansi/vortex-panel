@@ -57,9 +57,10 @@ export function createRouter(manager, { dataDir, store, timezoneController } = {
       const cleanup = () => { if (cleaned) return; cleaned = true; Promise.resolve(result.cleanup?.()).catch(error => console.warn(`[Vortex Panel] Export cleanup failed: ${error.message}`)); };
       if (result.cleanup) { res.once('close', cleanup); res.once('finish', cleanup); }
       if (req.aborted || res.destroyed) { cleanup(); return; }
-      // Generated exports live under private dot-prefixed filenames, outside
-      // the instance's editable run directory. Allow only that owned artifact.
-      return res.download(result.path, result.name, { ...(result.cleanup ? { dotfiles: 'allow' } : {}), ...(result.acceptRanges === false ? { acceptRanges: false } : {}) }, error => { cleanup(); if (error) { if (res.headersSent) res.destroy(error); else next(error); } });
+      // The manager has already validated this exact path and the route's
+      // server/identity permissions. Its file listing also permits dotfiles;
+      // sendFile's static-site default must not turn those downloads into 404s.
+      return res.download(result.path, result.name, { dotfiles: 'allow', ...(result.acceptRanges === false ? { acceptRanges: false } : {}) }, error => { cleanup(); if (error) { if (res.headersSent) res.destroy(error); else next(error); } });
     }
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(result.name)}`);
     res.type('application/octet-stream').send(result.content);

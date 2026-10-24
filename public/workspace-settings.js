@@ -23,7 +23,7 @@ export function bindSettingsNavigation(root,{selected,onSelect}={}){
  previous?.destroy();
  const navigation=root?.querySelector('.settings-navigation');
  if(!navigation)return {get selected(){return '';},select:()=>false,destroy(){}};
- const id=++sequence,doc=root.ownerDocument,sections=new Map(),buttons=[];
+ const id=++sequence,doc=root.ownerDocument,view=doc.defaultView,sections=new Map(),buttons=[];
  for(const category of categories){
   const section=root.querySelector(`[data-settings-section="${category.id}"]`),button=navigation.querySelector(`[data-settings-target="${category.id}"]`);
   if(!section||!button)continue;
@@ -36,12 +36,20 @@ export function bindSettingsNavigation(root,{selected,onSelect}={}){
   section.id=`settings-section-${id}-${category.id}`;section.setAttribute('aria-labelledby',heading.id);
   button.setAttribute('aria-controls',section.id);sections.set(category.id,{section,button,heading});buttons.push(button);
  }
- let active='',destroyed=false;
+ let active='',destroyed=false,frame=0;
+ function revealSelected(){
+  const button=sections.get(active)?.button;if(destroyed||!button||navigation.scrollWidth<=navigation.clientWidth||navigation.clientWidth<=0)return;
+  const bounds=navigation.getBoundingClientRect(),box=button.getBoundingClientRect(),left=bounds.left+navigation.clientLeft+4,right=left+navigation.clientWidth-8;
+  const offset=box.left<left?box.left-left:box.right>right?box.right-right:0;if(!offset)return;
+  navigation.scrollTo({left:Math.max(0,Math.min(navigation.scrollWidth-navigation.clientWidth,navigation.scrollLeft+offset)),behavior:'instant'});
+ }
+ function resize(){if(destroyed||frame)return;if(!view?.requestAnimationFrame){revealSelected();return;}frame=view.requestAnimationFrame(()=>{frame=0;revealSelected();});}
  function select(category,{focus=false,scroll=false}={}){
   const current=sections.get(category);if(destroyed||!current)return false;
   const previous=active;active=category;
   for(const [key,item] of sections){item.section.hidden=key!==category;if(key===category)item.button.setAttribute('aria-current','page');else item.button.removeAttribute('aria-current');}
   root.dataset.settingsSelection=category;
+  revealSelected();
   if(focus)current.heading.focus({preventScroll:true});
   if(scroll){const workspace=root.matches?.('.workspace')?root:root.closest?.('.workspace');workspace?.scrollTo?.({top:0,behavior:'instant'});}
   if(previous&&previous!==category)onSelect?.(current.section);
@@ -58,7 +66,8 @@ export function bindSettingsNavigation(root,{selected,onSelect}={}){
   event.preventDefault();buttons[target].focus();
  }
  navigation.addEventListener('click',click);navigation.addEventListener('keydown',keydown);
+ view?.addEventListener('resize',resize);
  select(sections.has(requested)?requested:sections.has('account')?'account':sections.keys().next().value);
- const controls={get selected(){return active;},select,destroy(){if(destroyed)return;destroyed=true;navigation.removeEventListener('click',click);navigation.removeEventListener('keydown',keydown);if(bindings.get(root)===controls)bindings.delete(root);}};
+ const controls={get selected(){return active;},select,destroy(){if(destroyed)return;destroyed=true;navigation.removeEventListener('click',click);navigation.removeEventListener('keydown',keydown);view?.removeEventListener('resize',resize);if(frame)view.cancelAnimationFrame(frame);frame=0;if(bindings.get(root)===controls)bindings.delete(root);}};
  bindings.set(root,controls);return controls;
 }

@@ -49,6 +49,8 @@ jobs:
           NODE
       - name: Install locked dependencies
         run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Validate production source
         run: npm run check
       - name: Check bootstrap syntax

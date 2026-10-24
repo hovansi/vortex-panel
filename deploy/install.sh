@@ -435,7 +435,7 @@ elif [[ $VORTEX_PUBLIC_PORT_EXPLICIT == true ]]; then
 fi
 # END automatic access plan
 apt-get update
-DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables iptables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-remove ca-certificates curl unzip rsync xz-utils libcurl4 libstdc++6 libatomic1 nftables iptables e2fsprogs util-linux bubblewrap python3 python3-venv kmod
 if [[ $VORTEX_AUTO_ACCESS == true ]]; then
   DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1 apt-get install -y --no-remove nginx openssl iproute2
 fi
@@ -478,7 +478,7 @@ prepare_memory_module() {
     return 0
   fi
   package=linux-modules-extra-$kernel
-  if ! candidate=$(LC_ALL=C apt-cache policy "$package" 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }') || [[ ! $candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
+  if ! candidate=$(LC_ALL=C apt-cache policy "$package" 2>/dev/null | awk '$1 == "Candidate:" { print $2 }') || [[ ! $candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
     echo "Optional memory assistance is unavailable: no matching module package exists for $kernel. The current kernel is retained." >&2
     return 0
   fi
@@ -508,7 +508,7 @@ prepare_memory_module() {
       dependency_absent=true
     fi
     if [[ $dependency_absent == true ]]; then
-      if ! dependency_candidate=$(LC_ALL=C apt-cache policy wireless-regdb 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }') || [[ ! $dependency_candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
+      if ! dependency_candidate=$(LC_ALL=C apt-cache policy wireless-regdb 2>/dev/null | awk '$1 == "Candidate:" { print $2 }') || [[ ! $dependency_candidate =~ ^[0-9][A-Za-z0-9.+:~_-]{0,127}$ ]]; then
         echo 'Optional memory module preparation was skipped: its fresh dependency could not be pinned safely.' >&2
         return 0
       fi
@@ -617,9 +617,30 @@ PY
     export PATH="${PREVIOUS_NODE_BIN%/node}:$PATH"
   fi
 fi
-NODE_MAJOR=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-NODE_ARCH=$(node -p 'process.arch' 2>/dev/null || true)
-if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VORTEX_NODE_ARCH" ]]; then
+# Validate only the privileged control interpreter, without executing source
+# before its admission guard. Keep these pure floors aligned with safety.js.
+control_runtime_supported() {
+  node --input-type=module - "$VORTEX_NODE_ARCH" <<'JS'
+const CONTROL_RUNTIME_FLOORS = Object.freeze({
+  22: Object.freeze([23, 4]),
+  24: Object.freeze([22, 1]),
+  26: Object.freeze([12, 1])
+});
+
+function controlRuntimeSupported(version = process.versions.node) {
+  if (typeof version !== 'string') return false;
+  const match = /^(?:v)?(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/.exec(version);
+  if (!match) return false;
+  const [, majorText, minorText, patchText] = match;
+  const floor = CONTROL_RUNTIME_FLOORS[Number(majorText)];
+  if (!floor) return false;
+  const minor = Number(minorText), patch = Number(patchText);
+  return minor > floor[0] || minor === floor[0] && patch >= floor[1];
+}
+process.exit(controlRuntimeSupported() && process.arch === process.argv[2] ? 0 : 1);
+JS
+}
+if ! control_runtime_supported; then
   NODE_TEMP=$(mktemp -d /tmp/vortex-node-runtime.XXXXXXXX)
   curl --fail --location --proto '=https' --tlsv1.2 --output "$NODE_TEMP/SHASUMS256.txt" https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt
   NODE_FILE=$(awk -v arch="$VORTEX_NODE_ARCH" '$2 ~ ("^node-v22\\.[0-9]+\\.[0-9]+-linux-" arch "\\.tar\\.xz$") {print $2; exit}' "$NODE_TEMP/SHASUMS256.txt")
@@ -638,6 +659,9 @@ if [[ ! $NODE_MAJOR =~ ^[0-9]{1,3}$ || $NODE_MAJOR -lt 22 || $NODE_ARCH != "$VOR
   chmod -R a+rX,go-w -- "$PANEL_NODE_DIR"
   export PATH="$PANEL_NODE_DIR/bin:$PATH"
 fi
+control_runtime_supported || {
+  echo 'The selected Node control runtime is unsupported or below its security patch floor.' >&2; false;
+}
 
 # Prepare the pinned native compatibility engine while the previous service
 # is still healthy. A failed build never switches the active panel release.
@@ -655,7 +679,80 @@ TERMINAL=false
 if [[ $MODE == root ]] || { [[ $MODE == preserve ]] && [[ -f $RECOVERY_DIR/service ]] && grep -q '^User=root$' "$RECOVERY_DIR/service"; }; then SERVICE_USER=root; TERMINAL=true; fi
 install -d -m 0755 "$INSTALL_DIR"
 if [[ ! -d $DATA_DIR ]]; then install -d -m 0700 "$DATA_DIR"; elif [[ $(stat -c '%a' -- "$DATA_DIR") != 700 ]]; then chmod 0700 "$DATA_DIR"; fi
-rsync -a --exclude node_modules --exclude data --exclude .env --exclude .git --exclude .playwright-cli --exclude output --exclude releases --exclude current "$SOURCE_DIR/" "$INSTALL_DIR/"
+# Use the same public entry points as the release builder. A reviewed source
+# checkout can also contain private services, local attachments and
+# recovery copies; none belong in an installed customer release.
+INSTALL_SOURCE_FILTERS=(--include '/.gitignore' --include '/.gitattributes' --include '/.env.example')
+SOURCE_PREFLIGHT_FILES=("$SOURCE_DIR/.gitignore" "$SOURCE_DIR/.gitattributes" "$SOURCE_DIR/.env.example")
+SOURCE_PREFLIGHT_DIRECTORIES=()
+SOURCE_PREFLIGHT_PARENTS=()
+SOURCE_PREFLIGHT_PRUNE=()
+for pattern in node_modules data output coverage .git .playwright-cli __pycache__ .env '.env.*' vortex-access.json live-client-api.py id_rsa id_dsa id_ecdsa id_ed25519 thumbs.db '*.bk*' '*.bak' '*.backup' '*.orig' '*~' '*.tmp' '*.log' '*.pem' '*.key' '*.p12' '*.pfx' '*.pyc'; do
+  # Match the release builder's case-insensitive private-name/suffix filters.
+  insensitive_pattern=
+  for ((pattern_index=0; pattern_index<${#pattern}; pattern_index++)); do
+    pattern_character=${pattern:pattern_index:1}
+    if [[ $pattern_character == [a-zA-Z] ]]; then insensitive_pattern+="[${pattern_character,}${pattern_character^}]"; else insensitive_pattern+=$pattern_character; fi
+  done
+  INSTALL_SOURCE_FILTERS+=(--exclude "$insensitive_pattern")
+  SOURCE_PREFLIGHT_PRUNE+=( -name "$insensitive_pattern" -o )
+done
+INSTALL_SOURCE_FILTERS+=(--exclude '.*')
+SOURCE_PREFLIGHT_PRUNE+=( -name '.*' )
+for entry in package.json package-lock.json README.md LICENSE LICENSE.md NOTICE; do
+  INSTALL_SOURCE_FILTERS+=(--include "/$entry")
+  SOURCE_PREFLIGHT_FILES+=("$SOURCE_DIR/$entry")
+done
+for entry in server public deploy; do
+  INSTALL_SOURCE_FILTERS+=(--include "/$entry/***")
+  SOURCE_PREFLIGHT_DIRECTORIES+=("$SOURCE_DIR/$entry")
+done
+INSTALL_SOURCE_FILTERS+=(--include '/scripts/')
+SOURCE_PREFLIGHT_PARENTS+=("$SOURCE_DIR/scripts")
+for entry in check.js package.js release.js; do
+  INSTALL_SOURCE_FILTERS+=(--include "/scripts/$entry")
+  SOURCE_PREFLIGHT_FILES+=("$SOURCE_DIR/scripts/$entry")
+done
+INSTALL_SOURCE_FILTERS+=(--include '/docs/' --include '/docs/assets/***')
+SOURCE_PREFLIGHT_PARENTS+=("$SOURCE_DIR/docs")
+SOURCE_PREFLIGHT_DIRECTORIES+=("$SOURCE_DIR/docs/assets")
+for entry in API.md ASSETS.md DESIGN.md I18N.md INSTALL.md NODE-AGENT.md NODE-PROVISIONING.md NODES.md ONLINE-BACKUPS.md OPERATIONS.md OPERATIONS-090.md PANEL-UPDATES.md RELIABILITY.md TIMEZONE.md NETWORK-TUNING.md HTTPS.md SERVER-APPEARANCE.md PORTS-0155.md README.vi.md RESOURCE-CONTROL.md SERVER-MESSAGES.md THIRD_PARTY.md WORLDS.md applications.md publication.md; do
+  INSTALL_SOURCE_FILTERS+=(--include "/docs/$entry")
+  SOURCE_PREFLIGHT_FILES+=("$SOURCE_DIR/docs/$entry")
+done
+# Validate original admitted inputs while source hard-link provenance still
+# exists. rsync creates new regular inodes, so copied nlink=1 is insufficient.
+validate_installer_source_inputs() {
+  local source_entry invalid_source
+  local -a existing_directories=()
+  for source_entry in "${SOURCE_PREFLIGHT_PARENTS[@]}" "${SOURCE_PREFLIGHT_DIRECTORIES[@]}"; do
+    if [[ -e $source_entry || -L $source_entry ]]; then
+      [[ ! -L $source_entry && -d $source_entry ]] || { echo 'Selected source directory must be a real directory without links.' >&2; return 1; }
+    fi
+  done
+  for source_entry in "${SOURCE_PREFLIGHT_FILES[@]}"; do
+    if [[ -e $source_entry || -L $source_entry ]]; then
+      [[ ! -L $source_entry && -f $source_entry ]] && [[ $(LC_ALL=C stat -c '%h' -- "$source_entry") == 1 ]] || {
+        echo 'Selected source file must be a regular file without hard or symbolic links.' >&2; return 1;
+      }
+    fi
+  done
+  for source_entry in "${SOURCE_PREFLIGHT_DIRECTORIES[@]}"; do
+    if [[ -d $source_entry && ! -L $source_entry ]]; then existing_directories+=("$source_entry"); fi
+  done
+  if (( ${#existing_directories[@]} )); then
+    if ! invalid_source=$(LC_ALL=C find -P "${existing_directories[@]}" \( "${SOURCE_PREFLIGHT_PRUNE[@]}" \) -prune -o \( \( ! -type d ! -type f \) -o \( -type f -links +1 \) \) -print -quit); then
+      echo 'Unable to verify selected source inputs; no source was copied.' >&2; return 1;
+    fi
+    [[ -z $invalid_source ]] || { echo 'Selected source contains linked or special entries; review the checkout before retrying.' >&2; return 1; }
+  fi
+}
+validate_installer_source_inputs
+rsync -a "${INSTALL_SOURCE_FILTERS[@]}" --exclude '*' "$SOURCE_DIR/" "$INSTALL_DIR/"
+# Release packaging rejects linked/special source entries. Keep the source
+# checkout path equally strict before npm runs or an existing service stops.
+UNSAFE_SOURCE_ENTRY=$(find "$INSTALL_DIR" ! -type d ! -type f -print -quit)
+[[ -z $UNSAFE_SOURCE_ENTRY ]] || { echo 'Installed source contains a symbolic link or special entry; review the checkout before retrying.' >&2; false; }
 # rsync -a also copies the source root's mode (for example a private 0700 upload).
 chmod 0755 "$INSTALL_DIR"
 cd -- "$INSTALL_DIR"

@@ -1252,7 +1252,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     if (isApp(server)) assertFileReady(server);
     const relative = cleanRelative(name);
     const guard = fileGuard(server, await fileSettings(server));
-    const stopped = ['stopped', 'running'].includes(server.status) && !server.jobId && !server.cloneJobId && !lifecycle.has(server.id) && !operations.has(server.id) && !scheduleLocks.has(server.id);
+    const stopped = ['stopped', 'running'].includes(server.status) && !server.jobId && !server.cloneJobId && !lifecycle.has(server.id) && (!operations.has(server.id) || operationContext.getStore() === server.id) && !scheduleLocks.has(server.id);
     const describe = entry => {
       let protection = null, readable = true, editable = !entry.directory && entry.size <= FILE_LIMITS.textBytes;
       try { guard(entry.path, 'read'); } catch { readable = false; }
@@ -1590,12 +1590,12 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
     }
     return { ...(warnings.length ? { warnings } : {}), retentionComplete: true };
   }
-  async function backup(server) {
+  async function backup(server, reason = 'manual') {
     assertIdle(server); assertRecovered(server);
     if (isApp(server)) assertStopped(server);
     const runtime = processes.get(server.id);
     if (lifecycle.has(server.id) || ['starting', 'stopping'].includes(server.status) || ((server.status === 'running') && (!runtime?.ready || runtime.expected))) fail('Đợi server sẵn sàng rồi tạo bản sao lưu.', 409);
-    return job('backup', server, progress => performBackup(server, progress));
+    return job('backup', server, progress => performBackup(server, progress, reason));
   }
   const backupRecord = (server, id) => (server.backups || []).find(item => item.id === id) || fail('Không tìm thấy bản sao lưu.', 404);
 
@@ -1854,7 +1854,7 @@ export async function createManager({ store, dataDir, emit = () => {}, reserveRa
         }
         assertOpen(); record.actionStatus = 'running'; record.actionStartedAt = now();
         if (fields.action === 'backup') {
-          const backupJob = await backup(server);
+          const backupJob = await backup(server, 'scheduled');
           record.backupJobId = backupJob.id; record.progress = 30; record.message = 'Đang sao lưu dữ liệu'; persist();
           await jobPromises.get(backupJob.id);
           const outcome = store.data.jobs.find(item => item.id === backupJob.id);

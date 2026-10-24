@@ -2,7 +2,7 @@
 // The panel entry point, browser assets, account setup and enrollment code are
 // intentionally absent. Keep this explicit list in sync with runtime imports.
 export const NODE_RUNTIME_FILES = Object.freeze([
-  'package.json', 'package-lock.json',
+  'LICENSE', 'docs/THIRD_PARTY.md', 'package.json', 'package-lock.json',
   'server/application-runtime.js', 'server/application-schema.js', 'server/application-runtime-catalog.js', 'server/application-managed-runtime.js', 'server/application-runtime-artifact.js',
   'server/access.js', 'server/archives.js', 'server/backup-messages.js', 'server/bedrock-log.js',
   'server/bedrock-world-format.js', 'server/bedrock-runtime.js', 'server/bedrock-network.js', 'server/bedrock-transport.js', 'server/bedrock-port-wait.js', 'server/capacity.js',

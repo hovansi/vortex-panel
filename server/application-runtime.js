@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants as FS_CONSTANTS } from 'node:fs';
 import { applicationKind, isApplication, normalizeApplication, applicationEnvironment, applicationStarterSources, redactApplicationOutput, applicationIssue } from './application-schema.js';
 import { createApplicationRuntimeCatalog, normalizeRuntimePin, publicRuntimePin, PYTHON_BUILD_RESOURCES } from './application-runtime-catalog.js';
-import { createManagedRuntimeStore } from './application-managed-runtime.js';
+import { createManagedRuntimeStore, selectPythonBuildNice } from './application-managed-runtime.js';
 export { APPLICATION_KINDS, APPLICATION_LIMITS, APPLICATION_MESSAGES, normalizeApplication, publicApplication, isApplication, applicationKind, applicationRevision, applicationEnvironmentNameAllowed, applicationEntrypointAllowed, applicationStarterSources, redactApplicationOutput, applicationErrorPayload } from './application-schema.js';
 
 const execute = promisify(execFile);
@@ -18,6 +18,22 @@ const CORE_ALTERNATIVES = Object.freeze(['awk', 'cc', 'c++', 'cpp']);
 // Fixed trusted setup only. unshare execs this interpreter in the same PID in
 // a private mount namespace. No application code or ENV is used while root.
 export const APPLICATION_MOUNT_SETUP = `import os, sys, json, stat, ctypes, pathlib
+def prepare_scratch(mount):
+    target = '/mnt/tmp'
+    os.mkdir(target, 0o755)
+    if mount(b'tmpfs', os.fsencode(target), b'tmpfs', 2 | 4, b'size=67108864,mode=1777,uid=0,gid=0') != 0:
+        raise ValueError()
+    info = os.lstat(target)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o1777:
+        raise ValueError()
+    with open('/proc/self/mountinfo', 'r', encoding='utf-8') as stream:
+        mounts = stream.read(1048577)
+    rows = [line.split(' - ', 1) for line in mounts.splitlines() if len(line.split(' - ', 1)[0].split()) >= 6 and line.split(' - ', 1)[0].split()[4] == target]
+    if len(mounts) > 1048576 or len(rows) != 1 or len(rows[0]) != 2 or not {'rw', 'nosuid', 'nodev'}.issubset(set(rows[0][0].split()[5].split(','))) or rows[0][1].split()[0] != 'tmpfs':
+        raise ValueError()
+    volume = os.statvfs(target)
+    if volume.f_frsize <= 0 or volume.f_blocks * volume.f_frsize != 67108864:
+        raise ValueError()
 try:
     expected = json.loads(sys.argv[1])
     if os.getuid() != 0 or os.geteuid() != 0 or os.stat('/proc/self/ns/mnt').st_ino == os.stat('/proc/' + str(os.getppid()) + '/ns/mnt').st_ino:
@@ -44,6 +60,7 @@ try:
     alias = os.stat('/mnt/workspace')
     if (alias.st_ino, alias.st_dev, alias.st_uid, alias.st_gid) != (cwd.st_ino, cwd.st_dev, cwd.st_uid, cwd.st_gid):
         raise ValueError()
+    prepare_scratch(mount)
     runtime_mounts = expected.get('runtimeMounts', [])
     if not isinstance(runtime_mounts, list) or len(runtime_mounts) > 2:
         raise ValueError()
@@ -346,7 +363,7 @@ export function createApplicationRuntime(options = {}) {
     if (selected.coreAliases?.length) args.push('--dir', '/etc/alternatives');
     for (const entry of selected.coreAliases || []) args.push('--ro-bind', entry.target, '/etc/alternatives/' + entry.name);
     for (const entry of runtime.etcFiles) args.push('--ro-bind', entry.source, entry.target);
-    args.push('--bind', '/mnt/workspace', '/workspace', '--proc', '/proc', '--dev', '/dev', '--size', '67108864', '--tmpfs', '/tmp', '--chdir', '/workspace', '--remount-ro', '/', '--', ...commandArgs);
+    args.push('--bind', '/mnt/workspace', '/workspace', '--proc', '/proc', '--dev', '/dev', '--bind', '/mnt/tmp', '/tmp', '--chdir', '/workspace', '--remount-ro', '/', '--', ...commandArgs);
     return args;
   }
   function isolationArgs(account, identity, commandArgs, selected = runtime) {
@@ -691,19 +708,19 @@ export function createApplicationRuntime(options = {}) {
       return { path: destination, quarantine: () => activeBuildVolumes.delete(volume.id), close: async () => { try { await noProcesses(owner); await storage.unmount(volume); await storage.remove(volume); await canonical(destination); await io.rm(destination, { recursive: true, force: true }); await io.unlink(ledger); } catch (error) { throw applicationIssue('APPLICATION_RUNTIME_BUILD', 409, { cleanupPending: volume.id, cause: error }); } finally { activeBuildVolumes.delete(volume.id); } } };
     }, build: async ({ workspace, onOutput, signal }) => {
       const owner = await account(server); await noProcesses(owner);
-      await trustedFile('/usr/bin/nice', true); await trustedFile('/usr/bin/make', true); await trustedFile('/usr/bin/gcc', true); await trustedFile('/bin/sh', true);
+      await trustedFile('/usr/bin/make', true); await trustedFile('/usr/bin/gcc', true); await trustedFile('/bin/sh', true);
       const pending = [workspace]; let count = 0;
       while (pending.length) { const filename = pending.pop(), info = await io.lstat(filename); if (++count > 100000) throw applicationIssue('APPLICATION_PATH'); if (info.isSymbolicLink()) await io.lchown(filename, owner.uid, owner.gid); else { await io.chown(filename, owner.uid, owner.gid); if (info.isDirectory()) for (const name of await io.readdir(filename)) pending.push(path.join(filename, name)); } }
       const buildOptions = { signal, onOutput, workspaceOverride: workspace, runtimeOverride: runtime, timeoutMs: PYTHON_BUILD_RESOURCES.timeoutMs, resourcePolicy: { mode: 'fixed', cpuCores: PYTHON_BUILD_RESOURCES.cpuCores, memoryMiB: PYTHON_BUILD_RESOURCES.memoryMiB } };
       const deadline = Date.now() + PYTHON_BUILD_RESOURCES.timeoutMs;
-      const executeBuild = argv => { const remaining = deadline - Date.now(); if (remaining <= 0) throw applicationIssue('APPLICATION_RUNTIME_BUILD'); return installCommand(server, argv, { ...buildOptions, timeoutMs: remaining }); };
+      const executeBuild = async argv => { const remaining = deadline - Date.now(); if (remaining <= 0) throw applicationIssue('APPLICATION_RUNTIME_BUILD'); const nice = await selectPythonBuildNice(trustedFile); return installCommand(server, [nice, '-n', '10', ...argv], { ...buildOptions, timeoutMs: remaining }); };
       try {
         const smoke = [];
         await installCommand(server, ['/usr/bin/awk', 'BEGIN { if (2 + 2 != 4) exit 1; print "VORTEX_AWK_READY" }'], { ...buildOptions, timeoutMs: Math.min(10000, Math.max(1, deadline - Date.now())), onOutput: line => { smoke.push(line); onOutput?.(line); } });
         if (smoke.join('\n').trim() !== 'VORTEX_AWK_READY') throw applicationIssue('APPLICATION_RUNTIME_BUILD');
-        await executeBuild(['/usr/bin/nice', '-n', '10', '/bin/sh', './configure', '--prefix=/runtime/python', '--disable-test-modules', '--with-ensurepip=install']);
-        await executeBuild(['/usr/bin/nice', '-n', '10', '/usr/bin/make', '-j1']);
-        await executeBuild(['/usr/bin/nice', '-n', '10', '/usr/bin/make', '-j1', 'DESTDIR=/workspace/output', 'altinstall']);
+        await executeBuild(['/bin/sh', './configure', '--prefix=/runtime/python', '--disable-test-modules', '--with-ensurepip=install']);
+        await executeBuild(['/usr/bin/make', '-j1']);
+        await executeBuild(['/usr/bin/make', '-j1', 'DESTDIR=/workspace/output', 'altinstall']);
         await noProcesses(owner); return path.join(workspace, 'output/runtime/python');
       } catch (error) { throw applicationIssue('APPLICATION_RUNTIME_BUILD', 409, error.cleanupPending ? { cleanupPending: error.cleanupPending } : {}); }
     } });

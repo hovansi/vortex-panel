@@ -1,3 +1,4 @@
+import { assertControlRuntime, rejectBrotliRequest } from './safety.js';
 import {appearanceErrorPayload} from './server-appearance.js';
 import {createPanelUpdateIntentProbe} from './panel-update.js';
 import fs from 'node:fs';
@@ -63,6 +64,7 @@ function actorFromHeader(header) {
 }
 
 export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicAddress, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, emit: observer = () => {} } = {}) {
+  assertControlRuntime();
   if (!uuid.test(nodeId || '') || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(token)) throw new Error('A UUID nodeId and strong node token are required.');
   if (!tls && !['127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error('Public node listeners require HTTPS. HTTP is limited to literal loopback.');
   if (tls && (!tls.cert || !tls.key)) throw new Error('Both TLS certificate and key are required.');
@@ -147,6 +149,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
       gameNetworkContext.run({ publicAddress }, next);
     } catch (error) { next(error); }
   });
+  app.use(rejectBrotliRequest);
   const ordinaryJson = express.json({ limit: '2mb' }), editorJson = express.json({ limit: '13mb' });
   app.use('/api', (req, res, next) => (req.method === 'PUT' && /^\/servers\/[^/]+\/file\/?$/i.test(req.path) || req.method === 'POST' && /^\/servers\/[^/]+\/files\/create\/?$/i.test(req.path) ? editorJson : ordinaryJson)(req, res, next));
   app.use('/api', (req, _res, next) => {

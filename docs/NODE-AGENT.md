@@ -6,7 +6,7 @@ VPS liên kết chỉ cung cấp tài nguyên chạy server. Gói tự cài từ
 
 ## Cài riêng trên Ubuntu
 
-Yêu cầu Ubuntu 22.04 trở lên, x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc, Node.js 22 trở lên và quyền sudo. Installer cài Node 22 từ nodejs.org nếu cần, đối chiếu SHA-256 archive, chuẩn bị dependency trước khi đổi dịch vụ.
+Yêu cầu Ubuntu 22.04 trở lên, x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc, Node.js 22.23.4+ trong major 22, 24.22.1+ trong major 24 hoặc 26.12.1+ trong major 26 và quyền sudo. Installer cài Node 22 đã vá từ nodejs.org nếu cần, đối chiếu SHA-256 archive, chuẩn bị dependency trước khi đổi dịch vụ.
 
 Agent và ứng dụng Node.js/Python chạy trực tiếp trên cả hai kiến trúc. Trên ARM64 dùng trang bộ nhớ 4 KiB, bộ cài agent tự chuẩn bị Box64 riêng để chạy Bedrock Linux x86-64 chính thức. Gói agent từ bản phát hành chứa engine ARM64 dựng sẵn, được kiểm tra toàn vẹn và phiên bản trước khi dùng. Bản source không có engine có thể biên dịch với giới hạn 2 GiB RAM cùng phần RAM dự phòng; xem [yêu cầu cài đặt](INSTALL.md#requirements). Agent ARM64 cũ cần chạy lại bộ cài đầy đủ một lần; cập nhật source không tự cài dependency hệ thống. Từ source đã giải nén:
 

@@ -55,6 +55,12 @@ CPU/RAM limits are usage ceilings, rather than hardware reservations. The main V
 
 ## Before you deploy
 
+Vortex Panel is open source under the [MIT License](LICENSE). Local management,
+linked VPS nodes and remote deployment are available without an activation key,
+subscription or licensing service. Create your first Admin after installation
+and connect the VPS nodes you want to manage. Third-party components retain
+their own licenses; see [third-party notices](docs/THIRD_PARTY.md).
+
 | Requirement | Details |
 | --- | --- |
 | **Host** | Ubuntu 22.04 or later, x86-64 or ARM64 (`aarch64`), matching 64-bit userspace, systemd, root/sudo access |
@@ -91,7 +97,7 @@ Use a fresh VPS for the automatic public setup. An existing web server or occupi
 
 ## Run from reviewed source
 
-The supported runtime host is Ubuntu 22.04+ x86-64 or ARM64 with Node.js 22 or later. For manual setup from a reviewed checkout:
+The supported runtime host is Ubuntu 22.04+ x86-64 or ARM64. The panel and agent require Node.js 22.23.4+ in major 22, 24.22.1+ in major 24, or 26.12.1+ in major 26. The installer prepares a verified private Node.js runtime when necessary; application runtimes keep their own saved versions. For manual setup from a reviewed checkout:
 
 ```bash
 npm ci

@@ -141,7 +141,7 @@ class AccessSetup:
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or (os.name != 'nt' and (info.st_mode & 0o022 or info.st_uid != self.owner_uid)) or info.st_size > limit:
             raise AccessError('System file is not a bounded, private root-owned regular file: ' + name)
         with os.fdopen(os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)), 'rb') as handle:
-            data = handle.read(limit + 1)
+            data = handle.read(min(limit, info.st_size) + 1)
             final = os.fstat(handle.fileno())
         if len(data) > limit or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns):
             raise AccessError('System file changed during inspection: ' + name)
@@ -575,7 +575,7 @@ server {
             raise AccessError('Panel allocation inventory is unsafe; preserving access.')
         fd = os.open(filename, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         with os.fdopen(fd, 'rb') as stream:
-            raw = stream.read(64 * 1024 * 1024 + 1)
+            raw = stream.read(min(64 * 1024 * 1024, info.st_size) + 1)
             final = os.fstat(stream.fileno())
         if len(raw) > 64 * 1024 * 1024 or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns):
             raise AccessError('Panel allocation inventory changed during inspection.')

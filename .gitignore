@@ -32,3 +32,7 @@ __pycache__/
 
 /test/
 /scripts/demo.js
+/.codex-remote-attachments/
+/services/license-authority/
+/services/license-automation-runtime/
+/services/shopify-license-adapter/

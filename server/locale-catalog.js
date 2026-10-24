@@ -1250,6 +1250,31 @@ export const PANEL_MESSAGES = Object.freeze([
     "en": "Running scheduled action {0}"
   },
   {
+    "id": "panel.schedules.command-sending",
+    "vi": "Đang gửi lệnh theo lịch",
+    "en": "Sending scheduled command"
+  },
+  {
+    "id": "panel.schedules.pre-command-sending",
+    "vi": "Đang gửi lệnh trước tác vụ",
+    "en": "Sending the command before the action"
+  },
+  {
+    "id": "panel.schedules.command-rejected",
+    "vi": "Tiến trình từ chối lệnh lịch: {0}",
+    "en": "The server rejected the scheduled command: {0}"
+  },
+  {
+    "id": "panel.schedules.command-order-unconfirmed",
+    "vi": "Chưa xác nhận được thứ tự xử lý lệnh lịch. Tác vụ tiếp theo chưa chạy; không tự gửi lại lệnh.",
+    "en": "Could not confirm the scheduled command order. The next action has not run; do not automatically resend the command."
+  },
+  {
+    "id": "panel.schedules.command-dispatched",
+    "vi": "Đã gửi lệnh theo lịch; tiến trình không cung cấp xác nhận kết quả tác động.",
+    "en": "Scheduled command sent; the process does not confirm its effect."
+  },
+  {
     "id": "panel.3a888f859be8",
     "vi": "Đang dừng server trước sao lưu",
     "en": "Stopping the server before backup"

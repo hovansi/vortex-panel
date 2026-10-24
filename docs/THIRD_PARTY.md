@@ -35,3 +35,9 @@ SOFTWARE.
 ## ARM64 Bedrock compatibility runtime
 
 The full ARM64 release installer includes a native ARM64 engine built from [Box64 0.4.4](https://github.com/ptitSeb/box64/tree/2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a) from the immutable official source archive, checked against SHA-256 `ce844041092de3f44316bd1c033a3cc10024e5f798c1a8e8a58f046c6d967981`. Box64 uses its MIT license. Private x86-64 `libgcc_s` and `libstdc++` files come from that same pinned archive and retain their separate GNU GPL version 3 with GCC Runtime Library Exception 3.1; they are not licensed under Box64's MIT license. The installed runtime includes the Box64 license, GCC license and exception texts, provenance notice and file receipt. The release source ZIP contains the native Box64 engine with its MIT license and verified build manifest. Guest GCC libraries and Minecraft binaries are downloaded during installation/use and are not bundled in the Vortex source ZIP. A maintainer checkout without the generated engine can build the same pinned source locally.
+
+## Node.js dependencies
+
+The source ZIP does not bundle `node_modules`; installation uses `npm ci` and the exact versions/integrity records in `package-lock.json`. The panel's direct npm dependencies—Archiver, Express, Multer, QRCode, ssh2, ws and yauzl—retain their upstream MIT notices. Transitive packages retain their own licenses; Vortex's MIT license does not replace those terms. Keep their license and notice files with any redistributed dependency code.
+
+Some packages omit a `license` metadata field. Inspect their shipped `LICENSE`/`COPYING`/`NOTICE` files instead of treating absent metadata as an absent license. Build and package checks are technical validation; they do not determine distribution rights for third-party code or artwork.

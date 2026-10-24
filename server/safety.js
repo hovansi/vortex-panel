@@ -216,3 +216,36 @@ export function validateNetwork(servers, id, input) {
   }
   return network;
 }
+
+// Control-plane interpreter policy; customer application runtime pins are independent.
+export const CONTROL_RUNTIME_FLOORS = Object.freeze({
+  22: Object.freeze([23, 4]),
+  24: Object.freeze([22, 1]),
+  26: Object.freeze([12, 1])
+});
+
+export function controlRuntimeSupported(version = process.versions.node) {
+  if (typeof version !== 'string') return false;
+  const match = /^(?:v)?(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/.exec(version);
+  if (!match) return false;
+  const [, majorText, minorText, patchText] = match;
+  const floor = CONTROL_RUNTIME_FLOORS[Number(majorText)];
+  if (!floor) return false;
+  const minor = Number(minorText), patch = Number(patchText);
+  return minor > floor[0] || minor === floor[0] && patch >= floor[1];
+}
+
+export function assertControlRuntime(version = process.versions.node) {
+  if (controlRuntimeSupported(version)) return;
+  throw Object.assign(new Error('The Vortex control service requires patched Node.js 22.23.4+, 24.22.1+ or 26.12.1+ within those maintained major lines. Run the installer to upgrade only the control runtime.'), { code: 'CONTROL_RUNTIME_UNSUPPORTED' });
+}
+
+// Reject only incoming Brotli bodies before any body-parser decoder is constructed.
+// Identity, gzip and deflate stay available; response compression is unaffected.
+export function rejectBrotliRequest(req, res, next) {
+  const encoding = req.headers?.['content-encoding'];
+  if (typeof encoding === 'string' && encoding.split(',').some(value => value.trim().toLowerCase() === 'br')) {
+    return res.status(415).json({ code: 'CONTROL_BODY_ENCODING_UNSUPPORTED', error: 'Brotli request bodies are not supported. Use identity or gzip encoding.' });
+  }
+  return next();
+}

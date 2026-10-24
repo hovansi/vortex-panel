@@ -173,10 +173,11 @@ function serverPath(s=findServer()){if(!s)throw new Error(t('Hãy chọn một m
 function setServers(servers){state.servers=mergeNodeServers(state.servers,servers,state.nodes);if(!state.servers.some(s=>s.id===state.selected))state.selected=state.servers[0]?.id||null;if(syncConsoleServer(state,findServer())){++logRequest;queueConsolePaint(updateLogs);}}
 
 function renderAuth(setup,error=''){
+  state.auth=null;
   workspaceMotion.reset();workspaceContinuity.reset();recentServer.reset();settingsNavigationControls?.destroy();settingsNavigationControls=null;settingsSelection='account';
   activeJobTracker?.stop();activeJobTracker=null;++jobDetailsRequest;++state.render;++logRequest;++dashboardRequest;++sessionGeneration;++navigationRequest;renderedDataSignature='';renderedServerResultsSignature='';resetWorkspaceNavigation(state);syncConsoleServer(state,null);resetPowerClientState();resetMemoryClientState();
   for(const controller of sessionUploads)controller.abort();sessionUploads.clear();
-  applicationSettingsControls?.destroy();applicationSettingsControls=null;clearPrivateDialogs();modalSubmit=null;fileEditor=null;folderPicker=null;createNodeSync=null;viewResourceControls?.destroy();viewResourceControls=null;
+  applicationSettingsControls?.destroy();applicationSettingsControls=null;destroySelects(document);clearPrivateDialogs();modalSubmit=null;fileEditor=null;folderPicker=null;createNodeSync=null;viewResourceControls?.destroy();viewResourceControls=null;
   clearTimeout(reconnectTimer);if(state.ws){state.ws.onopen=null;state.ws.onmessage=null;state.ws.onerror=null;state.ws.onclose=null;state.ws.close();state.ws=null;}
   $('#workspace').replaceChildren();$('#toasts').replaceChildren();const uploadInput=$('#file-upload');uploadInput.value='';for(const key of ['base','path','serverId'])delete uploadInput.dataset[key];$('#host-mini').replaceChildren();$('#navigation').replaceChildren();$('#mobile-nav').replaceChildren();
   state.data=null;state.servers=[];state.nodes=[];state.selected=null;state.users=[];state.mfa=null;state.metrics=null;state.configuration=null;state.worlds=null;state.backups=null;state.players=null;state.packs=null;state.versions=null;state.diagnostics=null;state.gameplay=null;state.application=null;state.schedules=[];state.properties=null;consolePreferences.clear();commandHistory.clear();packPreferences.clear();clearTelemetryHistory();paletteItems=[];paletteIndex=0;
@@ -687,7 +688,7 @@ async function refreshData(){
     if(state.view==='server'&&state.serverTab==='settings')syncConfigNetwork();
     if(state.view==='versions'&&state.versions?.history?.status==='loading'){const token=state.render,nodeId=state.versionNodeId,fresh=await api(versionLibraryBase(nodeId));if(token===state.render&&nodeId===state.versionNodeId&&state.view==='versions'){state.versions=fresh;updateVersionResults();}}
     const voiceButton=$('[data-action=world-voice]');if(voiceButton){const current=state.servers.find(item=>item.id===voiceButton.dataset.id);voiceButton.disabled=!current||!canManage(current)||current.status!=='running'||current.busy||current.recoveryRequired;}
-    const commandInput=$('#command-form input'),commandButton=$('#command-form button');if(commandInput){const commandServerId=commandInput.closest('.server-workspace')?.dataset.serverId||state.selected,commandServer=state.servers.find(s=>s.id===commandServerId),enabled=commandServer?.status==='running'&&canManage(commandServer);commandInput.disabled=!enabled;commandButton.disabled=!enabled;}
+    syncCommandControls();
     if(!rendering&&state.view==='server'){const s=findServer(),grid=$('.server-detail-stats');if(grid&&s)syncTelemetry(grid);if(s&&!serverNodeUnavailable(s)&&state.serverTab==='console'&&Date.now()>(state.nextMetricsAt||0)){state.nextMetricsAt=Date.now()+7000;const token=state.render,metrics=await api(`${serverPath(s)}/metrics`),panel=$('#server-metrics-panel');if(panel&&token===state.render&&state.selected===s.id&&state.serverTab==='console')replaceUI(panel,metricsPanel(metrics));}}
   }catch{updateConnection(false);}finally{refreshing=false;}
 }

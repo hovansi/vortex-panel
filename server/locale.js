@@ -96,7 +96,13 @@ export function formatPanelMessage(id, params = []) {
 
 function field(record, key, locale) {
   if (!record || typeof record[key] !== 'string') return record;
-  const metadata = panelMessageMetadata(record[key]);
+  // A worker can already have rendered a canonical error in either language.
+  // Rebuild its declared metadata from this catalog, retaining it only when
+  // the actual text matches. Rematching English as a Vietnamese template can
+  // otherwise relabel a runtime failure as the generic Bedrock success text.
+  const declared = record[`${key}I18n`];
+  const canonical = declared && formatPanelMessage(declared.id, declared.params);
+  const metadata = canonical && (record[key] === canonical.en || record[key] === canonical.vi) ? canonical : panelMessageMetadata(record[key]);
   return metadata ? { ...record, [key]: metadata[locale], [`${key}I18n`]: metadata } : record;
 }
 function joinedErrors(record, key, locale) {

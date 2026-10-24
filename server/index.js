@@ -1,3 +1,4 @@
+import { assertControlRuntime, rejectBrotliRequest } from './safety.js';
 import {appearanceErrorPayload} from './server-appearance.js';
 import {createPanelUpdateController,createPanelUpdateIntentProbe,panelUpdateErrorPayload} from './panel-update.js';
 import path from 'node:path';
@@ -42,6 +43,7 @@ const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const packageVersion = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')).version;
 const frontendRelease = createFrontendRelease({ publicDir: path.join(projectDir, 'public'), version: packageVersion });
 export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR || path.join(projectDir, 'data')), setupToken = process.env.SETUP_TOKEN, nodeProvisionerFactory = createNodeProvisioner, nodeRemovalControllerFactory = createNodeRemovalController, panelRemovalControllerFactory = createPanelRemovalController, panelUpdateControllerFactory = createPanelUpdateController, hostnameController, powerController, zramController, timezoneController, networkController, tlsController } = {}) {
+  assertControlRuntime();
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const releaseLock = acquireDataLock(dataDir);
   let store;
@@ -57,6 +59,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     if (req.path.startsWith('/api')) res.set('Cache-Control', 'no-store');
     next();
   });
+  app.use(rejectBrotliRequest);
   const ordinaryJson = express.json({ limit: '2mb' });
   // A valid 2 MiB text body can occupy 12 MiB in JSON (six-byte Unicode
   // escapes), plus the path/revision envelope. Only text editors need this

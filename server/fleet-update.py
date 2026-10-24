@@ -32,6 +32,25 @@ MAX_SOURCE = 256 * 1024 * 1024
 MAX_MEMBER = 4 * 1024 * 1024
 BEDROCK_MEMBERS = {'deploy/bedrock-box64-arm64.tar.xz': 16 * 1024 * 1024,
                    'deploy/bedrock-box64-arm64.json': 64 * 1024}
+CONTROL_RUNTIME_VERSION = re.compile(r'^(?:v)?(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$')
+CONTROL_RUNTIME_FLOORS = {22: (23, 4), 24: (22, 1), 26: (12, 1)}
+CONTROL_RUNTIME_BLOCKER = 'UPDATE_CONTROL_RUNTIME_REQUIRED'
+CONTROL_RUNTIME_GUIDANCE = ('The Vortex control service requires patched Node.js 22.23.4+, 24.22.1+ or 26.12.1+ within those maintained major lines. '
+                            'Schedule maintenance and run the current release CLI installer on this VPS before source-only updates. '
+                            'The updater did not replace Node.js or change pinned customer application runtimes.')
+
+
+def control_runtime_supported(version):
+    if not isinstance(version, str):
+        return False
+    match = CONTROL_RUNTIME_VERSION.fullmatch(version)
+    if not match:
+        return False
+    major, minor, patch = map(int, match.groups())
+    floor = CONTROL_RUNTIME_FLOORS.get(major)
+    return floor is not None and (minor, patch) >= floor
+
+
 ROLES = {'panel': ('/opt/vortex-panel', '/etc/vortex-panel.env', 'vortex-panel.service', 'server/index.js'), 'worker': ('/opt/vortex-node', '/etc/vortex-node.json', 'vortex-node.service', 'server/node-cli.js')}
 
 
@@ -256,6 +275,18 @@ class Host:
         require(str(pathlib.PurePosixPath(ROLES[self.role][0]) / 'current' / self.entry) in values.get('ExecStart', ''), 'The managed service uses a custom entry point.')
         return values, int(values['MainPID'])
 
+    def control_runtime(self, pid):
+        require(isinstance(pid, int) and not isinstance(pid, bool) and pid > 1, 'The managed service PID is invalid.')
+        node = self.path('/proc/' + str(pid) + '/exe').resolve(strict=True)
+        self.safe(node)
+        require(node.name == 'node' and node.is_file() and os.access(node, os.X_OK), 'Cannot resolve the current trusted Node interpreter.')
+        version = self.run([str(node), '-p', 'process.versions.node'], timeout=15,
+                           env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'LANG': 'C'}).stdout.strip()
+        return node, version
+
+    def assert_control_runtime(self, observed):
+        require(not any(row.get('code') == CONTROL_RUNTIME_BLOCKER for row in observed.get('blockers', [])), CONTROL_RUNTIME_GUIDANCE)
+
     def inspect(self):
         self.safe(self.install, directory=True)
         self.safe(self.install / 'releases', directory=True)
@@ -272,6 +303,13 @@ class Host:
         active = [row.get('id') for row in store['servers'] if row.get('status') not in ('stopped', 'error') or row.get('resumeOnPanelStart') or row.get('jobId') or row.get('cloneJobId')]
         jobs = [row.get('id') for row in store['jobs'] if row.get('status') in ('queued', 'running')]
         blockers = []
+        try:
+            _, node_version = self.control_runtime(pid)
+            runtime_supported = control_runtime_supported(node_version)
+        except (UpdateError, OSError, ValueError, subprocess.SubprocessError):
+            runtime_supported = False
+        if not runtime_supported:
+            blockers.append({'code': CONTROL_RUNTIME_BLOCKER, 'message': CONTROL_RUNTIME_GUIDANCE})
         entry_text = self.read(source / ('server/node-agent.js' if self.role == 'worker' else self.entry)).decode('utf-8')
         if not (source / 'server/panel-update.js').is_file() or 'createPanelUpdateIntentProbe' not in entry_text:
             blockers.append({'code': 'UPDATE_PROTOCOL_REQUIRED', 'message': 'This legacy installation needs a one-time maintenance upgrade before safe one-click updates; its running workloads were not stopped.'})
@@ -332,6 +370,7 @@ class Host:
             os.close(fd)
 
     def assert_expected(self, observed, expected):
+        self.assert_control_runtime(observed)
         require(observed['revision'] == expected['revision'] and observed['installationId'] == expected['installationId'] and observed['status'] == 'ready', 'Installation changed or customer workloads are active; update was not activated.')
 
     def prepare(self, request):
@@ -370,10 +409,8 @@ class Host:
                 self.atomic(root / 'request.json', record)
                 # No package-manager lifecycle scripts or system package changes.
                 service, pid = self.service()
-                node = self.path('/proc/' + str(pid) + '/exe').resolve(strict=True)
-                require(node.name == 'node' and node.is_file() and os.access(node, os.X_OK), 'Cannot resolve the current trusted Node interpreter.')
-                node_version = self.run([str(node), '-p', 'process.versions.node']).stdout.strip()
-                require(version_tuple(node_version)[0] >= 22, 'This release needs Node.js 22 or newer; upgrade the host runtime separately.')
+                node, node_version = self.control_runtime(pid)
+                require(control_runtime_supported(node_version), CONTROL_RUNTIME_GUIDANCE)
                 npm = node.parent / 'npm'
                 if not npm.exists():
                     npm = pathlib.Path(shutil.which('npm') or '')
@@ -697,6 +734,7 @@ class Host:
         root, record = self.load(request_id)
         require(record['status'] == 'completed' and record.get('proof', {}).get('verified') is True, 'This update does not have a completed native receipt.')
         info = self.inspect()
+        self.assert_control_runtime(info)
         require(info['version'] == record['version'] and info['installationId'] == record['installationId'] and self.protection() == record['beforeProtection'], 'Independent update verification failed; protected installation changed.')
         manifest = json.loads(self.read(root / 'manifest.json', 4 * 1024 * 1024, private=True)); self.source_verified(pathlib.Path(record['targetSource']), manifest)
         pid = self.health(record['targetSource'], record['before']['processId'])
@@ -727,6 +765,7 @@ class Host:
         root, record = self.load(request_id)
         require(record['status'] == 'failed' and record.get('rolledBack') is True, 'Update does not have a known rollback receipt.')
         info = self.inspect()
+        self.assert_control_runtime(info)
         require(info['revision'] == record['before']['revision'] and info['version'] == record['before']['version'], 'Original installation identity was not restored.')
         self.health((self.install / 'current').resolve(strict=True), -1)
         if record.get('beforeProtection'):

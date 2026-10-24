@@ -91,9 +91,37 @@ class Host:
         if private and self.enforce_owner:
             require(not info.st_mode & 0o077, 'An ownership record is not private.')
         with open(filename, 'rb') as stream:
-            content = stream.read(maximum + 1)
-        require(len(content) <= maximum, 'An ownership record exceeds its bound.')
+            opened = os.fstat(stream.fileno())
+            require((opened.st_dev, opened.st_ino, opened.st_size, opened.st_nlink) == (info.st_dev, info.st_ino, info.st_size, 1), 'Ownership evidence changed while opening.')
+            # BufferedReader.read(n) can reserve n bytes before it reaches EOF.
+            # Tiny receipts must not allocate the 128 MiB source-file ceiling.
+            content = stream.read(min(maximum, opened.st_size) + 1)
+            after = os.fstat(stream.fileno())
+            require((after.st_dev, after.st_ino, after.st_size) == (opened.st_dev, opened.st_ino, opened.st_size), 'Ownership evidence changed while reading.')
+        require(len(content) <= maximum and len(content) == opened.st_size, 'An ownership record exceeds its bound or changed while reading.')
         return content
+
+    def read_proc_sys(self, key, maximum=4096):
+        # Kernel procfs values are regular files whose stat size is normally zero.
+        # Keep their tiny read separate from strict on-disk ownership records.
+        require(key in (*NETWORK_KEYS, 'kernel.random.boot_id') and isinstance(maximum, int) and 0 < maximum <= 4096,
+                'Unsafe bounded procfs value key.')
+        filename = self.path('/proc/sys/' + key.replace('.', '/'))
+        info = self.safe(filename)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'A procfs value is not an exclusive regular file.')
+        identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_uid, row.st_gid, row.st_nlink)
+        fd = os.open(filename, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            opened = os.fstat(fd)
+            require(identity(opened) == identity(info), 'A procfs value changed while opening.')
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                content = stream.read(maximum + 1)
+            require(0 < len(content) <= maximum, 'A procfs value exceeds its bound or is empty.')
+            require(identity(os.fstat(fd)) == identity(opened) and identity(self.safe(filename)) == identity(opened),
+                    'A procfs value changed while reading.')
+            return content
+        finally:
+            os.close(fd)
 
     def load(self, filename, maximum=4 * 1024 * 1024, private=False):
         return json.loads(self.read(filename, maximum, private))
@@ -308,7 +336,7 @@ class Host:
             network = restored.get('outcome') == 'restored' and not os.path.lexists(self.path('/etc/sysctl.d/70-vortex-node-network.conf')) and isinstance(restored.get('values'), dict) and set(restored['values']).issubset(NETWORK_KEYS)
             if network:
                 try:
-                    network = all(self.read(self.path('/proc/sys/' + key.replace('.', '/')), 4096).decode().strip() == value for key, value in restored['values'].items())
+                    network = all(self.read_proc_sys(key, 4096).decode().strip() == value for key, value in restored['values'].items())
                 except (RemovalError, OSError, UnicodeError):
                     network = False
         if proof and proof.get('hostTimezone'):
@@ -452,7 +480,7 @@ class Host:
         components.extend({'kind': 'zram', 'path': row, 'action': 'remove', 'reason': 'Verified compressed swap owned by this worker.'} if isinstance(row, str) else row for row in zram.get('components', []))
         if zram.get('canCleanup') is False:
             block('REMOVAL_ZRAM_BUSY', zram.get('reason') or 'Owned compressed swap cannot be safely deactivated with current memory headroom.')
-        boot = self.read(self.path('/proc/sys/kernel/random/boot_id'), 100).decode().strip()
+        boot = self.read_proc_sys('kernel.random.boot_id', 100).decode().strip()
         identity = {'agentId': node_id, 'fingerprint': fingerprint, 'pid': pid, 'bootId': boot, 'release': str(release), 'data': self.stamp(self.data), 'entries': list(entries.values()), 'firewall': firewall, 'gameFirewall': game_firewall, 'nativeFirewall': native_firewall, 'networkTable': network_table, 'ownedZram': zram.get('owned') is True, 'nodeBinary': start_args[0]}
         if maintenance:
             identity['hostMaintenance'] = maintenance

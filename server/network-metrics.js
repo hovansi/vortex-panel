@@ -89,7 +89,7 @@ const unsupportedSample = (code = 'stopped') => ({ supported: false, available: 
 export function createNetworkMetrics({ dataDir, platform = process.platform, run = runNft, now = Date.now, monotonic = () => performance.now(), minIntervalMs = 500 } = {}) {
   if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw new Error('Network accounting needs an absolute data directory.');
   const identityPath = path.join(dataDir, '.network-metrics.json');
-  let identity, table, marker, initialized = false, closed = false, status = 'unsupported', tablePresent = false;
+  let identity, table, marker, initialized = false, closed = false, status = 'unsupported';
   let tail = Promise.resolve(), initializeFlight, sampleFlight, sampleAt = -Infinity;
   const samples = new Map(), previous = new Map();
   function exclusive(fn) { const work = tail.then(fn); tail = work.catch(() => {}); return work; }
@@ -151,6 +151,26 @@ export function createNetworkMetrics({ dataDir, platform = process.platform, run
     const result = await run(['-j', 'list', 'table', 'inet', table], {});
     if (result.code !== 0) { if (/No such file or directory/i.test(result.stderr || '')) return null; throw new Error('nft-unavailable'); }
     let value; try { value = JSON.parse(result.stdout); } catch { throw new Error('nft-invalid-response'); }
+    const tables = Array.isArray(value?.nftables) ? value.nftables.filter(row => row?.table).map(row => row.table) : [];
+    const missingCounters = Array.isArray(value?.nftables) ? value.nftables.filter(row => row?.counter && !Object.hasOwn(row.counter, 'comment')).map(row => row.counter) : [];
+    if (tables?.length === 1 && tables[0].family === 'inet' && tables[0].name === table && (!Object.hasOwn(tables[0], 'comment') || missingCounters.length)) {
+      // Ubuntu 22.04 nft 1.0.2 omits table/counter userdata comments from JSON.
+      // Correlate one native table frame and each absent counter comment by
+      // exact name/handle, then retain every JSON ownership/structure check.
+      const legacy = await run(['-a', 'list', 'table', 'inet', table], {});
+      if (legacy.code !== 0) throw new Error('nft-unavailable');
+      const lines = legacy.stdout.trimEnd().split('\n'), handle = tables[0].handle;
+      if (!Number.isSafeInteger(handle) || handle < 1 || lines[0] !== `table inet ${table} { # handle ${handle}` || lines[1] !== `\tcomment "${marker}"` || lines.at(-1) !== '}' || lines.filter(line => line.startsWith('table ')).length !== 1 || lines.filter(line => line === '}').length !== 1) throw new Error('network-ownership');
+      if (!Object.hasOwn(tables[0], 'comment')) tables[0].comment = marker;
+      for (const counter of missingCounters) {
+        if (counter.family !== 'inet' || counter.table !== table || !/^(?:rx|tx)_[a-f0-9]{32}$/.test(counter.name || '') || !Number.isSafeInteger(counter.handle) || counter.handle < 1) throw new Error('network-ownership');
+        const header = `\tcounter ${counter.name} { # handle ${counter.handle}`, positions = lines.flatMap((line, index) => line === header ? [index] : []);
+        if (positions.length !== 1) throw new Error('network-ownership');
+        const index = positions[0], comment = /^\t\tcomment "([^"\\]*)"$/.exec(lines[index + 1] || '');
+        if (!comment || !/^\t\tpackets \d+ bytes \d+$/.test(lines[index + 2] || '') || lines[index + 3] !== '\t}') throw new Error('network-ownership');
+        counter.comment = comment[1];
+      }
+    }
     return inspect(value);
   }
   async function ensureIdentity() {
@@ -174,7 +194,7 @@ export function createNetworkMetrics({ dataDir, platform = process.platform, run
       try {
         await ensureIdentity(); const current = await readTable();
         if (!current) await command(`add table inet ${table} { comment "${marker}"; }\nadd chain inet ${table} input { type filter hook input priority 10; policy accept; }\nadd chain inet ${table} output { type filter hook output priority 10; policy accept; }\n`);
-        const confirmed = await readTable(); if (!confirmed) throw new Error('nft-unavailable'); tablePresent = true; status = 'ready';
+        const confirmed = await readTable(); if (!confirmed) throw new Error('nft-unavailable'); status = 'ready';
       } catch (error) { status = error.message === 'network-ownership' ? 'ownership' : 'unavailable'; }
       return capabilities();
     })().finally(() => { initializeFlight = null; });
@@ -244,7 +264,7 @@ export function createNetworkMetrics({ dataDir, platform = process.platform, run
       if (closed) return;
       if (initializeFlight) await initializeFlight;
       closed = true;
-      if (cleanup && tablePresent && table) {
+      if (cleanup && table) {
         try { const current = await readTable(); if (current) await command(`delete table inet ${table}\n`); }
         catch { return { cleaned: false, ...presentation('ownership') }; }
       }

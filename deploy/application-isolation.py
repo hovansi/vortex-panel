@@ -185,7 +185,7 @@ def select_profile_member(stream):
             if result is not None or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or member.size > MAX_PROFILE or member.mode & 0o022:
                 raise Unavailable("profile-package-member")
             source = archive.extractfile(member)
-            result = source.read(MAX_PROFILE + 1)
+            result = source.read(member.size + 1)
             if len(result) != member.size:
                 raise Unavailable("profile-package-short-member")
     if result is None:
@@ -261,9 +261,11 @@ class IsolationInstaller:
             if info.st_size > limit:
                 raise Unavailable("file-too-large")
             with os.fdopen(descriptor, "rb", closefd=False) as source:
-                result = source.read(limit + 1)
+                result = source.read(min(limit, info.st_size) + 1)
             if len(result) > limit:
                 raise Unavailable("file-too-large")
+            if len(result) != info.st_size or os.fstat(descriptor).st_size != info.st_size:
+                raise Unavailable("file-changed-during-read")
             return result
         finally:
             os.close(descriptor)
@@ -307,7 +309,7 @@ class IsolationInstaller:
             if child.returncode or output.tell() > limit:
                 raise Unavailable("command-failed")
             output.seek(0)
-            return output.read(limit + 1).decode("utf-8", errors="strict")
+            return output.read(min(limit, os.fstat(output.fileno()).st_size) + 1).decode("utf-8", errors="strict")
 
     @contextlib.contextmanager
     def locked(self):

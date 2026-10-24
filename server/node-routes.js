@@ -44,7 +44,7 @@ export function createNodeRouter(nodes, { projectDir, provisioner, removal, stor
   router.use(requireAdmin);
   router.get('/', async (_req, res) => res.json({ nodes: await nodes.publicNodes(), limits: nodes.limits }));
   router.post('/ssh/check', async (req, res) => res.json(await (req.body?.hostFingerprint ? provisioner.check(req.body) : provisioner.discover({ host: req.body?.host, port: req.body?.port }))));
-  router.post('/provision', (req, res) => res.status(202).json({ job: provisioner.start(req.body, req.session.user) }));
+  router.post('/provision', async (req, res) => { res.status(202).json({ job: provisioner.start(req.body, req.session.user) }); });
   router.get('/provision/jobs', (_req, res) => res.json({ jobs: provisioner.jobs() }));
   router.get('/provision/jobs/:id', (req, res) => res.json({ job: provisioner.getJob(req.params.id) }));
   router.get('/uninstall/jobs', (_req, res) => res.json({ jobs: removal.jobs() }));
@@ -68,7 +68,7 @@ export function createNodeRouter(nodes, { projectDir, provisioner, removal, stor
     try { await buildNodeBundle(projectDir, res); }
     catch (error) { if (res.destroyed) return; if (res.headersSent) res.destroy(error); else next(error); }
   });
-  router.post('/', async (req, res) => res.status(201).json({ node: await nodes.add(req.body, req.session.user) }));
+  router.post('/', async (req, res) => { res.status(201).json({ node: await nodes.add(req.body, req.session.user) }); });
   router.get('/:id/application-runtimes', async (req, res) => {
     if (req.params.id === 'local') return res.json({ nodeId: 'local', applicationRuntime: await nodes.manager.applicationCapabilities({ refresh: true }) });
     const node = nodes.requireAvailable(req.params.id);

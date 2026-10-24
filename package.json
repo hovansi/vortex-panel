@@ -1,11 +1,12 @@
 {
   "name": "vortex-panel",
-  "version": "0.23.15",
+  "version": "0.24.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Vortex Panel — Minecraft, Node.js and Python server management for Ubuntu",
   "engines": {
-    "node": ">=22"
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   },
   "scripts": {
     "start": "node server/index.js",
@@ -16,7 +17,7 @@
   "dependencies": {
     "archiver": "^7.0.1",
     "express": "^5.1.0",
-    "multer": "^2.0.2",
+    "multer": "^2.5.0",
     "qrcode": "^1.5.4",
     "ssh2": "^1.17.0",
     "ws": "^8.18.3",

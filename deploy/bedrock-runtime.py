@@ -75,7 +75,7 @@ def stable_bytes(path, limit):
         opened = os.fstat(descriptor)
         require((before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino), 'Bundled runtime input changed while opening.')
         with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            value = stream.read(limit + 1)
+            value = stream.read(min(limit, opened.st_size) + 1)
         after, current = os.fstat(descriptor), path.lstat()
         def stamp(info):
             return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,

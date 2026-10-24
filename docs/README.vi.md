@@ -6,6 +6,8 @@
 
 Vortex Panel quản lý **Minecraft Bedrock, ứng dụng Node.js và Python** trên Ubuntu qua một workspace chung. Giao diện có sáng/tối, hỗ trợ máy tính/điện thoại và hai ngôn ngữ **EN/VI**, mặc định English. Tác giả: **@hovansi**.
 
+Dự án mã nguồn mở theo [giấy phép MIT](../LICENSE). Quản lý cục bộ, kết nối VPS và triển khai từ xa không yêu cầu key kích hoạt, thuê bao hoặc dịch vụ cấp phép.
+
 ## Cài bằng một lệnh
 
 Trên VPS **Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`)**, có userspace 64-bit đúng kiến trúc, systemd và quyền sudo/root:
@@ -65,7 +67,7 @@ Thao tác tệp và backup của Node.js/Python yêu cầu dừng ứng dụng. 
 
 ## Chạy từ source đã kiểm tra
 
-Môi trường vận hành hỗ trợ là Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc và Node.js 22 trở lên:
+Môi trường vận hành hỗ trợ là Ubuntu 22.04+ x86-64 hoặc ARM64 (`aarch64`), userspace 64-bit đúng kiến trúc. Panel và agent cần Node.js 22.23.4+ trong major 22, 24.22.1+ trong major 24 hoặc 26.12.1+ trong major 26. Installer tự chuẩn bị runtime riêng đã xác minh khi cần; phiên bản runtime đã ghim của ứng dụng được giữ nguyên:
 
 ```bash
 npm ci
