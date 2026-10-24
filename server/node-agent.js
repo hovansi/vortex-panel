@@ -1,6 +1,7 @@
 import { assertControlRuntime, rejectBrotliRequest } from './safety.js';
 import {appearanceErrorPayload} from './server-appearance.js';
-import {createPanelUpdateIntentProbe} from './panel-update.js';
+import {createPanelUpdateIntentProbe,panelUpdateErrorPayload} from './panel-update.js';
+import {createNodeUpdateAgent,isNodeUpdateControl,NODE_UPDATE_PROTOCOL} from './node-update.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -63,7 +64,7 @@ function actorFromHeader(header) {
   return { ...actor, serverIds: [...new Set(actor.serverIds)] };
 }
 
-export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicAddress, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, emit: observer = () => {} } = {}) {
+export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicAddress, host = '127.0.0.1', configFile = process.env.VORTEX_NODE_CONFIG || '/etc/vortex-node.json', manager: injectedManager, store: injectedStore, resourceController, hostnameController, powerController, zramController, timezoneController, networkController, removalController, updateController, emit: observer = () => {} } = {}) {
   assertControlRuntime();
   if (!uuid.test(nodeId || '') || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43,256}$/.test(token)) throw new Error('A UUID nodeId and strong node token are required.');
   if (!tls && !['127.0.0.1', '::1', '[::1]'].includes(host)) throw new Error('Public node listeners require HTTPS. HTTP is limited to literal loopback.');
@@ -83,7 +84,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
   const expectedToken = createHash('sha256').update(token).digest();
   const app = express(); app.disable('x-powered-by');
   const systemHostname = hostnameController || createHostnameController();
-  const identity = () => ({ service: 'vortex-node', protocol: 1, nodeId, version, processId: process.pid, maintenance: manager?.maintenanceStatus?.() || null });
+  const identity = () => ({ service: 'vortex-node', protocol: 1, panelUpdate: NODE_UPDATE_PROTOCOL, nodeId, version, processId: process.pid, maintenance: manager?.maintenanceStatus?.() || null });
   const send = (client, event) => {
     if (client.res.destroyed || client.res.writableLength > 1024 ** 2) { client.res.destroy(); clients.delete(client); return; }
     if (event.serverId && !canAccessServer(client.actor, event.serverId)) return;
@@ -110,15 +111,16 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
     await manager.initialize?.();
   } catch (error) { await systemNetwork?.close?.(); await systemTimezone?.close?.(); await manager?.close?.(); releaseLock(); throw error; }
   const systemPower = powerController || createSystemPowerController({ role: 'worker', nodeId, dataDir, store, manager });
-  let systemZram, removalAgent;
+  let systemZram, removalAgent, updateAgent;
   try {
     const powerInfo = await systemPower.read();
     systemZram = zramController || createHostZramController({ role: 'worker', nodeId, dataDir, store, manager });
     await systemZram.read();
     removalAgent = removalController || createNodeRemovalAgent({ nodeId, dataDir, configFile, manager, instanceId: powerInfo.instanceId });
     await removalAgent.initialize?.();
+    updateAgent = updateController || createNodeUpdateAgent({ nodeId, dataDir, manager });
   }
-  catch (error) { await removalAgent?.close?.(); await systemZram?.close?.(); await systemPower.close?.(); await systemNetwork?.close?.(); await systemTimezone?.close?.(); await manager.close?.(); releaseLock(); throw error; }
+  catch (error) { await updateAgent?.close?.(); await removalAgent?.close?.(); await systemZram?.close?.(); await systemPower.close?.(); await systemNetwork?.close?.(); await systemTimezone?.close?.(); await manager.close?.(); releaseLock(); throw error; }
   timezoneTimer = setInterval(() => {
     if (closing || timezoneFlight) return;
     timezoneFlight = Promise.resolve().then(() => systemTimezone.read({ includeZones: false })).catch(() => {}).finally(() => { timezoneFlight = null; });
@@ -155,10 +157,16 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
   app.use('/api', (req, _res, next) => {
     const dedicatedControl = ['/node/power', '/node/zram', '/node/uninstall/prepare', '/node/uninstall/abort'].includes(req.path);
     const maintenance = manager.maintenanceStatus?.();
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !dedicatedControl && maintenance?.active) return next(Object.assign(new Error(['zram', 'uninstall'].includes(maintenance.action) ? 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.' : 'A restart is pending.'), { ...(maintenance.action === 'restart-service' || maintenance.action === 'reboot' ? { code: 'POWER_BUSY' } : {}), status: 409 }));
+    const updateControl = maintenance?.action === 'update' && isNodeUpdateControl(req.method, req.path);
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !dedicatedControl && !updateControl && maintenance?.active) return next(Object.assign(new Error(['zram', 'uninstall', 'update'].includes(maintenance.action) ? 'Đang áp dụng thay đổi hệ thống. Hãy chờ hoàn tất.' : 'A restart is pending.'), { ...(maintenance.action === 'restart-service' || maintenance.action === 'reboot' ? { code: 'POWER_BUSY' } : {}), status: 409 }));
     next();
   });
   app.get('/api/node/identity', (_req, res) => res.json(identity()));
+  app.post('/api/node/update/:action', requireAdmin, async (req, res) => {
+    if (!isNodeUpdateControl(req.method, req.path.slice(4))) return res.status(404).json({ error: 'Worker update control was not found.' });
+    const value = await updateAgent.request(req.params.action, req.body);
+    emit({ type: 'update' }); res.json(value);
+  });
   app.get('/api/node/power', requireAdmin, async (_req, res) => res.json({ nodeId, power: await systemPower.read() }));
   app.post('/api/node/power', requireAdmin, async (req, res) => sendPowerRequest(systemPower, req, res, nodeId));
   app.get('/api/node/zram', requireAdmin, async (_req, res) => res.json({ nodeId, zram: await systemZram.read() }));
@@ -201,12 +209,12 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
   app.use((error, _req, res, _next) => {
     if(_req.aborted||res.destroyed)return;
     const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : /^LIMIT_(?:PART_COUNT|FILE_COUNT|FIELD_KEY|FIELD_VALUE|FIELD_COUNT|UNEXPECTED_FILE)$/.test(error.code || '') ? 400 : 500);
-    if (!res.headersSent) res.status(status).json(timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || bedrockTransportErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || gameNetworkAccessErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message });
+    if (!res.headersSent) res.status(status).json(panelUpdateErrorPayload(error, _req.panelLanguage) || timezoneErrorPayload(error, _req.panelLanguage) || networkTuningErrorPayload(error, _req.panelLanguage) || appearanceErrorPayload(error, _req.panelLanguage) || playerListErrorPayload(error, _req.panelLanguage) || applicationErrorPayload(error, _req.panelLanguage) || bedrockRuntimeErrorPayload(error, _req.panelLanguage) || bedrockTransportErrorPayload(error, _req.panelLanguage) || nodeRemovalErrorPayload(error, _req.panelLanguage) || hostZramErrorPayload(error, _req.panelLanguage) || systemPowerErrorPayload(error, _req.panelLanguage) || hostnameErrorPayload(error, _req.panelLanguage) || storageErrorPayload(error, _req.panelLanguage) || capacityErrorPayload(error, _req.panelLanguage) || gameNetworkAccessErrorPayload(error, _req.panelLanguage) || serverFirewallErrorPayload(error, _req.panelLanguage) || { error: status >= 500 ? 'Node operation failed. Review the node service journal.' : error.message, ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) });
     else res.destroy();
   });
   let server;
   try { server = tls ? https.createServer({ cert: tls.cert, key: tls.key, minVersion: 'TLSv1.2' }, app) : http.createServer(app); }
-  catch (error) { try { await stopTimezoneRefresh(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { releaseLock(); } throw error; }
+  catch (error) { try { await stopTimezoneRefresh(); await updateAgent.close?.(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { releaseLock(); } throw error; }
   const listen = server.listen.bind(server);
   server.listen = (...args) => {
     if (typeof args[0] === 'object' && args[0]) { args[0] = { ...args[0], host: args[0].host || host }; if (!tls && !['127.0.0.1', '::1'].includes(args[0].host)) throw new Error('HTTP node listeners must use literal loopback.'); }
@@ -221,7 +229,7 @@ export async function createNodeAgent({ dataDir, nodeId, token, tls, gamePublicA
     closing = true; clearInterval(heartbeat); clearInterval(timezoneTimer);
     for (const client of clients) client.res.end(); clients.clear();
     const listenerClosed = server.listening ? new Promise(resolve => { server.close(resolve); server.closeIdleConnections(); server.closeAllConnections(); }) : Promise.resolve();
-    closePromise = (async () => { try { await stopTimezoneRefresh(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { await listenerClosed; releaseLock(); } })();
+    closePromise = (async () => { try { await stopTimezoneRefresh(); await updateAgent.close?.(); await removalAgent.close?.(); await systemZram.close?.(); await systemPower.close?.(); await systemNetwork.close?.(); await systemTimezone.close?.(); await systemHostname.close?.(); await manager.close?.(); } finally { await listenerClosed; releaseLock(); } })();
     return closePromise;
   }
   return { app, server, manager, store, powerController: systemPower, zramController: systemZram, timezoneController: systemTimezone, networkController: systemNetwork, removalController: removalAgent, close, emit, host, identity: identity() };

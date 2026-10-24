@@ -18,7 +18,7 @@ export const NODE_RUNTIME_FILES = Object.freeze([
   'server/server-appearance.js', 'server/schedule-commands.js',
   'server/manager.js', 'server/mount-safety.js', 'server/network-metrics.js',
   'server/node-agent.js', 'server/node-cli.js', 'server/node-messages.js',
-  'server/node-runtime.js', 'server/node-transport.js', 'server/node-removal.js', 'server/node-removal.py',
+  'server/node-runtime.js', 'server/node-transport.js', 'server/node-removal.js', 'server/node-removal.py', 'server/node-update.js',
   'server/packs.js', 'server/player-lists.js', 'server/port-allocation.js',
   'server/resource-control-messages.js', 'server/resource-control.js',
   'server/resource-exit.js', 'server/routes.js', 'server/safety.js',

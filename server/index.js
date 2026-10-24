@@ -113,7 +113,7 @@ export async function createApp({ dataDir = path.resolve(process.env.DATA_DIR ||
     nodes.attachRemoval(removal);
     panelRemoval = panelRemovalControllerFactory({ nodes, store, manager, dataDir, projectDir, ssh: provisioner.withSSH?.bind(provisioner), discover: provisioner.discover?.bind(provisioner), emit });
     nodes.attachFleetRemoval(panelRemoval);
-    panelUpdate=panelUpdateControllerFactory({nodes,store,manager,dataDir,projectDir,ssh:provisioner.withSSH?.bind(provisioner),discover:provisioner.discover?.bind(provisioner),emit});
+    panelUpdate=panelUpdateControllerFactory({nodes,store,manager,dataDir,projectDir,ssh:provisioner.withSSH?.bind(provisioner),emit});
     nodes.attachFleetUpdate(panelUpdate);
     const hostManager = { maintenanceStatus: () => manager.maintenanceStatus?.(), beginMaintenance(input) {
       if (!input.restore && provisioner.jobs().some(job => ['queued', 'running'].includes(job.status))) {

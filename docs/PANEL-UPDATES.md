@@ -8,7 +8,7 @@ Use **Settings → Panel administration → Check for updates** for routine sour
 
 1. Back up important data and encryption keys off the VPS. Keep service environment, proxy configuration and TLS certificates separately.
 2. Stop every Minecraft, Node.js and Python server on every listed VPS. Finish backups, installations, file changes, provisioning and other system operations.
-3. Review the official stable version, release notes, ordered VPS list and blockers. Compare each SSH fingerprint with a trusted record, then verify root SSH for every listed VPS, including the main one.
+3. Review the official stable version, release notes, ordered VPS list and blockers. The main panel uses its installed updater; linked workers use their authenticated agent connections. No VPS password or SSH key is requested.
 4. Enter the current panel Admin password, confirm the reviewed update and submit once. Keep its request ID.
 
 The updater does not stop workloads automatically. Current servers use console pipes and lifecycle ownership tied to their controller process, so replacing that process safely requires a maintenance window. Unknown/offline worker state does not prove its servers are stopped.
@@ -17,9 +17,9 @@ The supported path uses the canonical managed Linux root service and release lay
 
 ### First upgrade from older agents
 
-Older 0.19.x installations do not implement the durable source-update admission protocol. The updater refuses to activate them because a worker's own scheduler could otherwise start a workload between preparation and restart.
+Workers before 0.24.1 do not expose the authenticated agent update API. They need a one-time worker-installer upgrade before passwordless updates from the panel. Still older installations can also lack durable update admission. The plan identifies these workers instead of requesting root SSH credentials or bypassing update safeguards.
 
-Stop that VPS's workloads and finish its jobs, review the intended release, then perform a one-time maintenance upgrade with the matching main/worker installer. The [main installer](INSTALL.md) and [worker installer](NODE-AGENT.md) are separate entry points. Preserve the existing data directory, agent configuration/token and TLS identity; verify health, account/server definitions and the enrolled agent ID afterward. This installer path may change host prerequisites and restart its service, so it has a wider scope than the in-panel source updater. Once every member supports the admission protocol, subsequent routine updates can use the panel workflow.
+Stop that VPS's workloads and finish its jobs, review the intended release, then perform a one-time maintenance upgrade with the matching main/worker installer. The [main installer](INSTALL.md) and [worker installer](NODE-AGENT.md) are separate entry points. Preserve the existing data directory, agent configuration/token and TLS identity; verify health, account/server definitions and the enrolled agent ID afterward. This installer path may change host prerequisites and restart its service, so it has a wider scope than the in-panel source updater. Once every worker advertises the agent update capability, subsequent routine updates use the existing connection without SSH credentials. The panel account password confirms administrator authority; it is not the VPS password.
 
 ## Upgrade when there is no Update button
 
@@ -49,7 +49,7 @@ The release is restricted to the public [hovansi/vortex-panel](https://github.co
 
 Source/dependencies are prepared on the listed VPS before activation. A root-private durable intent then freezes new mutations and schedules. Immediately before stopping a service, its running API must acknowledge that exact update UUID; stale/legacy code cannot silently bypass the freeze.
 
-Linked workers activate sequentially before the main panel. Each worker must pass source, authenticated service, configuration and data-identity checks through a fresh pinned SSH connection. An already-current worker is attested against the approved official source and kept on that version. A newer worker is never downgraded. If the main panel is already current but compatible workers are behind, the plan offers a worker update: workers activate first, then a fresh pinned SSH connection attests the unchanged main panel without preparing or restarting it. Older workers that lack update admission remain blocked with one-time worker-installer guidance.
+Linked workers activate sequentially before the main panel. Each worker must pass source, authenticated service, configuration and data-identity checks through its trusted agent connection. The stored token, TLS trust and exact enrolled identity are checked; changed connection details block the request. An already-current worker is attested against the approved official source and kept on that version. A newer worker is never downgraded. If the main panel is already current but workers are behind, workers activate first, then the local updater attests the unchanged main panel without preparing or restarting it. Older workers without the agent update API remain blocked with one-time worker-installer guidance.
 
 When the main source needs updating, only after every worker is verified does a detached native task restart the main panel. Browser/API connections can briefly disappear, and the in-memory login session may require signing in again. Reopen the task from Settings or Notifications. Read-only checks inspect the original UUID; losing a response never causes automatic replay. A progress percentage or closed connection alone is not completion proof.
 
@@ -64,7 +64,7 @@ Source rollback switches back to the previous release and checks its service and
 
 ## Recover an interrupted request
 
-Open the existing task and choose **Verify an interrupted update** when offered. Re-enter fresh root SSH credentials for its original host/port/fingerprint targets and the current panel Admin password. Confirm verification/cancellation of the existing request.
+Open the existing task and choose **Verify an interrupted update** when offered. Enter the current panel Admin password and confirm inspection of the existing request. Local verification and compatible workers use their existing update connections. A legacy task originally dispatched through SSH can still require fresh SSH credentials for its original remote targets; the main panel never needs SSH for recovery.
 
 Recovery inspects native receipts and verifies completed/rolled-back roles. It can cancel an undispatched prepared stage after verifying the original installation. A scheduled dispatch can be cancelled only after the native helper proves its timer/service are inactive, no matching job remains queued and the original service is healthy; a short delay is required before that cancellation is eligible. Active or ambiguous activation remains unknown. Recovery never installs or replays a release; current-source attestation may fetch official release metadata.
 

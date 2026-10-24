@@ -405,9 +405,29 @@ jobs:
           assert.equal(snapshot.capabilities.resourceControl.pidsSupported, true);
           assert.equal(snapshot.capabilities.storageControl.fixedSupported, true);
           assert.equal(snapshot.servers.length, 0);
+          assert.equal(identity.panelUpdate, 1);
+          assert.equal(snapshot.panelUpdate, 1);
+          const updateIdentity = { schemaVersion: 1, role: 'worker', nodeId: config.nodeId };
+          const updateControl = (action, body, extra = {}) => requestNode(connection, { path: '/api/node/update/' + action, method: 'POST', body, ...extra });
+          const updatePlan = await updateControl('plan', updateIdentity);
+          assert.equal(updatePlan.role, 'worker');
+          assert.equal(updatePlan.nodeId, config.nodeId);
+          assert.equal(updatePlan.serviceHealthy, true);
+          assert.equal(updatePlan.status, 'ready');
+          const requestId = 'a05918f5-366f-4788-bac9-b4e92efc2428';
+          const absent = await updateControl('status', { ...updateIdentity, requestId });
+          assert.equal(absent.status, 'absent');
+          assert.equal(absent.requestId, requestId);
+          assert.equal(absent.machineId, updatePlan.machineId);
+          await assert.rejects(updateControl('plan', { ...updateIdentity, role: 'panel' }), error => error.status === 400);
+          await assert.rejects(updateControl('plan', { ...updateIdentity, helper: '/tmp/foreign.py' }), error => error.status === 400);
+          await assert.rejects(updateControl('apply', { ...updateIdentity, requestId }), error => error.status === 404);
+          const viewer = Buffer.from(JSON.stringify({ id: 'release-viewer', username: 'release-viewer', role: 'viewer', allServers: false, serverIds: [] })).toString('base64url');
+          await assert.rejects(updateControl('plan', updateIdentity, { headers: { 'X-Vortex-Actor': viewer } }), error => error.status === 403);
+          assert.equal((await requestNode(connection)).maintenance, null);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-panel.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[2]);
           assert.equal(execFileSync('systemctl', ['show', 'vortex-node.service', '--property=MainPID', '--value'], { encoding: 'utf8' }).trim(), process.argv[3]);
-          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, rejectedInvalidCredential: true, managedBox64RuntimeVerified: true, panelUninterrupted: true, passed: true }));
+          console.log(JSON.stringify({ nativeArchitecture: process.arch, actualInstalledWorker: true, authenticatedPinnedTLS: true, passwordlessUpdatePlanVerified: true, updateAuthorityAndPathGuards: true, rejectedInvalidCredential: true, managedBox64RuntimeVerified: true, panelUninterrupted: true, passed: true }));
           NODE
       - name: Verify native worker update preserves interpreter and configuration
         shell: bash
