@@ -41,6 +41,8 @@ Installing on the main VPS does not implicitly replace a remote worker. Review e
 
 The updater prepares a separate versioned source directory and its locked production dependencies. Dependency installation disables lifecycle scripts and uses a private cache. It does not invoke the full installer, run APT upgrades, rewrite the service unit/environment/proxy/TLS settings or update the panel's Node interpreter.
 
+Before accepting the staged release, the updater runs that verified source's control-runtime policy with the current Node interpreter. A newer runtime requirement blocks preparation before activation; use the current release installer to upgrade the control runtime. Saved customer application runtime versions remain unchanged.
+
 Server definitions, user accounts, permissions, ports, resource policies and installed Minecraft/Node.js/Python runtime pins are preserved. Worlds, project files and backups are not extracted, restored or replaced. A changed source does not grant permission to upgrade customer runtimes.
 
 The release is restricted to the public [hovansi/vortex-panel](https://github.com/hovansi/vortex-panel/releases) repository. The checks bind its stable tag, expected asset names/sizes, GitHub publisher SHA-256 digests, manifest, `SHA256SUMS` and every archived public source file. Extraction rejects unsafe paths, links, unexpected files and inventory/mode/hash mismatches. Workers receive the release's explicit agent source list. Downloads use validated official HTTPS origins; checksum verification does not replace trust in the repository's publisher. See [GitHub's release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
@@ -52,6 +54,8 @@ Source/dependencies are prepared on the listed VPS before activation. A root-pri
 Linked workers activate sequentially before the main panel. Each worker must pass source, authenticated service, configuration and data-identity checks through its trusted agent connection. The stored token, TLS trust and exact enrolled identity are checked; changed connection details block the request. An already-current worker is attested against the approved official source and kept on that version. A newer worker is never downgraded. If the main panel is already current but workers are behind, workers activate first, then the local updater attests the unchanged main panel without preparing or restarting it. Older workers without the agent update API remain blocked with one-time worker-installer guidance.
 
 When the main source needs updating, only after every worker is verified does a detached native task restart the main panel. Browser/API connections can briefly disappear, and the in-memory login session may require signing in again. Reopen the task from Settings or Notifications. Read-only checks inspect the original UUID; losing a response never causes automatic replay. A progress percentage or closed connection alone is not completion proof.
+
+The running panel automatically observes restored main-update handoffs and independently verifies completed or rolled-back receipts, even when the update dialog is closed. Observation is bounded to twenty minutes per process; unresolved or applying requests remain fenced for administrator inspection. Background checks never replay activation or cancel an uncertain operation. An interrupted update superseded by a later CLI installation needs evidence-based recovery of its original request; do not delete its intent or mark the old version successful.
 
 | Outcome | Meaning |
 | --- | --- |

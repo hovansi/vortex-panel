@@ -431,8 +431,16 @@ class Host:
                 record['dependencyRoot'] = self.staged_dependencies(source, normalize=True)
                 os.chmod(source, 0o755)
                 for name in ('server/node-cli.js', self.entry):
-                    self.run([str(node), '--check', str(source / name)])
+                    self.run([str(node), '--check', str(source / name)], env=env)
                 self.source_verified(source, manifest)
+                # The target may raise its runtime floor after this helper was
+                # released. Check its fixed, verified policy before any switch;
+                # never load the application entry point or package scripts.
+                preflight = self.run([str(node), '--input-type=module', '--eval',
+                                      "import {pathToFileURL} from 'node:url'; const {assertControlRuntime} = await import(pathToFileURL(process.argv[1]).href); assertControlRuntime();",
+                                      str(source / 'server/safety.js')], timeout=30, cwd=source,
+                                     env=env, allow_failure=True)
+                require(preflight.returncode == 0, 'Target control-runtime preflight failed. Run the current release CLI installer on this VPS before source-only updates. The updater did not replace Node.js or change pinned customer application runtimes.')
                 self.assert_expected(self.inspect(), observed)
                 record.update({'status': 'prepared', 'preparedAt': time.time(), 'targetVersion': request['version'], 'helperSHA256': file_digest(root / 'helper.py')})
                 self.atomic(root / 'request.json', record)

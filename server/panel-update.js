@@ -131,10 +131,11 @@ export async function discoverPanelRelease({ fetchImpl = fetch } = {}) {
 }
 
 export function createPanelUpdateController({ store, nodes, manager, dataDir, projectDir, ssh, emit = () => {}, native,
-  releaseDiscovery = discoverPanelRelease, platform = process.platform, uid = process.getuid?.(), pollIntervalMs = 1500, operationTimeoutMs = 20 * 60 * 1000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  releaseDiscovery = discoverPanelRelease, platform = process.platform, uid = process.getuid?.(), pollIntervalMs = 1500, reconciliationIntervalMs = 5000, operationTimeoutMs = 20 * 60 * 1000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   if (!store || !nodes || !manager || !dataDir || !projectDir) throw new Error('Fleet update requires the durable store, fixed roots and linked node registry.');
   const invoke = native || ((action, input) => runPanelUpdateHelper(path.join(projectDir, 'server/fleet-update.py'), action, input));
   const tasks = new Map(), reconciliations = new Map(); let closed = false, admission = false, cachedRelease, cachedAt = 0, releaseLock;
+  const reconciliationDeadlines = new Map(); let reconciliationTimer, reconciliationFlight;
   store.data.panelUpdateJobs ||= []; if (!Array.isArray(store.data.panelUpdateJobs)) throw fail('native', 503);
   let recovered = false;
   for (const job of store.data.panelUpdateJobs) if (['queued', 'running'].includes(job.status)) { Object.assign(job, { status: 'unknown', outcomeUnknown: true, ...present('unknown') }); recovered = true; }
@@ -161,6 +162,7 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
     store.data.panelUpdateJobs = previous.filter(row => pending.has(row.status) || terminal++ < 20);
     try { store.save(); } catch { for (const key of Object.keys(job)) delete job[key]; Object.assign(job, before); store.data.panelUpdateJobs = previous; throw fail('persisted', 503); }
     emit({ type: 'update' });
+    scheduleReconciliation();
   }
   async function latest(refresh = false) { if (!refresh && cachedRelease && Date.now() - cachedAt < 60 * 60 * 1000) return cachedRelease; const value = await releaseDiscovery(); if (!value?.verified || !VERSION.test(value.version || '') || !SHA.test(value.archiveSHA256 || '') || !SHA.test(value.manifestSHA256 || '')) throw fail('release', 502); cachedRelease = value; cachedAt = Date.now(); return value; }
   async function localPlan() { if (platform !== 'linux' || uid !== 0) throw fail('unavailable'); return validPlan(await invoke('plan', { role: 'panel', nodeId: 'local' }), 'panel', 'local'); }
@@ -243,22 +245,46 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
   }
   const helperFor = (row, requestId) => `${row.local ? '/opt/vortex-panel' : '/opt/vortex-node'}/updates/${requestId}/helper.py`;
   const requestFor = (row, job) => ({ ...base(row), requestId: job.requestId, revision: row.observed.revision, installationId: row.observed.installationId, version: job.version, manifestSHA256: job.release.manifestSHA256, archiveSHA256: job.release.archiveSHA256 });
+  function scheduleReconciliation(delay = 0) {
+    if (closed || reconciliationTimer || reconciliationFlight) return;
+    for (const id of reconciliationDeadlines.keys()) if (!store.data.panelUpdateJobs.some(job => job.id === id && pending.has(job.status))) reconciliationDeadlines.delete(id);
+    const jobs = store.data.panelUpdateJobs.filter(job => pending.has(job.status) && ['handoff', 'recovering'].includes(job.phase) && !tasks.has(job.id));
+    const eligible = jobs.filter(job => {
+      if (!reconciliationDeadlines.has(job.id)) reconciliationDeadlines.set(job.id, Date.now() + operationTimeoutMs);
+      return Date.now() < reconciliationDeadlines.get(job.id);
+    });
+    if (!eligible.length) return;
+    // Only observe the existing request. An interrupted or unconfirmed apply
+    // remains fenced; background recovery never dispatches, cancels or replays it.
+    reconciliationTimer = setTimeout(() => {
+      reconciliationTimer = undefined;
+      if (closed) return;
+      reconciliationFlight = Promise.allSettled(eligible.filter(job => Date.now() < reconciliationDeadlines.get(job.id)).map(job => reconcileMain(job))).finally(() => {
+        reconciliationFlight = undefined;
+        scheduleReconciliation(reconciliationIntervalMs);
+      });
+    }, delay);
+    reconciliationTimer.unref?.();
+  }
   async function reconcileMain(job) {
     if (reconciliations.has(job.id)) return reconciliations.get(job.id);
     const task = performReconcileMain(job).finally(() => reconciliations.delete(job.id));
     reconciliations.set(job.id, task); return task;
   }
   async function performReconcileMain(job) {
-    if (!['handoff', 'recovering'].includes(job.phase) || !pending.has(job.status) || !job.nodes.filter(row => !row.local).every(row => validProof(row.proof, row, job))) return;
+    if (closed || admission || !['handoff', 'recovering'].includes(job.phase) || !pending.has(job.status) || !job.nodes.filter(row => !row.local).every(row => validProof(row.proof, row, job))) return;
     const row = job.nodes.find(value => value.local); if (!row?.observed) return;
     const status = await invoke('status', { ...base(row), requestId: job.requestId }).catch(() => null);
+    if (closed) return;
     if (status?.status === 'completed') {
       const proof = await invoke('verify', { ...base(row), requestId: job.requestId });
+      if (closed) return;
       if (!validProof(proof, row, job)) throw fail('native', 502);
       change(job, { status: 'completed', phase: 'completed', progress: 100, verified: true, outcomeUnknown: false, finishedAt: now(), ...present('completed') }, row.nodeId, { status: 'completed', proof, progress: 100 });
       releaseLock?.(); releaseLock = undefined;
     } else if (status?.status === 'failed' && status.rolledBack === true) {
       const proof = await invoke('verify-rollback', { ...base(row), requestId: job.requestId });
+      if (closed) return;
       if (!validRollbackProof(proof, row, job)) throw fail('native', 502);
       change(job, { status: 'failed', phase: 'failed', outcomeUnknown: false, finishedAt: now(), ...present('failed') }, row.nodeId, { status: 'failed', rolledBack: true, rollbackProof: proof }); releaseLock?.(); releaseLock = undefined;
     }
@@ -345,7 +371,7 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
       }
       change(job, { status: unknown ? 'unknown' : job.nodes.some(row => row.proof) ? 'partial' : 'failed', phase: 'failed', outcomeUnknown: unknown, finishedAt: now(), ...(error.nativeMessage ? { nativeMessage: error.nativeMessage } : {}), ...present(unknown ? 'unknown' : 'failed') });
       if (!unknown) { releaseLock?.(); releaseLock = undefined; }
-    } finally { for (const value of credentials.values()) clear(value); credentials.clear(); tasks.delete(job.id); }
+    } finally { for (const value of credentials.values()) clear(value); credentials.clear(); tasks.delete(job.id); scheduleReconciliation(); }
   }
   async function start(input, user) {
     strict(input, ['revision', 'version', 'requestId', 'confirmedUpdate', 'connections']);
@@ -379,7 +405,7 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
     strict(input, ['requestId', 'connections', 'cancelPrepared']);
     if (!UUID.test(input.requestId || '') || !Array.isArray(input.connections) || input.cancelPrepared !== true) throw fail('input', 400);
     const job = get(input.requestId); const credentials = new Map();
-    if (!pending.has(job.status) || tasks.has(job.id) || input.connections.length !== job.nodes.filter(legacySSH).length || admission || closed) throw fail('busy');
+    if (!pending.has(job.status) || tasks.has(job.id) || reconciliations.has(job.id) || input.connections.length !== job.nodes.filter(legacySSH).length || admission || closed) throw fail('busy');
     admission = true;
     try {
       for (const item of input.connections) {
@@ -418,13 +444,14 @@ export function createPanelUpdateController({ store, nodes, manager, dataDir, pr
         releaseLock?.(); releaseLock = undefined;
       }
       return publicJob(job);
-    } finally { admission = false; for (const value of credentials.values()) clear(value); credentials.clear(); for (const item of input.connections) clear(item?.ssh); }
+    } finally { admission = false; for (const value of credentials.values()) clear(value); credentials.clear(); for (const item of input.connections) clear(item?.ssh); scheduleReconciliation(); }
   }
+  scheduleReconciliation();
   return {
     plan, start, recover,
     async job(id) { const job = get(id); await reconcileMain(job); return publicJob(job); },
     jobs: () => store.data.panelUpdateJobs.map(publicJob),
     isActive: () => admission || store.data.panelUpdateJobs.some(row => pending.has(row.status)),
-    async close() { closed = true; for (const job of store.data.panelUpdateJobs.filter(row => ['queued', 'running'].includes(row.status))) change(job, { status: 'unknown', outcomeUnknown: true, ...present('unknown') }); },
+    async close() { closed = true; clearTimeout(reconciliationTimer); await Promise.allSettled([...reconciliations.values()]); for (const job of store.data.panelUpdateJobs.filter(row => ['queued', 'running'].includes(row.status))) change(job, { status: 'unknown', outcomeUnknown: true, ...present('unknown') }); },
   };
 }
